@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2021 The Dogecoin Core developers
+# Copyright (c) 2013-2026 The Dogecoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Dust limit QA test.
@@ -19,8 +19,8 @@ class DustLimitTest(BitcoinTestFramework):
         self.num_nodes = 4
 
         # set up receiving addresses outside of nodes' wallets
-        self.recv_1 = "n4LRQGEKcyRCXqD2MH3ompyMTJKitxu1WP"
-        self.recv_2 = "n1eAe5K2AQUtbmMxVzWnGAyq4hkWJdse2x"
+        self.recv_1 = "WmVVz8uNe7ouTMujRLPhM4dTY8XspsZfut"
+        self.recv_2 = "WioFDwz5BYsbXJ4fa3rfqQdw9XxfBnA15m"
 
         # seed moneys
         self.seed = 100

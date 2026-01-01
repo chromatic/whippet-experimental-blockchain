@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2015-2016 The Bitcoin Core developers
-# Copyright (c) 2018-2022 The Dogecoin Core developers
+# Copyright (c) 2013-2026 The Dogecoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -35,7 +35,7 @@ class SignRawTransactionsTest(BitcoinTestFramework):
              'scriptPubKey': '2102de5b9a06f9c892706943614ab4c0f29c1b1fb52170aac9c04e8df5266e42e415ac'},
         ]
 
-        outputs = {'mwuZbHnDiYNm9gaMhm7vsmHjkLQdTWCGN9': 1}
+        outputs = {'Wf4eBATGjgmU5DH4mpTpSzwqqAcnReRncA': 1}  # Whippet address
 
         rawTx = self.nodes[0].createrawtransaction(inputs, outputs)
         rawTxSigned = self.nodes[0].signrawtransaction(rawTx, inputs, privKeys)
@@ -92,7 +92,7 @@ class SignRawTransactionsTest(BitcoinTestFramework):
              'scriptPubKey': 'badbadbadbad'}
         ]
 
-        outputs = {'mwuZbHnDiYNm9gaMhm7vsmHjkLQdTWCGN9': 1}
+        outputs = {'Wf4eBATGjgmU5DH4mpTpSzwqqAcnReRncA': 1}  # Whippet address
 
         rawTx = self.nodes[0].createrawtransaction(inputs, outputs)
 

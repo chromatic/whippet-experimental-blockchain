@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2022 The Dogecoin Core Developers
+# Copyright (c) 2013-2026 The Dogecoin Core Developers
 # Distributed under the MIT software license, see the accompanying
 # file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 """Stuck Transaction Test
@@ -19,7 +19,7 @@ class ListStuckTransactionsTest(BitcoinTestFramework):
         self.setup_clean_chain = True
         self.num_nodes = 2
         self.mocktime = int(time.time())
-        self.burn_addr = "n4LRQGEKcyRCXqD2MH3ompyMTJKitxu1WP" # no one has this
+        self.burn_addr = "WmVVz8uNe7ouTMujRLPhM4dTY8XspsZfut"  # Whippet address - no one has this
 
     def setup_nodes(self, split=False):
         nodes = []
@@ -28,7 +28,7 @@ class ListStuckTransactionsTest(BitcoinTestFramework):
         nodes.append(start_node(0, self.options.tmpdir,
             ["-acceptnonstdtxn=0", "-discardthreshold=0.1", "-mempoolexpiry=1", "-paytxfee=0.1"]))
 
-        # A miner that doesn't allow tx under 1 DOGE
+        # A miner that doesn't allow tx under 1 WHT
         nodes.append(start_node(1, self.options.tmpdir,
             ["-acceptnonstdtxn=0", "-softdustlimit=1", "-harddustlimit=1", "-mempoolexpiry=1", "-debug=net"]))
 

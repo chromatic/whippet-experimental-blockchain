@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2016 The Bitcoin Core developers
-# Copyright (c) 2021 The Dogecoin Core developers
+# Copyright (c) 2013-2026 The Dogecoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -317,7 +317,7 @@ class SegWitTest(BitcoinTestFramework):
 
         # Import a compressed key and an uncompressed key, generate some multisig addresses
         self.nodes[0].importprivkey("92e6XLo5jVAVwrQKPNTs93oQco8f8sDNBcpv73Dsrs397fQtFQn")
-        uncompressed_spendable_address = ["mvozP4UwyGD2mGZU4D2eMvMLPB9WkMmMQu"]
+        uncompressed_spendable_address = ["Wdy4xw9zzQbjgoGB8GNXwA1SU1Mfd6jHg8"]  # Whippet address
         self.nodes[0].importprivkey("cNC8eQ5dg3mFAVePDX4ddmPYpPbw41r9bm2jd1nLJT77e6RrzTRR")
         compressed_spendable_address = ["mmWQubrDomqpgSYekvsU7HWEVjLFHAakLe"]
         assert ((self.nodes[0].validateaddress(uncompressed_spendable_address[0])['iscompressed'] == False))

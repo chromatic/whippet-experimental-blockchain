@@ -2,17 +2,17 @@
 #
 # The relevant paths are:
 #
-#/usr/local/bin/dogecoind
-#/usr/local/etc/dogecoin/
-#/var/local/dogecoin/
+#/usr/local/bin/whippetd
+#/usr/local/etc/whippet/
+#/var/local/whippet/
 
 [Unit]
-Description=Dogecoin's distributed currency daemon
+Description=Whippet's distributed currency daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dogecoind -conf=/usr/local/etc/dogecoin/dogecoin.conf -datadir=/var/local/dogecoin
+ExecStart=/usr/local/bin/whippetd -conf=/usr/local/etc/whippet/whippet.conf -datadir=/var/local/whippet
 
 KillSignal=SIGINT
 Restart=always
@@ -22,8 +22,8 @@ TimeoutStartSec=5
 StartLimitIntervalSec=120
 StartLimitBurst=5
 
-User=dogecoin
-Group=dogecoin
+User=whippet
+Group=whippet
 
 ### Restrict resource consumption
 MemoryAccounting=yes
@@ -40,8 +40,8 @@ TemporaryFileSystem=/:ro
 BindReadOnlyPaths=/etc/ /lib/ /lib64/
 
 # Add daemon paths
-BindReadOnlyPaths=/usr/local/bin/dogecoind /usr/local/etc/dogecoin/
-BindPaths=/var/local/dogecoin/
+BindReadOnlyPaths=/usr/local/bin/whippetd /usr/local/etc/whippet/
+BindPaths=/var/local/whippet/
 
 ### Restrict access to system.
 

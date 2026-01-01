@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2022 The Dogecoin Core developers
+# Copyright (c) 2013-2026 The Dogecoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #
@@ -76,7 +76,7 @@ class TxDownloadTest(BitcoinTestFramework):
         self.fake_txid = 0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 
         # valid regtest address that no one has the key to
-        self.tgtAddr = "mkwDHkWXF8x6aFtdGVm5E9PVC7yPY8cb4r"
+        self.tgtAddr = "WU6HsdBaGHLoVnbLLZ6xoP3bGxBYYPs34P"  # Whippet address
 
     def run_test(self):
         self.nodes[1].generate(1)

@@ -1,7 +1,7 @@
 <h1 align="center">
-<img src="https://raw.githubusercontent.com/dogecoin/dogecoin/master/share/pixmaps/dogecoin256.svg" alt="Dogecoin" width="256"/>
+<img src="https://raw.githubusercontent.com/whippet/whippet/master/share/pixmaps/whippet256.svg" alt="Whippet" width="256"/>
 <br/><br/>
-Dogecoin Core [DOGE, Ð]  
+Whippet Core [WHT, Ð]  
 </h1>
 
 **WICHTIG: Seit August 2024 ist der `master` Branch die primäre Integrationsverzweigung geworden und daher Instabil.
@@ -9,43 +9,43 @@ Bevor Sie die Binärdateien selbst kompilieren, überprüfen Sie bitte, ob eine 
  
 Eine internationale Dokumentation finden Sie unter [doc/intl](doc/intl/README.md).
  
-Dogecoin ist eine als Gemeinschaftsprojekt betriebene Kryptowährung, die von einem Shiba-Inu-Meme inspiriert wurde.
-Die Dogecoin-Core-Software ermöglicht es Jedem, einen Knotenpunkt, (sog. "Nodes") im Dogecoin-Blockchain-Netzwerk zu betreiben.
-Dogecoin verwendet das Scrypt-Hashing-Verfahren für "Proof of Work" und wurde von Bitcoin Core und anderen Kryptowährungen adaptiert.
+Whippet ist eine als Gemeinschaftsprojekt betriebene Kryptowährung, die von einem Shiba-Inu-Meme inspiriert wurde.
+Die Whippet-Core-Software ermöglicht es Jedem, einen Knotenpunkt, (sog. "Nodes") im Whippet-Blockchain-Netzwerk zu betreiben.
+Whippet verwendet das Scrypt-Hashing-Verfahren für "Proof of Work" und wurde von Bitcoin Core und anderen Kryptowährungen adaptiert.
  
-Informationen über anfallende Standard-Transaktionsgebühren auf dem Dogecoin-Netzwerk finden Sie unter [Transaktionsgebühren](doc/fee-recommendation.md).
+Informationen über anfallende Standard-Transaktionsgebühren auf dem Whippet-Netzwerk finden Sie unter [Transaktionsgebühren](doc/fee-recommendation.md).
  
 ## Verwendung 💻
  
-Um Dogecoin Core zu verwenden, sehen Sie sich Bitte die [Installations-Anleitung](INSTALL.md) und das [Einstiegstutorial](doc/getting-started.md) an.
+Um Whippet Core zu verwenden, sehen Sie sich Bitte die [Installations-Anleitung](INSTALL.md) und das [Einstiegstutorial](doc/getting-started.md) an.
  
-Die in Dogecoin Core enthaltene JSON-RPC-API ist selbstdokumentiert und kann mit dem Befehl `dogecoin-cli help` eingesehen werden. Detailliertere Informationen zu jedem Befehl finden Sie unter `dogecoin-cli help <command>`.
+Die in Whippet Core enthaltene JSON-RPC-API ist selbstdokumentiert und kann mit dem Befehl `whippet-cli help` eingesehen werden. Detailliertere Informationen zu jedem Befehl finden Sie unter `whippet-cli help <command>`.
  
 ### Viele Ports
 
-Dogecoin Core verwendet den Port `22556` als Standart-Port zur Kommunikation
+Whippet Core verwendet den Port `33666` als Standart-Port zur Kommunikation
 mit dem Peer-to-Peer Netzwerk und um die "Mainnet" Blockchain zu synchronisieren.
 Dies ist notwendig um über neue Transaktionen und Blöcke informiert zu bleiben.
-Zusätzlich kann ein JSON-RPC-Port geöffnet werden, welcher den Port `22555` als Standart-Port für Mainnet-Nodes verwendet.
+Zusätzlich kann ein JSON-RPC-Port geöffnet werden, welcher den Port `33665` als Standart-Port für Mainnet-Nodes verwendet.
 
 **Es wird STRENGSTENS davon abgeraten, RPC-Ports im öffentlichen Internet sichtbar zu machen!**
 
 | Funktion | mainnet | testnet | regtest |
 | :------- | ------: | ------: | ------: |
-| P2P      |   22556 |   44556 |   18444 |
-| RPC      |   22555 |   44555 |   18332 |
+| P2P      |   33666 |   44556 |   18444 |
+| RPC      |   33665 |   44555 |   18332 |
 
 ## Laufende Entwicklungen - Fahrplan zum Mond 🌒
 
-Dogecoin Core ist eine Open-Source-Software und wird von der Community entwickelt.
+Whippet Core ist eine Open-Source-Software und wird von der Community entwickelt.
 Der Entwicklungsprozess ist transparent und öffentlich einsehbar; jeder kann ihn sehen, darüber diskutieren und daran teilhaben!
 
 Die wichtigsten Entwicklungsressourcen:
 
-* [GitHub Projekte](https://github.com/dogecoin/dogecoin/projects) 
+* [GitHub Projekte](https://github.com/whippet/whippet/projects) 
   Wird verwendet, um den bereits geplanten und derzeit in Entwicklung befindlichen Releases zu folgen.
-* [GitHub Diskussionen](https://github.com/dogecoin/dogecoin/discussions)
-  Wird verwendet, um geplante und ungeplante Funktionen (Features) zu diskutieren, die sich auf die Entwicklung der Dogecoin Core-Software, die zugrunde liegenden Protokolle und das DOGE-Asset beziehen.
+* [GitHub Diskussionen](https://github.com/whippet/whippet/discussions)
+  Wird verwendet, um geplante und ungeplante Funktionen (Features) zu diskutieren, die sich auf die Entwicklung der Whippet Core-Software, die zugrunde liegenden Protokolle und das WHT-Asset beziehen.
 
 ### Versionsstrategie
 
@@ -65,17 +65,17 @@ Es gibt 4 Arten von sog. "Branches" (Unterverzweigungen) in diesem Repository:
 
 ## Beitragen 🤝
  
-Falls Sie einen Fehler oder Probleme beim Verwenden dieser Software finden, melden Sie diese über das vorhandene [Ticket System](https://github.com/dogecoin/dogecoin/issues/new?assignees=&labels=bug&template=bug_report.md&title=%5Bbug%5D+).
+Falls Sie einen Fehler oder Probleme beim Verwenden dieser Software finden, melden Sie diese über das vorhandene [Ticket System](https://github.com/whippet/whippet/issues/new?assignees=&labels=bug&template=bug_report.md&title=%5Bbug%5D+).
  
-Wenn Sie an der Mithilfe oder der Entwicklung von Dogecoin Core interessiert sind, sehen Sie sich bitte den [Beitragsleitfaden](CONTRIBUTING.md) an.
-Oft gibt es Themen, die [Hilfe](https://github.com/dogecoin/dogecoin/labels/help%20wanted) benötigen. Ihr Beitrag könnte einen hohen Stellenwert haben und wird daher auch sehr geschätzt.
+Wenn Sie an der Mithilfe oder der Entwicklung von Whippet Core interessiert sind, sehen Sie sich bitte den [Beitragsleitfaden](CONTRIBUTING.md) an.
+Oft gibt es Themen, die [Hilfe](https://github.com/whippet/whippet/labels/help%20wanted) benötigen. Ihr Beitrag könnte einen hohen Stellenwert haben und wird daher auch sehr geschätzt.
  
 ## Oftmals gestellte Fragen: ❓
  
-Haben Sie eine Frage zu Dogecoin? Eine Antwort könnte vielleicht bereits in der [FAQ](doc/FAQ.md) oder im
-[Q&A](https://github.com/dogecoin/dogecoin/discussions/categories/q-a) hier auf Github vorhanden sein!
+Haben Sie eine Frage zu Whippet? Eine Antwort könnte vielleicht bereits in der [FAQ](doc/FAQ.md) oder im
+[Q&A](https://github.com/whippet/whippet/discussions/categories/q-a) hier auf Github vorhanden sein!
  
 ## Lizenz ⚖️
  
-Dogecoin Core wird unter den Bedingungen der MIT-Lizenz veröffentlicht.
+Whippet Core wird unter den Bedingungen der MIT-Lizenz veröffentlicht.
 Siehe: [COPYING](COPYING) für mehr Informationen.

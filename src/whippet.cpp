@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2022 The Dogecoin Core developers
+// Copyright (c) 2013-2026 The Dogecoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -7,11 +7,11 @@
 
 #include "policy/policy.h"
 #include "arith_uint256.h"
-#include "dogecoin.h"
+#include "whippet.h"
 #include "txmempool.h"
 #include "util.h"
 #include "validation.h"
-#include "dogecoin-fees.h"
+#include "whippet-fees.h"
 
 int static generateMTRandom(unsigned int s, int range)
 {
@@ -20,7 +20,7 @@ int static generateMTRandom(unsigned int s, int range)
     return dist(gen);
 }
 
-// Dogecoin: Normally minimum difficulty blocks can only occur in between
+// Whippet: Normally minimum difficulty blocks can only occur in between
 // retarget blocks. However, once we introduce Digishield every block is
 // a retarget, so we need to handle minimum difficulty on all blocks.
 bool AllowDigishieldMinDifficultyForBlock(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
@@ -38,7 +38,7 @@ bool AllowDigishieldMinDifficultyForBlock(const CBlockIndex* pindexLast, const C
     return (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing*2);
 }
 
-unsigned int CalculateDogecoinNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params& params)
+unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params& params)
 {
     int nHeight = pindexLast->nHeight + 1;
     const int64_t retargetTimespan = params.nPowTargetTimespan;
@@ -47,7 +47,60 @@ unsigned int CalculateDogecoinNextWorkRequired(const CBlockIndex* pindexLast, in
     int64_t nMaxTimespan;
     int64_t nMinTimespan;
 
-    if (params.fDigishieldDifficultyCalculation) //DigiShield implementation - thanks to RealSolid & WDC for this code
+    if (params.fLWMADifficultyCalculation) // LWMA difficulty adjustment
+    {
+        // Need at least 2 blocks for LWMA
+        if (pindexLast->nHeight < 1 || !pindexLast->pprev) {
+            return pindexLast->nBits;
+        }
+
+        // LWMA (Linearly Weighted Moving Average) - more responsive than Digishield
+        const int64_t T = params.nPowTargetSpacing;
+        const int64_t N = params.DifficultyAdjustmentInterval();
+        const int64_t k = N * (N + 1) * T / 2;
+        const int64_t height = pindexLast->nHeight;
+
+        arith_uint256 sum_target;
+        int64_t sum_time = 0;
+        int64_t j = 0;
+        const CBlockIndex* block = pindexLast;
+
+        // Sum weighted solve times and targets
+        for (int64_t i = height; i > height - N && i > 0; i--) {
+            if (!block || !block->pprev)
+                break;
+
+            int64_t solvetime = block->GetBlockTime() - block->pprev->GetBlockTime();
+
+            // Clamp solve times to reasonable range
+            if (solvetime > T * 6)
+                solvetime = T * 6;
+            if (solvetime < -6 * T)
+                solvetime = T / 6;
+
+            j++;
+            sum_time += solvetime * j;
+
+            arith_uint256 target;
+            target.SetCompact(block->nBits);
+            sum_target += target / (k * N);
+
+            block = block->pprev;
+        }
+
+        if (j < N - 1)
+            return pindexLast->nBits; // Not enough blocks yet
+
+        // Calculate new target: next_target = avg_target * sum_time / k
+        arith_uint256 next_target = sum_target * sum_time;
+
+        const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
+        if (next_target > bnPowLimit)
+            next_target = bnPowLimit;
+
+        return next_target.GetCompact();
+    }
+    else if (params.fDigishieldDifficultyCalculation) //DigiShield implementation - thanks to RealSolid & WDC for this code
     {
         // amplitude filter - thanks to daft27 for this code
         nModulatedTimespan = retargetTimespan + (nModulatedTimespan - retargetTimespan) / 8;
@@ -124,7 +177,7 @@ bool CheckAuxPowProofOfWork(const CBlockHeader& block, const Consensus::Params& 
     return true;
 }
 
-CAmount GetDogecoinBlockSubsidy(int nHeight, const Consensus::Params& consensusParams, uint256 prevHash)
+CAmount GetWhippetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams, uint256 prevHash)
 {
     int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
 

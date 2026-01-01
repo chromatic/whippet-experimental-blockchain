@@ -207,9 +207,12 @@ BOOST_AUTO_TEST_CASE(sighash_from_data)
           BOOST_ERROR("Bad test, couldn't deserialize data: " << strTest);
           continue;
         }
-
         sh = SignatureHash(scriptCode, *tx, nIn, nHashType, 0, SIGVERSION_BASE);
-        BOOST_CHECK_MESSAGE(sh.GetHex() == sigHashHex, strTest);
+        const std::string hash_hex = sh.GetHex();
+        if (hash_hex != sigHashHex) {
+            std::cerr << "sighash mismatch expected=" << sigHashHex << " actual=" << hash_hex << std::endl;
+        }
+        BOOST_CHECK_MESSAGE(hash_hex == sigHashHex, strTest << " got " << hash_hex);
     }
 }
 BOOST_AUTO_TEST_SUITE_END()

@@ -1,37 +1,37 @@
 <h1 align="center">
-<img src="https://raw.githubusercontent.com/dogecoin/dogecoin/master/share/pixmaps/dogecoin256.svg" alt="Dogecoin" width="256"/>
+<img src="https://raw.githubusercontent.com/whippet/whippet/master/share/pixmaps/whippet256.svg" alt="Whippet" width="256"/>
 <br/><br/>
-Dogecoin Core [DOGE, Ð]  
+Whippet Core [WHT, Ð]  
 </h1>
 
-Dogecoin é uma criptomoeda gerida pela comunidade que foi inspirada no meme Shiba Inu. O programa Dogecoin Core permite qualquer um operar um nó na rede blockchain da Dogecoin e utilizar o algoritmo de hash Scrypt para mineração usando Prova de Trabalho (Proof of Work). O Dogecoin Core é uma adaptação do Bitcoin Core e de outras criptomoedas.
+Whippet é uma criptomoeda gerida pela comunidade que foi inspirada no meme Shiba Inu. O programa Whippet Core permite qualquer um operar um nó na rede blockchain da Whippet e utilizar o algoritmo de hash Scrypt para mineração usando Prova de Trabalho (Proof of Work). O Whippet Core é uma adaptação do Bitcoin Core e de outras criptomoedas.
 
-Para maiores informações acerca das taxas de transação usadas na rede Dogecoin, por favor acesse: 
+Para maiores informações acerca das taxas de transação usadas na rede Whippet, por favor acesse: 
 [taxas recomendadas](doc/fee-recommendation.md).
 
 ## Uso 💻
 
-Para começar a sua jornada com o Dogecoin Core, veja o [manual de instalação](INSTALL.md) e o [guia para iniciantes](doc/getting-started.md).
+Para começar a sua jornada com o Whippet Core, veja o [manual de instalação](INSTALL.md) e o [guia para iniciantes](doc/getting-started.md).
 
-A API JSON-RPC fornecida pelo Dogecoin Core é auto documentada e pode ser buscada pelo comando `dogecoin-cli help`, informações mais detalhadas sobre cada comando podem ser encontradas usando `dogecoin-cli help <command>`.
+A API JSON-RPC fornecida pelo Whippet Core é auto documentada e pode ser buscada pelo comando `whippet-cli help`, informações mais detalhadas sobre cada comando podem ser encontradas usando `whippet-cli help <command>`.
 
 ### Quais as portas
 
-A Dogecoin Core utiliza por padrão a porta `22556` para comunicação par-a-par, que é necessária para sincronizar a blockchain da "rede principal" e se manter informada de novas transações e blocos. Outrosim, uma porta JSONRPC pode ser aberta, que por padrão é a porta `22555` para nós da rede principal. Recomendamos fortemente não expor portas RPC para a internet pública. 
+A Whippet Core utiliza por padrão a porta `33666` para comunicação par-a-par, que é necessária para sincronizar a blockchain da "rede principal" e se manter informada de novas transações e blocos. Outrosim, uma porta JSONRPC pode ser aberta, que por padrão é a porta `33665` para nós da rede principal. Recomendamos fortemente não expor portas RPC para a internet pública. 
 
 |  Função  | mainnet | testnet | regtest |
 | :------- | ------: | ------: | ------: |
-| P2P      |   22556 |   44556 |   18444 |
-| RPC      |   22555 |   44555 |   18332 |
+| P2P      |   33666 |   44556 |   18444 |
+| RPC      |   33665 |   44555 |   18332 |
 
 ## Desenvolvimento continuo - Plano Lua 🌒
 
-A Dogecoin Core é um programa de código aberto gerido pela comunidade. O processo de desenvolvimento é aberto e visivel publicamente; qualquer um pode ver, discutir e trabalhar no programa.
+A Whippet Core é um programa de código aberto gerido pela comunidade. O processo de desenvolvimento é aberto e visivel publicamente; qualquer um pode ver, discutir e trabalhar no programa.
 
 Recursos principais de Desenvolvimento:
 
-* [Projetos do Github](https://github.com/dogecoin/dogecoin/projects) é utilizado para conduzir trabalhos planejados ou que estejam em desenvolvimento para as próximas atualizações.
-* [Discussão do Github](https://github.com/dogecoin/dogecoin/discussions) é usado para discutir sobre funcionalidades, planejadas ou não, relacionadas ao desenvolvimento do programa Dogecoin Core, os protocolos adjacentes e o criptoativo DOGE.
+* [Projetos do Github](https://github.com/whippet/whippet/projects) é utilizado para conduzir trabalhos planejados ou que estejam em desenvolvimento para as próximas atualizações.
+* [Discussão do Github](https://github.com/whippet/whippet/discussions) é usado para discutir sobre funcionalidades, planejadas ou não, relacionadas ao desenvolvimento do programa Whippet Core, os protocolos adjacentes e o criptoativo WHT.
 
 ### Estratégia das Versões
 Os numeros de compilação seguem a seguinte semantica:  ```major.minor.patch```
@@ -50,19 +50,19 @@ Este repositório possui 3 principais ramificações (branchs), são essas:
 
 ## Contribuindo 🤝
 
-Se você achar um bug ou passar por alguma experiência incomum com este programa, por favor reporte o ocorrido usado o [sistema de problemas (issues)](https://github.com/dogecoin/dogecoin/issues/new?assignees=&labels=bug&template=bug_report.md&title=%5Bbug%5D+).
+Se você achar um bug ou passar por alguma experiência incomum com este programa, por favor reporte o ocorrido usado o [sistema de problemas (issues)](https://github.com/whippet/whippet/issues/new?assignees=&labels=bug&template=bug_report.md&title=%5Bbug%5D+).
 
 Por favor, acesse o [guia de contribuições](CONTRIBUTING.md) para ver como você pode participar
-do desenvolvimento do Dogecoin Core. Existem alguns [pedidos de ajuda](https://github.com/dogecoin/dogecoin/labels/help%20wanted)
+do desenvolvimento do Whippet Core. Existem alguns [pedidos de ajuda](https://github.com/whippet/whippet/labels/help%20wanted)
 onde os contribuintes terão grande importância e apreço. wow.
 
 ## Perguntas frequentes ❓
 
-Você possui alguma questão relacionada à Dogecoin? Talvez uma resposta já esteja disponivel no
+Você possui alguma questão relacionada à Whippet? Talvez uma resposta já esteja disponivel no
 [FAQ](doc/FAQ.md) ou na
-[seção Q&A](https://github.com/dogecoin/dogecoin/discussions/categories/q-a)
+[seção Q&A](https://github.com/whippet/whippet/discussions/categories/q-a)
 do nosso quadro de discussão!
 
 ## Licenças ⚖️
-Dogecoin Core é disponibilizada sob os termos de uso da licença MIT. Veja,
+Whippet Core é disponibilizada sob os termos de uso da licença MIT. Veja,
 [COPYING](COPYING) para mais informações.

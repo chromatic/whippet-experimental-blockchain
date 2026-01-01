@@ -1,6 +1,6 @@
 [Protocol]
-exec=dogecoin-qt '%u'
-protocol=dogecoin
+exec=whippet-qt '%u'
+protocol=whippet
 input=none
 output=none
 helper=true

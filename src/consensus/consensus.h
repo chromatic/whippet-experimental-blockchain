@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2016 The Bitcoin Core developers
-// Copyright (c) 2018-2022 The Dogecoin Core developers
+// Copyright (c) 2013-2026 The Dogecoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -17,6 +17,12 @@ static const unsigned int MAX_BLOCK_WEIGHT = 4000000;
 static const unsigned int MAX_BLOCK_BASE_SIZE = 1000000;
 /** The maximum allowed number of signature check operations in a block (network rule) */
 static const int64_t MAX_BLOCK_SIGOPS_COST = 80000;
+
+/**
+ * Hard minimum gap (in seconds) between consecutive block timestamps on
+ * networks that opt in. Set the per-network value to zero to disable.
+ */
+static const int64_t MIN_CONSENSUS_BLOCK_SPACING = 6;
 
 /** Flags for nSequence and nLockTime locks */
 enum {

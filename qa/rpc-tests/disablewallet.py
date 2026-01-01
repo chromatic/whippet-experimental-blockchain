@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2015-2016 The Bitcoin Core developers
-# Copyright (c) 2018-2022 The Dogecoin Core developers
+# Copyright (c) 2013-2026 The Dogecoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -26,14 +26,14 @@ class DisableWalletTest (BitcoinTestFramework):
 
     def run_test (self):
         # Check regression: https://github.com/bitcoin/bitcoin/issues/6963#issuecomment-154548880
-        x = self.nodes[0].validateaddress('D8dhKpPmW3L86B3Ej1bCuBSLLNN1QWqD2B')
+        x = self.nodes[0].validateaddress('D8dhKpPmW3L86B3Ej1bCuBSLLNN1QWqD2B')  # Dogecoin address (invalid for Whippet)
         assert(x['isvalid'] == False)
-        x = self.nodes[0].validateaddress('mnT5rNQSpWrjbFCup6nHKXSYsPsJwq5Ag5')
+        x = self.nodes[0].validateaddress('WVcASF5VqfFSWmuctA8Atm6exE5Tt6yLXH')  # Whippet address (valid)
         assert(x['isvalid'] == True)
 
         # Checking mining to an address without a wallet
         try:
-            self.nodes[0].generatetoaddress(1, 'mnT5rNQSpWrjbFCup6nHKXSYsPsJwq5Ag5')
+            self.nodes[0].generatetoaddress(1, 'WVcASF5VqfFSWmuctA8Atm6exE5Tt6yLXH')  # Whippet address
         except JSONRPCException as e:
             assert("Invalid address" not in e.error['message'])
             assert("ProcessNewBlock, block not accepted" not in e.error['message'])

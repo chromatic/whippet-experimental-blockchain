@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2017-2019 The Bitcoin Core developers
-# Copyright (c) 2023 The Dogecoin Core developers
+# Copyright (c) 2013-2026 The Dogecoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -55,7 +55,7 @@ class GetblockstatsTest(BitcoinTestFramework):
         return self.nodes[0].getblockstats(hash=blockhash, stats=stats)
 
     def generate_test_data(self, filename):
-        mocktime = 1525107225
+        mocktime = 1767375000  # Jan 2, 2026 - after genesis
         self.nodes[0].setmocktime(mocktime)
         self.nodes[0].generate(241)
 

@@ -1,9 +1,9 @@
-name: dogecoin-core
+name: whippet-core
 # Running 'snapcraft register <name>' is advised
 version: '1.14.6'
-summary: Reference client of Dogecoin, a peer-to-peer digital currency like Bitcoin.
+summary: Reference client of Whippet, a peer-to-peer digital currency like Bitcoin.
 description: |
-  Dogecoin is a community-driven cryptocurrency that was inspired by a Shiba Inu meme. The Dogecoin Core software allows anyone to operate a node in the Dogecoin blockchain networks and uses the Scrypt hashing method for Proof of Work. It is adapted from Bitcoin Core and other cryptocurrencies.
+  Whippet is a community-driven cryptocurrency that was inspired by a Shiba Inu meme. The Whippet Core software allows anyone to operate a node in the Whippet blockchain networks and uses the Scrypt hashing method for Proof of Work. It is adapted from Bitcoin Core and other cryptocurrencies.
 
 grade: stable
 confinement: strict
@@ -19,29 +19,29 @@ architectures:
 
 apps:
   d:
-    command: dogecoind
+    command: whippetd
     plugs: [home, removable-media, network, network-bind]
     environment:
-      # Override HOME so the datadir is located at ~/snap/dogecoin-core/common/.dogecoin/ instead of ~/snap/dogecoin-core/current/.dogecoin/, and each new version of the snap won't have a different data directory: https://docs.snapcraft.io/environment-variables/7983
+      # Override HOME so the datadir is located at ~/snap/whippet-core/common/.whippet/ instead of ~/snap/whippet-core/current/.whippet/, and each new version of the snap won't have a different data directory: https://docs.snapcraft.io/environment-variables/7983
       HOME: $SNAP_USER_COMMON
   qt:
-    command: desktop-launch dogecoin-qt
+    command: desktop-launch whippet-qt
     plugs: [home, removable-media, network, network-bind, desktop, x11, unity7]
     environment:
       HOME: $SNAP_USER_COMMON
       DISABLE_WAYLAND: 1
   cli:
-    command: dogecoin-cli
+    command: whippet-cli
     plugs: [home, removable-media, network]
     environment:
       HOME: $SNAP_USER_COMMON
   tx:
-    command: dogecoin-tx
+    command: whippet-tx
     plugs: [home, removable-media, network]
     environment:
       HOME: $SNAP_USER_COMMON
   test:
-    command: test_dogecoin
+    command: test_whippet
     plugs: [home, removable-media, network]
     environment:
       HOME: $SNAP_USER_COMMON
@@ -76,48 +76,48 @@ parts:
       - xdg-user-dirs
       - fcitx-frontend-qt5
 
-  dogecoin-core:
+  whippet-core:
     plugin: nil
     override-build: |
-      echo "This script is viewable at https://github.com/dogecoin/dogecoin/blob/master/contrib/snap/snapcraft.yaml"
+      echo "This script is viewable at https://github.com/whippet/whippet/blob/master/contrib/snap/snapcraft.yaml"
       echo "Downloading files..."
-      if [ "$SNAPCRAFT_ARCH_TRIPLET" = "i386-linux-gnu" ]; then # snap designates 32-bit as i386, but dogecoin designates it as i686
+      if [ "$SNAPCRAFT_ARCH_TRIPLET" = "i386-linux-gnu" ]; then # snap designates 32-bit as i386, but whippet designates it as i686
         BUILD_ARCH_TRIPLET=i686-pc-linux-gnu
       else
         BUILD_ARCH_TRIPLET=$SNAPCRAFT_ARCH_TRIPLET
       fi
-      wget https://github.com/dogecoin/dogecoin/releases/download/v${SNAPCRAFT_PROJECT_VERSION}/dogecoin-${SNAPCRAFT_PROJECT_VERSION}-${BUILD_ARCH_TRIPLET}.tar.gz
-      wget https://github.com/dogecoin/gitian.sigs/archive/refs/heads/master.tar.gz
+      wget https://github.com/whippet/whippet/releases/download/v${SNAPCRAFT_PROJECT_VERSION}/whippet-${SNAPCRAFT_PROJECT_VERSION}-${BUILD_ARCH_TRIPLET}.tar.gz
+      wget https://github.com/whippet/gitian.sigs/archive/refs/heads/master.tar.gz
       tar -xvf master.tar.gz
       echo "Verifying secure hash matches signed values..."
-      checksum=$(sha256sum dogecoin-${SNAPCRAFT_PROJECT_VERSION}-${BUILD_ARCH_TRIPLET}.tar.gz)
-      if ! (grep -r $checksum * | grep dogecoin-${SNAPCRAFT_PROJECT_VERSION}-${BUILD_ARCH_TRIPLET}.tar.gz); then
+      checksum=$(sha256sum whippet-${SNAPCRAFT_PROJECT_VERSION}-${BUILD_ARCH_TRIPLET}.tar.gz)
+      if ! (grep -r $checksum * | grep whippet-${SNAPCRAFT_PROJECT_VERSION}-${BUILD_ARCH_TRIPLET}.tar.gz); then
         echo "Secure hash not verified."
         return
       else
         echo "Secure hash verified."
       fi
-      tar -xvf dogecoin-${SNAPCRAFT_PROJECT_VERSION}-${BUILD_ARCH_TRIPLET}.tar.gz
+      tar -xvf whippet-${SNAPCRAFT_PROJECT_VERSION}-${BUILD_ARCH_TRIPLET}.tar.gz
       echo "Running tests..."
-      if ! (dogecoin-${SNAPCRAFT_PROJECT_VERSION}/bin/test_dogecoin); then
-        echo "Dogecoin tests failed."
+      if ! (whippet-${SNAPCRAFT_PROJECT_VERSION}/bin/test_whippet); then
+        echo "Whippet tests failed."
         return
       else
-        echo "Dogecoin tests passed."
+        echo "Whippet tests passed."
       fi
-      wget https://raw.githubusercontent.com/dogecoin/dogecoin/v${SNAPCRAFT_PROJECT_VERSION}/doc/release-notes.md
+      wget https://raw.githubusercontent.com/whippet/whippet/v${SNAPCRAFT_PROJECT_VERSION}/doc/release-notes.md
       cat release-notes.md
-      echo "Installing Dogecoin Core..."
+      echo "Installing Whippet Core..."
       echo "Version ${SNAPCRAFT_PROJECT_VERSION}"
-      install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin dogecoin-${SNAPCRAFT_PROJECT_VERSION}/bin/dogecoind
-      if ! ([ "$BUILD_ARCH_TRIPLET" = "aarch64-linux-gnu" ]); then # there is no official dogecoin-qt build on arm64
-        install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin dogecoin-${SNAPCRAFT_PROJECT_VERSION}/bin/dogecoin-qt
+      install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin whippet-${SNAPCRAFT_PROJECT_VERSION}/bin/whippetd
+      if ! ([ "$BUILD_ARCH_TRIPLET" = "aarch64-linux-gnu" ]); then # there is no official whippet-qt build on arm64
+        install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin whippet-${SNAPCRAFT_PROJECT_VERSION}/bin/whippet-qt
       fi
-      install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin dogecoin-${SNAPCRAFT_PROJECT_VERSION}/bin/dogecoin-cli
-      install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin dogecoin-${SNAPCRAFT_PROJECT_VERSION}/bin/dogecoin-tx
-      install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin dogecoin-${SNAPCRAFT_PROJECT_VERSION}/bin/test_dogecoin
-      wget https://raw.githubusercontent.com/dogecoin/dogecoin/master/share/pixmaps/dogecoin128.png
-      install -m 0644 -D -t $SNAPCRAFT_PART_INSTALL/share/pixmaps dogecoin128.png
+      install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin whippet-${SNAPCRAFT_PROJECT_VERSION}/bin/whippet-cli
+      install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin whippet-${SNAPCRAFT_PROJECT_VERSION}/bin/whippet-tx
+      install -m 0755 -D -t $SNAPCRAFT_PART_INSTALL/bin whippet-${SNAPCRAFT_PROJECT_VERSION}/bin/test_whippet
+      wget https://raw.githubusercontent.com/whippet/whippet/master/share/pixmaps/whippet128.png
+      install -m 0644 -D -t $SNAPCRAFT_PART_INSTALL/share/pixmaps whippet128.png
     build-packages:
       - wget
     after:

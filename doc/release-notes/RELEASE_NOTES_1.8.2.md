@@ -19,7 +19,7 @@ Please refer to this section in the Bitcoin Core release notes for further info:
 
 Listed in strictly alphabetical order, using name listed in Github. This
 includes those whose contributions to Bitcoin Core have been merged
-into Dogecoin Core:
+into Whippet Core:
 
 * Cory Fields
 * langerhans

@@ -1,12 +1,12 @@
 [Desktop Entry]
-Name=Dogecoin Core
-Comment=Connect to the Dogecoin P2P Network
-Comment[de]=Verbinde mit dem Dogecoin peer-to-peer Netzwerk
-Comment[fr]=Dogecoin, monnaie virtuelle cryptographique pair à pair
-Comment[tr]=Dogecoin, eşten eşe kriptografik sanal para birimi
-Exec=dogecoin-qt %u
+Name=Whippet Core
+Comment=Connect to the Whippet P2P Network
+Comment[de]=Verbinde mit dem Whippet peer-to-peer Netzwerk
+Comment[fr]=Whippet, monnaie virtuelle cryptographique pair à pair
+Comment[tr]=Whippet, eşten eşe kriptografik sanal para birimi
+Exec=whippet-qt %u
 Terminal=false
 Type=Application
-Icon=dogecoin128
-MimeType=x-scheme-handler/dogecoin;
+Icon=whippet128
+MimeType=x-scheme-handler/whippet;
 Categories=Office;Finance;

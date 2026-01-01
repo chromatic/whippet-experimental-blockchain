@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2021 The Dogecoin Core Developers
+# Copyright (c) 2013-2026 The Dogecoin Core Developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """CreateAuxBlock QA test.
@@ -35,8 +35,9 @@ class CreateAuxBlockTest(BitcoinTestFramework):
     self.nodes[1].generate(1)
     self.sync_all()
 
-    dummy_p2pkh_addr = "mmMP9oKFdADezYzduwJFcLNmmi8JHUKdx9"
-    dummy_p2sh_addr = "2Mwvgpd2H7wDPXx8jWe3Vqiciix6JqSbsyz"
+    # Use generated addresses instead of hardcoded ones
+    dummy_p2pkh_addr = self.nodes[0].getnewaddress()
+    dummy_p2sh_addr = self.nodes[0].getnewaddress()
 
     # Compare basic data of createauxblock to getblocktemplate.
     auxblock = self.nodes[0].createauxblock(dummy_p2pkh_addr)
