@@ -1,25 +1,54 @@
 <h1 align="center">
-<img src="https://raw.githubusercontent.com/whippet/whippet/master/share/pixmaps/whippet256.svg" alt="Whippet" width="256"/>
+<img src="share/pixmaps/whippet256.svg" alt="Whippet" width="256"/>
 <br/><br/>
-Whippet Core [WHT, Ð]  
+Whippet Core [WHT, Ð]
 </h1>
-
-**IMPORTANT: Starting August 2024, the `master` branch has become the primary
-integration branch and has become unstable. Please check out a tagged version
-before compiling production binaries.**
 
 For internationalized documentation, see the index at [doc/intl](doc/intl/README.md).
 
-Whippet is a community-driven cryptocurrency that was inspired by a Shiba Inu meme. The Whippet Core software allows anyone to operate a node in the Whippet blockchain networks and uses the Scrypt hashing method for Proof of Work. It is adapted from Bitcoin Core and other cryptocurrencies.
+Whippet is a fork of Dogecoin intended to experiment with code and network
+changes around blocktime. It is not intended for anything else. The Whippet
+Core software allows anyone to operate a node in the Whippet blockchain
+networks and uses the Scrypt hashing method for Proof of Work. It is adapted
+from Bitcoin Core and other cryptocurrencies.
 
-For information about the default fees used on the Whippet network, please
-refer to the [fee recommendation](doc/fee-recommendation.md).
+### Experimental fork
 
-## Usage 💻
+This codebase is an experiment for a small, non-commercial network. It is
+**not** intended for exchange listings, token sales, or speculative trading.
+Use it if you want to explore the protocol, run a node, or mine on the
+experimental network; do not treat it as production or investment software.
 
-To start your journey with Whippet Core, see the [installation guide](INSTALL.md) and the [getting started](doc/getting-started.md) tutorial.
+## Build and run
 
-The JSON-RPC API provided by Whippet Core is self-documenting and can be browsed with `whippet-cli help`, while detailed information for each command can be viewed with `whippet-cli help <command>`.
+**Docker (recommended):**
+
+```
+docker build -f Dockerfile.ubuntu24.04 -t whippet-ubuntu24 .
+docker run --rm -u $(id -u):$(id -g) -v "$PWD:/src" -v /tmp/whippet-ccache:/root/.ccache -v /tmp/whippet-build:/build whippet-ubuntu24
+ls -lh /tmp/whippet-build/whippetd /tmp/whippet-build/whippet-cli
+```
+
+**Native build (Linux):**
+
+```
+./autogen.sh
+./configure
+make -j$(nproc)
+```
+
+**Run a node (mainnet defaults):**
+
+```
+./src/whippetd -daemon
+./src/whippet-cli getblockchaininfo
+```
+
+The JSON-RPC API is self-documenting and can be browsed with `whippet-cli help`, while detailed information for each command can be viewed with `whippet-cli help <command>`.
+
+## Mining
+
+To contribute blocks to the network, see [contrib/mining](contrib/mining/) for mining tools and instructions.
 
 ### Such ports
 
@@ -34,56 +63,26 @@ expose RPC ports to the public internet.
 | P2P      |   33666 |   44556 |   18444 |
 | RPC      |   33665 |   44555 |   18332 |
 
-## Ongoing development - Moon plan 🌒
+## Ongoing development
 
-Whippet Core is an open source and community driven software. The development
-process is open and publicly visible; anyone can see, discuss and work on the
-software.
+This is an experiment. There are no plans to make this anything else. This code
+may change. There may be no consensus. There may be forks. The network may be
+offline for long periods of time, perhaps for good.
 
-Main development resources:
+## Very Much Frequently Asked Questions
 
-* [GitHub Projects](https://github.com/whippet/whippet/projects) is used to
-  follow planned and in-progress work for upcoming releases.
-* [GitHub Discussions](https://github.com/whippet/whippet/discussions) is used
-  to discuss features, planned and unplanned, related to both the development of
-  the Whippet Core software, the underlying protocols and the WHT asset.
+What's the point? Three things:
 
-### Version strategy
-Version numbers are following ```major.minor.patch``` semantics.
-
-### Branches
-There are 4 types of branches in this repository:
-
-- **master:** Unstable, contains the latest code under development.
-- **maintenance:** Stable, contains the latest version of previous releases,
-  which are still under active maintenance. Format: ```<version>-maint```
-- **development:** Unstable, contains new code for upcoming releases. Format: ```<version>-dev```
-- **archive:** Stable, immutable branches for old versions that no longer change
-  because they are no longer maintained.
-
-***Submit your pull requests against `master`***
-
-*Maintenance branches are exclusively mutable by release. When a release is*
-*planned, a development branch will be created and commits from master will*
-*be cherry-picked into these by maintainers.*
-
-## Contributing 🤝
-
-If you find a bug or experience issues with this software, please report it
-using the [issue system](https://github.com/whippet/whippet/issues/new?assignees=&labels=bug&template=bug_report.md&title=%5Bbug%5D+).
-
-Please see [the contribution guide](CONTRIBUTING.md) to see how you can
-participate in the development of Whippet Core. There are often
-[topics seeking help](https://github.com/whippet/whippet/labels/help%20wanted)
-where your contributions will have high impact and get very appreciation. wow.
-
-## Very Much Frequently Asked Questions ❓
+- to test a blocktime of 6 seconds (this is 10x faster than Dogecoin)
+- to test a minimum block time consensus rule (blocks must be at least 6
+  seconds apart)
+- to evaluate merge mining risks with a 6 second blocktime
 
 Do you have a question regarding Whippet? An answer is perhaps already in the
 [FAQ](doc/FAQ.md) or the
 [Q&A section](https://github.com/whippet/whippet/discussions/categories/q-a)
 of the discussion board!
 
-## License - Much license ⚖️
+## License
 Whippet Core is released under the terms of the MIT license. See
 [COPYING](COPYING) for more information.

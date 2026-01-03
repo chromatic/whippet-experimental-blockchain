@@ -13,11 +13,21 @@ BOOST_FIXTURE_TEST_SUITE(whippet_tests, TestingSetup)
 
 static CAmount ExpectedSimplifiedSubsidy(int height, const Consensus::Params& params)
 {
+    // Keep 500k rewards for blocks before the fix at 4500
+    if (height < 4500) {
+        const int halvings = height / params.nSubsidyHalvingInterval;
+        if (halvings < 6) {
+            return (500000 >> halvings) * COIN;
+        }
+        return 10000 * COIN;
+    }
+
+    // After block 4500, use 1/10th Dogecoin rewards (50k base)
     const int halvings = height / params.nSubsidyHalvingInterval;
     if (halvings < 6) {
-        return (500000 >> halvings) * COIN;
+        return (50000 >> halvings) * COIN;
     }
-    return 10000 * COIN;
+    return 1000 * COIN;
 }
 
 BOOST_AUTO_TEST_CASE(subsidy_first_100k_test)
@@ -28,7 +38,10 @@ BOOST_AUTO_TEST_CASE(subsidy_first_100k_test)
     for (int nHeight = 0; nHeight <= 100000; nHeight++) {
         const Consensus::Params& params = mainParams.GetConsensus(nHeight);
         CAmount nSubsidy = GetWhippetBlockSubsidy(nHeight, params, ArithToUint256(prevHash));
-        const CAmount maxReward = (1000000 >> (nHeight / params.nSubsidyHalvingInterval)) * COIN;
+        // Before block 4500: max 1M, after: max 100k (1/10th)
+        const CAmount maxReward = nHeight < 4500
+            ? (1000000 >> (nHeight / params.nSubsidyHalvingInterval)) * COIN
+            : (100000 >> (nHeight / params.nSubsidyHalvingInterval)) * COIN;
         BOOST_CHECK(MoneyRange(nSubsidy));
         BOOST_CHECK(nSubsidy <= maxReward);
         // Use nSubsidy to give us some variation in previous block hash, without requiring full block templates
@@ -44,7 +57,10 @@ BOOST_AUTO_TEST_CASE(subsidy_100k_145k_test)
     for (int nHeight = 100000; nHeight <= 145000; nHeight++) {
         const Consensus::Params& params = mainParams.GetConsensus(nHeight);
         CAmount nSubsidy = GetWhippetBlockSubsidy(nHeight, params, ArithToUint256(prevHash));
-        const CAmount maxReward = (1000000 >> (nHeight / params.nSubsidyHalvingInterval)) * COIN;
+        // Before block 4500: max 1M, after: max 100k (1/10th)
+        const CAmount maxReward = nHeight < 4500
+            ? (1000000 >> (nHeight / params.nSubsidyHalvingInterval)) * COIN
+            : (100000 >> (nHeight / params.nSubsidyHalvingInterval)) * COIN;
         BOOST_CHECK(MoneyRange(nSubsidy));
         BOOST_CHECK(nSubsidy <= maxReward);
         // Use nSubsidy to give us some variation in previous block hash, without requiring full block templates
@@ -83,7 +99,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_difficulty_limit)
 
     CBlockIndex pindexLast;
     int64_t nLastRetargetTime = 1386474927; // Block # 1
-    
+
     pindexLast.nHeight = 239;
     pindexLast.nTime = 1386475638; // Block #239
     pindexLast.nBits = 0x1e0ffff0;
@@ -94,7 +110,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_pre_digishield)
 {
     SelectParams(CBaseChainParams::MAIN);
     const Consensus::Params& params = Params().GetConsensus(0);
-    
+
     CBlockIndex pindexLast;
     int64_t nLastRetargetTime = 1386942008; // Block 9359
 
@@ -108,7 +124,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_digishield)
 {
     SelectParams(CBaseChainParams::MAIN);
     const Consensus::Params& params = Params().GetConsensus(145000);
-    
+
     CBlockIndex pindexLast;
     int64_t nLastRetargetTime = 1395094427;
 
@@ -124,7 +140,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_digishield_modulated_upper)
 {
     SelectParams(CBaseChainParams::MAIN);
     const Consensus::Params& params = Params().GetConsensus(145000);
-    
+
     CBlockIndex pindexLast;
     int64_t nLastRetargetTime = 1395100835;
 
@@ -140,7 +156,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_digishield_modulated_lower)
 {
     SelectParams(CBaseChainParams::MAIN);
     const Consensus::Params& params = Params().GetConsensus(145000);
-    
+
     CBlockIndex pindexLast;
     int64_t nLastRetargetTime = 1395380517;
 
@@ -157,7 +173,7 @@ BOOST_AUTO_TEST_CASE(get_next_work_digishield_rounding)
 {
     SelectParams(CBaseChainParams::MAIN);
     const Consensus::Params& params = Params().GetConsensus(145000);
-    
+
     CBlockIndex pindexLast;
     int64_t nLastRetargetTime = 1395094679;
 
