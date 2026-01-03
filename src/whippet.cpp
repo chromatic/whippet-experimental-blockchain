@@ -188,16 +188,19 @@ CAmount GetWhippetBlockSubsidy(int nHeight, const Consensus::Params& consensusPa
         const char* cseed = cseed_str.c_str();
         char* endp = NULL;
         long seed = strtol(cseed, &endp, 16);
-        CAmount maxReward = (1000000 >> halvings) - 1;
+        CAmount maxReward = (1000000 >> halvings) - 1;  // Original Dogecoin rewards
         int rand = generateMTRandom(seed, maxReward);
 
         return (1 + rand) * COIN;
+    } else if (nHeight < 4500) {
+        // Keep original 500k rewards for blocks mined before the fix
+        return (500000 * COIN) >> halvings;
     } else if (nHeight < (6 * consensusParams.nSubsidyHalvingInterval)) {
         // New-style constant rewards for each halving interval
-        return (500000 * COIN) >> halvings;
+        return (50000 * COIN) >> halvings;
     } else {
         // Constant inflation
-        return 10000 * COIN;
+        return 1000 * COIN;
     }
 }
 
