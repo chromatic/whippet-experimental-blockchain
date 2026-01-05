@@ -86,7 +86,8 @@ namespace GUIUtil {
 
 QString dateTimeStr(const QDateTime &date)
 {
-    return date.date().toString(Qt::SystemLocaleShortDate) + QString(" ") + date.toString("hh:mm");
+    // Show seconds so transaction times are precise in the overview list
+    return date.date().toString(Qt::SystemLocaleShortDate) + QString(" ") + date.toString("hh:mm:ss");
 }
 
 QString dateTimeStr(qint64 nTime)
