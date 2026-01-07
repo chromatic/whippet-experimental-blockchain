@@ -24,7 +24,7 @@ jobs:
       CACHE_NONCE: "1"
       WINEDEBUG: fixme-all
       WINEPREFIX: /tmp/wineprefix/
-      SDK_URL: https://depends.whippetcoincore.org
+      SDK_URL: https://depends.dogecoincore.org
 
     strategy:
       fail-fast: false

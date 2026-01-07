@@ -17,7 +17,6 @@ void URITests::uriTests()
     QVERIFY(!GUIUtil::parseBitcoinURI(uri, &rv));
 
     uri.setUrl(QString("whippet:WVGSSRbxecQ4PhMTCmNsuC1t2BEa1vzH3a?dontexist="));
-    qDebug() << "scheme:" << uri.scheme() << "host:" << uri.host() << "path:" << uri.path();
     QVERIFY(GUIUtil::parseBitcoinURI(uri, &rv));
     QCOMPARE(rv.address, QString("WVGSSRbxecQ4PhMTCmNsuC1t2BEa1vzH3a"));
     QVERIFY(rv.label == QString());
@@ -49,7 +48,6 @@ void URITests::uriTests()
 
     uri.setUrl(QString("whippet:WWbFn7iZqbYR56ceXiKuXs2UyYU2pRqewS?message=Wikipedia Example Address"));
     QVERIFY(GUIUtil::parseBitcoinURI(uri, &rv));
-    qDebug() << "message test address:" << rv.address;
     QCOMPARE(rv.address, QString("WWbFn7iZqbYR56ceXiKuXs2UyYU2pRqewS"));
     QVERIFY(rv.label == QString());
 
