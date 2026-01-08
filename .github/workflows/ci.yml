@@ -290,6 +290,13 @@ jobs:
           src/bench/bench_whippet > ${{ matrix.name }}-bench.csv
           cat ${{ matrix.name }}-bench.csv
 
+      - name:  Clear wallet cache
+        if:  ${{ matrix.test-script }}
+        run: |
+          rm -rf qa/cache || true
+          rm -rf /tmp/whippetd-test* || true
+          find .  -type d -name '.whippet' -exec rm -rf {} + || true
+
       - name: Run tests
         if: ${{ matrix.test-script }}
         run: ${{ matrix.test-script }}
