@@ -3748,7 +3748,7 @@ CWallet* CWallet::CreateWalletFromFile(const std::string walletFile)
             LogPrintf("Allowing wallet upgrade up to %i\n", nMaxVersion);
         if (nMaxVersion < walletInstance->GetVersion())
         {
-            InitError(_("Cannot downgrade wallet"));
+            InitError(strprintf(_("Cannot downgrade wallet: %s (nMaxVersion=%d, walletVersion=%d)"), walletFile, nMaxVersion, walletInstance->GetVersion()));
             return NULL;
         }
         walletInstance->SetMaxVersion(nMaxVersion);
