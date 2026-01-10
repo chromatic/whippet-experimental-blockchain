@@ -1,3 +1,26 @@
+def print_whippetd_diagnostics(cachedir):
+    import shutil
+    import glob
+    import subprocess
+    import sys
+    sys.stderr.write("==== whippetd diagnostics ====" + "\n")
+    # Find all whippetd in PATH
+    paths = os.environ.get("PATH", "").split(":")
+    seen = set()
+    for p in paths:
+        whippetd_path = os.path.join(p, "whippetd")
+        if os.path.isfile(whippetd_path) and os.access(whippetd_path, os.X_OK):
+            if whippetd_path in seen:
+                continue
+            seen.add(whippetd_path)
+            sys.stderr.write(f"whippetd: {whippetd_path}\n")
+            try:
+                out = subprocess.check_output([whippetd_path, "--version"], stderr=subprocess.STDOUT, universal_newlines=True, timeout=5)
+                sys.stderr.write(out.strip() + "\n")
+            except Exception as e:
+                sys.stderr.write(f"  (error running --version: {e})\n")
+    sys.stderr.write(f"cachedir: {cachedir}\n")
+    sys.stderr.write("==============================\n")
 #!/usr/bin/env python3
 # Copyright (c) 2014-2016 The Bitcoin Core developers
 # Copyright (c) 2013-2026 The Dogecoin Core developers
@@ -53,7 +76,7 @@ MOCKTIME = 0
 
 def enable_mocktime():
     #For backward compatibility of the python scripts
-    #with previous versions of the cache, set MOCKTIME  
+    #with previous versions of the cache, set MOCKTIME
     #to Jan 1, 2026 + (201 * 10 * 60) to match new genesis
     global MOCKTIME
     MOCKTIME = 1767254400 + (201 * 10 * 60)
@@ -234,6 +257,7 @@ def initialize_chain(test_dir, num_nodes, cachedir):
     Afterward, create num_nodes copies from the cache
     """
 
+    print_whippetd_diagnostics(cachedir)
     assert num_nodes <= MAX_NODES
     create_cache = False
     for i in range(MAX_NODES):
@@ -254,6 +278,7 @@ def initialize_chain(test_dir, num_nodes, cachedir):
             args = [ os.getenv("WHTCOIND", "whippetd"), "-server", "-keypool=1", "-datadir="+datadir, "-discover=0", "-regtest" ]
             if i > 0:
                 args.append("-connect=127.0.0.1:"+str(p2p_port(0)))
+            sys.stderr.write(f"[whippetd launch] datadir={datadir} args={' '.join(args)}\n")
             whippetd_processes[i] = subprocess.Popen(args)
             if os.getenv("PYTHON_DEBUG", ""):
                 print("initialize_chain: whippetd started, waiting for RPC to come up")
@@ -340,6 +365,7 @@ def start_node(i, dirname, extra_args=None, rpchost=None, timewait=None, binary=
         binary = os.getenv("WHTCOIND", "whippetd")
     args = [ binary, "-datadir="+datadir, "-server", "-keypool=1", "-discover=0", "-rest", "-regtest", "-mocktime="+str(get_mocktime()) ]
     if extra_args is not None: args.extend(extra_args)
+    sys.stderr.write(f"[whippetd launch] datadir={datadir} args={' '.join(args)}\n")
     whippetd_processes[i] = subprocess.Popen(args)
     if os.getenv("PYTHON_DEBUG", ""):
         print("start_node: whippetd started, waiting for RPC to come up")
