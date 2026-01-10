@@ -290,6 +290,11 @@ jobs:
           rm -rf /tmp/whippetd-test* || true
           find .  -type d -name '.whippet' -exec rm -rf {} + || true
 
+      - name: Clean cachedir and coveragedir
+        if: ${{ matrix.test-script }}
+        run: |
+          find qa/cache -mindepth 1 -delete || true
+          find /tmp -maxdepth 1 -type d -name 'coverage*' -exec rm -rf {} + || true
       - name: Run tests
         env:
           CACHE_NONCE: "${{ github.run_id }}"
