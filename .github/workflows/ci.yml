@@ -42,6 +42,7 @@ jobs:
             run-bench: true
             test-script: |
               make check $MAKEJOBS VERBOSE=1
+              rm -f wallet.dat || true
               qa/pull-tester/install-deps.sh
               qa/pull-tester/rpc-tests.py --coverage
             check-security: true
@@ -104,6 +105,7 @@ jobs:
             run-bench: true
             test-script: |
               make check $MAKEJOBS VERBOSE=1
+              rm -f wallet.dat || true
               qa/pull-tester/install-deps.sh
               qa/pull-tester/rpc-tests.py --coverage
             check-security: true
@@ -189,6 +191,7 @@ jobs:
             run-bench: true
             test-script: |
               make check $MAKEJOBS VERBOSE=1
+              rm -f wallet.dat || true
               qa/pull-tester/install-deps.sh
               qa/pull-tester/rpc-tests.py --coverage
             dep-opts: "AVX2=1"
