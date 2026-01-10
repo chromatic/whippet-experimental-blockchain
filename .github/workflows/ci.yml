@@ -298,6 +298,8 @@ jobs:
           find .  -type d -name '.whippet' -exec rm -rf {} + || true
 
       - name: Run tests
+        env:
+          CACHE_NONCE: "${{ github.run_id }}"
         if: ${{ matrix.test-script }}
         run: ${{ matrix.test-script }}
 
