@@ -322,7 +322,7 @@ if [[ $build == true ]]; then
 
     for descriptor in "${DESCRIPTORS[@]}"; do
         echo ""
-        echo "Compiling ${VERSION} ${descriptor}"
+        echo "Compiling ${VERSION} ${descriptor} (commit is $COMMIT, url is $url)"
         echo ""
         ./bin/gbuild -j "$proc" -m "$mem" --commit dogecoin="$COMMIT" --url dogecoin="$url" ../gitian-descriptors/gitian-"$descriptor".yml  || exit 1
 

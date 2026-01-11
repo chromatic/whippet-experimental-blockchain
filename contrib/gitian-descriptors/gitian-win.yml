@@ -27,6 +27,7 @@ packages:
 remotes:
 - "url": "https://github.com/chromatic/whippet-experimental-blockchain.git"
   "dir": "whippet"
+  "commit": "v1.0.0"
 files:
 - "lief-0.12.3-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 script: |
