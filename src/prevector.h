@@ -219,7 +219,7 @@ public:
         }
     }
 
-    prevector() : _size(0) {}
+    prevector() : _size(0), _union{} {}
 
     explicit prevector(size_type n) : _size(0) {
         resize(n);
@@ -254,7 +254,7 @@ public:
         }
     }
 
-    prevector(prevector<N, T, Size, Diff>&& other) : _size(0) {
+    prevector(prevector<N, T, Size, Diff>&& other) : _size(0), _union{} {
         swap(other);
     }
 
@@ -274,7 +274,11 @@ public:
     }
 
     prevector& operator=(prevector<N, T, Size, Diff>&& other) {
-        swap(other);
+        if (this != &other) {
+            _union = {};
+            _size = 0;
+            swap(other);
+        }
         return *this;
     }
 
