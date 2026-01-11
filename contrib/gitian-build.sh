@@ -36,7 +36,7 @@ test=false
 # Other Basic variables
 SIGNER=
 VERSION=
-url=https://github.com/dogecoin/dogecoin
+url=https://github.com/chromatic/whippet-experimental-blockchain
 proc=2
 mem=2000
 scriptName=$(basename -- "$0")
@@ -200,7 +200,7 @@ function download_file () {
 }
 
 function move_build_files() {
-    find build/out -type f -exec mv '{}' $outputDir/dogecoin-binaries/${VERSION}/ \;
+    find build/out -type f -exec mv '{}' $outputDir/whippet-binaries/${VERSION}/ \;
 }
 
 function download_descriptor() {
@@ -310,14 +310,14 @@ popd
 
 if [[ $build == true ]]; then
     # Make output folder
-    mkdir -p $outputDir/dogecoin-binaries/"$VERSION"
+    mkdir -p $outputDir/whippet-binaries/"$VERSION"
 
     pushd ./gitian-builder || exit 1
 
     # Clean dogecoin git directory because of old caching
-    if [ -d inputs/dogecoin/ ]; then
-        echo "Cleaning Dogecoin directory..."
-        rm -rf inputs/dogecoin/
+    if [ -d inputs/whippet/ ]; then
+        echo "Cleaning Whippet directory..."
+        rm -rf inputs/whippet/
     fi
 
     for descriptor in "${DESCRIPTORS[@]}"; do

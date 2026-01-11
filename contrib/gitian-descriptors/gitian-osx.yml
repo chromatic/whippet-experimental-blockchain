@@ -31,7 +31,7 @@ packages:
 - "libtinfo5"
 - "xorriso"
 remotes:
-- "url": "https://github.com/whippet/whippet.git"
+- "url": "https://github.com/chromatic/whippet-experimental-blockchain.git"
   "dir": "whippet"
 files:
 - "MacOSX10.11.sdk.tar.gz"
