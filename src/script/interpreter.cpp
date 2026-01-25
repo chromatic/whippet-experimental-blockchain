@@ -427,7 +427,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                 }
 
                 case OP_NOP1: case OP_NOP4: case OP_NOP5:
-                case OP_NOP6: case OP_NOP8: case OP_NOP9: case OP_NOP10:
+                case OP_NOP6: case OP_NOP9: case OP_NOP10:
                 {
                     if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
                         return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
@@ -1025,14 +1025,71 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                 }
                 break;
 
+
                 // UAP opcodes
+                case OP_INSPECT: {
+                    // ([index] selector -- value)
+                    if (stack.size() < 1)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    CScriptNum selector(stacktop(-1), fRequireMinimal);
+                    int sel = selector.getint();
+                    popstack(stack);
+                    switch (sel) {
+                        case 0: // version (legacy, no index)
+                            stack.push_back(CScriptNum(checker.GetVersion()).getvch());
+                            break;
+                        case 1: // input_index (legacy, no index)
+                            stack.push_back(CScriptNum(checker.GetInputIndex()).getvch());
+                            break;
+                        case 2: // input_count (legacy, no index)
+                            stack.push_back(CScriptNum(checker.GetInputCount()).getvch());
+                            break;
+                        case 3: // output_count (legacy, no index)
+                            stack.push_back(CScriptNum(checker.GetOutputCount()).getvch());
+                            break;
+                        case 10: // output nValue
+                        case 11: // output virtual balance
+                        case 12: // output scriptPubKey
+                        {
+                            // ([index] selector -- value)
+                            if (stack.size() < 1)
+                                return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                            CScriptNum indexnum(stacktop(-1), fRequireMinimal);
+                            int index = indexnum.getint();
+                            popstack(stack);
+                            const CTransaction* tx = nullptr;
+                            // Try to get tx from checker
+                            const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
+                            if (tchecker && tchecker->txTo) {
+                                tx = tchecker->txTo;
+                            }
+                            if (!tx || index < 0 || (unsigned int)index >= tx->vout.size()) {
+                                return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                            }
+                            const CTxOut& out = tx->vout[index];
+                            switch (sel) {
+                                case 10: // nValue
+                                    stack.push_back(CScriptNum(out.nValue).getvch());
+                                    break;
+                                case 11: // virtual balance (nValue * 1000 as placeholder)
+                                    stack.push_back(CScriptNum(out.nValue * 1000).getvch());
+                                    break;
+                                case 12: // scriptPubKey
+                                    stack.push_back(valtype(out.scriptPubKey.begin(), out.scriptPubKey.end()));
+                                    break;
+                            }
+                        }
+                        break;
+                        default:
+                            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+                }
+                break;
 
                 case OP_INSPECT_SELF:
-                {
-                    // Push the current scriptPubKey (locking script) onto the stack
-                    stack.push_back(std::vector<unsigned char>(script.begin(), script.end()));
+                    // Push the current scriptPubKey (the script argument) as a byte vector
+                    stack.push_back(valtype(script.begin(), script.end()));
                     break;
-                }
 
                 default:
                     return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
