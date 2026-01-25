@@ -172,7 +172,7 @@ enum opcodetype
     OP_NOP4 = 0xb3,
     OP_NOP5 = 0xb4,
     OP_NOP6 = 0xb5,
-    OP_NOP7 = 0xb6,
+    OP_INSPECT_SELF = 0xb6,
     OP_NOP8 = 0xb7,
     OP_NOP9 = 0xb8,
     OP_NOP10 = 0xb9,
