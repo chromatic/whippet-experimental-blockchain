@@ -277,8 +277,10 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
             //
             // Read instruction
             //
-            if (!script.GetOp(pc, opcode, vchPushValue))
+            if (!script.GetOp(pc, opcode, vchPushValue)) {
                 return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+            }
+
             if (vchPushValue.size() > MAX_SCRIPT_ELEMENT_SIZE)
                 return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
 
@@ -427,7 +429,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                 }
 
                 case OP_NOP1: case OP_NOP4: case OP_NOP5:
-                case OP_NOP6: case OP_NOP9: case OP_NOP10:
+                case OP_NOP9: case OP_NOP10:
                 {
                     if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
                         return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
@@ -1027,7 +1029,61 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
 
 
                 // UAP opcodes
-                case OP_INSPECT: {
+                case OP_MINT:
+                {
+                    // [multiplier] [salt] OP_MINT
+                    if (stack.size() < 2)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+                    valtype salt = stacktop(-1);
+                    CScriptNum multiplier(stacktop(-2), fRequireMinimal);
+                    popstack(stack); // salt
+                    popstack(stack); // multiplier
+
+                    // 1. Entry Fee: input nValue >= 1,000.0 coin
+                    CAmount nValueIn = 0;
+                    const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
+                    if (tchecker && tchecker->txTo && tchecker->nIn < tchecker->txTo->vin.size()) {
+                        // NOTE: This assumes tchecker->amount is set to the input value
+                        nValueIn = tchecker->amount;
+                    } else {
+                        // Could not determine input value, fail
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+                    if (nValueIn < 1000 * COIN) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
+                    // 2. Salt: at least 16 bytes
+                    if (salt.size() < 16) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
+                    // 3. Overflow Guard: (Base Coin * Multiplier) <= 2^48
+                    const int64_t base_coin = nValueIn / COIN;
+                    const int64_t mult = static_cast<int64_t>(multiplier.getint());
+                    const int64_t kMaxVirtualBalance = (int64_t)1 << 48;
+                    if (mult < 0) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+                    if (mult > 0 && base_coin > 0 && base_coin > kMaxVirtualBalance / mult) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
+                    // 4. One-Shot: input must not already carry a UAP asset
+                    // TODO: Check input for existing asset
+
+                    // 5. Strict Script: output script must match allowed template
+                    // TODO: Check output script template
+
+                    // If all checks pass, OP_MINT succeeds
+                    stack.push_back(vchTrue);
+                    break;
+                }
+                break;
+
+                case OP_INSPECT:
+                {
                     // ([index] selector -- value)
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
@@ -1080,8 +1136,8 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                             }
                         }
                         break;
-                        default:
-                            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    default:
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     }
                 }
                 break;

@@ -18,7 +18,7 @@
     /**
      * Check transaction inputs to mitigate two
      * potential denial-of-service attacks:
-     * 
+     *
      * 1. scriptSigs with extra data stuffed into them,
      *    not consumed by scriptPubKey (or P2SH script)
      * 2. P2SH scripts with a crazy number of expensive
@@ -35,8 +35,27 @@
 bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType, const bool witnessEnabled)
 {
     std::vector<std::vector<unsigned char> > vSolutions;
+
     if (!Solver(scriptPubKey, whichType, vSolutions))
         return false;
+
+
+    if (whichType == TX_OP_MINT) {
+        // Only allow strict [minimal push] OP_MINT
+        if (scriptPubKey.size() < 2 || scriptPubKey.back() != OP_MINT)
+            return false;
+        // Must be exactly [minimal push] OP_MINT
+        if (!(scriptPubKey.size() == 2 || (scriptPubKey[0] >= 0x01 && scriptPubKey[0] <= 0x4b && scriptPubKey.size() == scriptPubKey[0] + 2 && scriptPubKey[scriptPubKey[0] + 1] == OP_MINT)))
+            return false;
+        return true;
+    }
+
+    if (whichType == TX_OP_TRANSFER) {
+        // Only allow strict UAP transfer template
+        // (template matching is handled by Solver)
+        // Optionally, add further checks here if needed
+        return true;
+    }
 
     if (whichType == TX_MULTISIG)
     {
