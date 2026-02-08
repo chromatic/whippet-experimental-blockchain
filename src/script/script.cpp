@@ -135,13 +135,18 @@ const char* GetOpName(opcodetype opcode)
     case OP_CHECKSEQUENCEVERIFY    : return "OP_CHECKSEQUENCEVERIFY";
     case OP_NOP4                   : return "OP_NOP4";
     case OP_NOP5                   : return "OP_NOP5";
-    case OP_NOP6                   : return "OP_NOP6";
-    case OP_NOP7                   : return "OP_NOP7";
-    case OP_NOP8                   : return "OP_NOP8";
+
+    // UAP opcodes
+    case OP_MINT                   : return "OP_MINT";
+    case OP_INSPECT                : return "OP_INSPECT";
+    case OP_INSPECT_SELF           : return "OP_INSPECT_SELF";
+
+    // still expansion
     case OP_NOP9                   : return "OP_NOP9";
     case OP_NOP10                  : return "OP_NOP10";
 
     case OP_INVALIDOPCODE          : return "OP_INVALIDOPCODE";
+
 
     // Note:
     //  The template matching params OP_SMALLINTEGER/etc are defined in opcodetype enum

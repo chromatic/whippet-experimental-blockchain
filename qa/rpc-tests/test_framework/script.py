@@ -106,10 +106,14 @@ class CScriptOp(int):
             _opcode_instances.append(super(CScriptOp, cls).__new__(cls, n))
             return _opcode_instances[n]
 
-# Populate opcode instance table
+ # Populate opcode instance table
 for n in range(0xff+1):
     CScriptOp(n)
 
+# UAP opcodes (must be after CScriptOp and instance table)
+OP_MINT = CScriptOp(0xb5)
+OP_INSPECT_SELF = CScriptOp(0xb6)
+OP_INSPECT = CScriptOp(0xb7)
 
 # push value
 OP_0 = CScriptOp(0x00)

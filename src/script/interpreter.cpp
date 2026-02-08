@@ -102,7 +102,7 @@ bool static IsCompressedPubKey(const valtype &vchPubKey) {
  * Where R and S are not negative (their first byte has its highest bit not set), and not
  * excessively padded (do not start with a 0 byte, unless an otherwise negative number follows,
  * in which case a single 0 byte is necessary and even required).
- * 
+ *
  * See https://bitcointalk.org/index.php?topic=8392.msg127623#msg127623
  *
  * This function is consensus-critical since BIP66.
@@ -142,7 +142,7 @@ bool static IsValidSignatureEncoding(const std::vector<unsigned char> &sig) {
     // Verify that the length of the signature matches the sum of the length
     // of the elements.
     if ((size_t)(lenR + lenS + 7) != sig.size()) return false;
- 
+
     // Check whether the R element is an integer.
     if (sig[2] != 0x02) return false;
 
@@ -277,8 +277,10 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
             //
             // Read instruction
             //
-            if (!script.GetOp(pc, opcode, vchPushValue))
+            if (!script.GetOp(pc, opcode, vchPushValue)) {
                 return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+            }
+
             if (vchPushValue.size() > MAX_SCRIPT_ELEMENT_SIZE)
                 return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
 
@@ -427,7 +429,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                 }
 
                 case OP_NOP1: case OP_NOP4: case OP_NOP5:
-                case OP_NOP6: case OP_NOP7: case OP_NOP8: case OP_NOP9: case OP_NOP10:
+                case OP_NOP9: case OP_NOP10:
                 {
                     if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
                         return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
@@ -868,7 +870,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     popstack(stack);
                     stack.push_back(vchHash);
                 }
-                break;                                   
+                break;
 
                 case OP_CODESEPARATOR:
                 {
@@ -1024,6 +1026,126 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     }
                 }
                 break;
+
+
+                // UAP opcodes
+                case OP_MINT:
+                {
+                    // [multiplier] [salt] OP_MINT
+                    if (stack.size() < 2)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+                    valtype salt = stacktop(-1);
+                    CScriptNum multiplier(stacktop(-2), fRequireMinimal);
+                    popstack(stack); // salt
+                    popstack(stack); // multiplier
+
+                    // 1. Entry Fee: input nValue >= 1,000.0 coin
+                    CAmount nValueIn = 0;
+                    const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
+                    if (tchecker && tchecker->txTo && tchecker->nIn < tchecker->txTo->vin.size()) {
+                        // NOTE: This assumes tchecker->amount is set to the input value
+                        nValueIn = tchecker->amount;
+                    } else {
+                        // Could not determine input value, fail
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+                    if (nValueIn < 1000 * COIN) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
+                    // 2. Salt: at least 16 bytes
+                    if (salt.size() < 16) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
+                    // 3. Overflow Guard: (Base Coin * Multiplier) <= 2^48
+                    const int64_t base_coin = nValueIn / COIN;
+                    const int64_t mult = static_cast<int64_t>(multiplier.getint());
+                    const int64_t kMaxVirtualBalance = (int64_t)1 << 48;
+                    if (mult < 0) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+                    if (mult > 0 && base_coin > 0 && base_coin > kMaxVirtualBalance / mult) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
+                    // 4. One-Shot: input must not already carry a UAP asset
+                    // TODO: Check input for existing asset
+
+                    // 5. Strict Script: output script must match allowed template
+                    // TODO: Check output script template
+
+                    // If all checks pass, OP_MINT succeeds
+                    stack.push_back(vchTrue);
+                    break;
+                }
+                break;
+
+                case OP_INSPECT:
+                {
+                    // ([index] selector -- value)
+                    if (stack.size() < 1)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    CScriptNum selector(stacktop(-1), fRequireMinimal);
+                    int sel = selector.getint();
+                    popstack(stack);
+                    switch (sel) {
+                        case 0: // version (legacy, no index)
+                            stack.push_back(CScriptNum(checker.GetVersion()).getvch());
+                            break;
+                        case 1: // input_index (legacy, no index)
+                            stack.push_back(CScriptNum(checker.GetInputIndex()).getvch());
+                            break;
+                        case 2: // input_count (legacy, no index)
+                            stack.push_back(CScriptNum(checker.GetInputCount()).getvch());
+                            break;
+                        case 3: // output_count (legacy, no index)
+                            stack.push_back(CScriptNum(checker.GetOutputCount()).getvch());
+                            break;
+                        case 10: // output nValue
+                        case 11: // output virtual balance
+                        case 12: // output scriptPubKey
+                        {
+                            // ([index] selector -- value)
+                            if (stack.size() < 1)
+                                return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                            CScriptNum indexnum(stacktop(-1), fRequireMinimal);
+                            int index = indexnum.getint();
+                            popstack(stack);
+                            const CTransaction* tx = nullptr;
+                            // Try to get tx from checker
+                            const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
+                            if (tchecker && tchecker->txTo) {
+                                tx = tchecker->txTo;
+                            }
+                            if (!tx || index < 0 || (unsigned int)index >= tx->vout.size()) {
+                                return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                            }
+                            const CTxOut& out = tx->vout[index];
+                            switch (sel) {
+                                case 10: // nValue
+                                    stack.push_back(CScriptNum(out.nValue).getvch());
+                                    break;
+                                case 11: // virtual balance (nValue * 1000 as placeholder)
+                                    stack.push_back(CScriptNum(out.nValue * 1000).getvch());
+                                    break;
+                                case 12: // scriptPubKey
+                                    stack.push_back(valtype(out.scriptPubKey.begin(), out.scriptPubKey.end()));
+                                    break;
+                            }
+                        }
+                        break;
+                    default:
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+                }
+                break;
+
+                case OP_INSPECT_SELF:
+                    // Push the current scriptPubKey (the script argument) as a byte vector
+                    stack.push_back(valtype(script.begin(), script.end()));
+                    break;
 
                 default:
                     return set_error(serror, SCRIPT_ERR_BAD_OPCODE);

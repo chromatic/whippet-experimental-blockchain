@@ -128,27 +128,19 @@ uint256 SignatureHash(const CScript &scriptCode, const CTransaction& txTo, unsig
 class BaseSignatureChecker
 {
 public:
-    virtual bool CheckSig(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const
-    {
-        return false;
-    }
-
-    virtual bool CheckLockTime(const CScriptNum& nLockTime) const
-    {
-         return false;
-    }
-
-    virtual bool CheckSequence(const CScriptNum& nSequence) const
-    {
-         return false;
-    }
-
+    virtual bool CheckSig(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const { return false; }
+    virtual bool CheckLockTime(const CScriptNum& nLockTime) const { return false; }
+    virtual bool CheckSequence(const CScriptNum& nSequence) const { return false; }
+    virtual int32_t GetVersion() const { return 1; } // Default to 1 if not overridden
+    virtual int32_t GetInputIndex() const { return 0; } // Default to 0 if not overridden
+    virtual int32_t GetInputCount() const { return 0; } // Default to 0 if not overridden
+    virtual int32_t GetOutputCount() const { return 0; } // Default to 0 if not overridden
     virtual ~BaseSignatureChecker() {}
 };
 
 class TransactionSignatureChecker : public BaseSignatureChecker
 {
-private:
+public:
     const CTransaction* txTo;
     unsigned int nIn;
     const CAmount amount;
@@ -163,6 +155,10 @@ public:
     bool CheckSig(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const;
     bool CheckLockTime(const CScriptNum& nLockTime) const;
     bool CheckSequence(const CScriptNum& nSequence) const;
+    int32_t GetVersion() const override { return txTo ? txTo->nVersion : 1; }
+    int32_t GetInputIndex() const override { return nIn; }
+    int32_t GetInputCount() const override { return txTo ? txTo->vin.size() : 0; }
+    int32_t GetOutputCount() const override { return txTo ? txTo->vout.size() : 0; }
 };
 
 class MutableTransactionSignatureChecker : public TransactionSignatureChecker
