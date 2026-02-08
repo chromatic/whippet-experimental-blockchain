@@ -23,6 +23,7 @@ static const char DB_BEST_BLOCK = 'B';
 static const char DB_FLAG = 'F';
 static const char DB_REINDEX_FLAG = 'R';
 static const char DB_LAST_BLOCK = 'l';
+static const char DB_BLOCK_INDEX_VERSION = 'V';
 
 
 CCoinsViewDB::CCoinsViewDB(size_t nCacheSize, bool fMemory, bool fWipe) : db(GetDataDir() / "chainstate", nCacheSize, fMemory, fWipe, true) 
@@ -88,6 +89,16 @@ bool CBlockTreeDB::ReadReindexing(bool &fReindexing) {
 
 bool CBlockTreeDB::ReadLastBlockFile(int &nFile) {
     return Read(DB_LAST_BLOCK, nFile);
+}
+
+bool CBlockTreeDB::WriteBlockIndexVersion(int nVersion) {
+    return Write(DB_BLOCK_INDEX_VERSION, nVersion);
+}
+
+bool CBlockTreeDB::ReadBlockIndexVersion(int &nVersion) {
+    if (!Read(DB_BLOCK_INDEX_VERSION, nVersion))
+        return false;
+    return true;
 }
 
 CCoinsViewCursor *CCoinsViewDB::Cursor() const
@@ -200,6 +211,7 @@ bool CBlockTreeDB::LoadBlockIndexGuts(std::function<CBlockIndex*(const uint256&)
                 pindexNew->nNonce         = diskindex.nNonce;
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
+                pindexNew->dDifficulty    = diskindex.dDifficulty;
 
                 /* Bitcoin checks the PoW here.  We don't do this because
                    the CDiskBlockIndex does not contain the auxpow.
