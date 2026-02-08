@@ -181,6 +181,9 @@ testScripts = [
     'getmocktime.py',
     'uptime.py',
     'p2p-getdata.py',
+    # UAP (Universal Asset Protocol) tests
+    'uap_transactions.py',
+    'uap_mint_transfer_spend.py',
 ]
 if ENABLE_ZMQ:
     testScripts.append('zmq_test.py')
@@ -211,6 +214,8 @@ testScriptsExt = [
     'forknotify.py',
     'invalidateblock.py',
     'maxblocksinflight.py',
+    # Extended UAP integration tests
+    'uap_integration.py',
 ]
 
 

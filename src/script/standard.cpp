@@ -80,13 +80,22 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
     }
     // Special case for strict OP_MINT: [minimal push] OP_MINT
     if (scriptPubKey.size() >= 2 && scriptPubKey.back() == OP_MINT) {
-        // Check that the script is exactly [minimal push] OP_MINT
-        if (scriptPubKey.size() == 2 || (scriptPubKey[0] >= 0x01 && scriptPubKey[0] <= 0x4b && scriptPubKey.size() == scriptPubKey[0] + 2 && scriptPubKey[scriptPubKey[0] + 1] == OP_MINT)) {
-            typeRet = TX_OP_MINT;
-            vSolutionsRet.clear();
-            vSolutionsRet.push_back(std::vector<unsigned char>(scriptPubKey.begin() + 1, scriptPubKey.end() - 1));
-            return true;
-        }
+        // Check that the script is [data] [data] OP_MINT (multiplier, salt, then OP_MINT)
+        // This is: push(multiplier) push(salt) OP_MINT
+        typeRet = TX_OP_MINT;
+        vSolutionsRet.clear();
+        return true;
+    }
+
+    // Special case for simple UAP covenant transfer: <pubkey> OP_CHECKSIG
+    // We recognize this as TX_OP_TRANSFER for simple covenant outputs
+    if (scriptPubKey.size() == 34 &&
+        scriptPubKey[0] == 33 &&  // push 33 bytes (pubkey)
+        scriptPubKey[33] == OP_CHECKSIG) {
+        typeRet = TX_OP_TRANSFER;
+        vSolutionsRet.clear();
+        vSolutionsRet.push_back(std::vector<unsigned char>(scriptPubKey.begin() + 1, scriptPubKey.begin() + 34));
+        return true;
     }
 
     vSolutionsRet.clear();
