@@ -207,6 +207,9 @@ public:
     //! (memory only) Maximum nTime in the chain upto and including this block.
     unsigned int nTimeMax;
 
+    //! Cached difficulty value to avoid recalculation during startup
+    double dDifficulty;
+
     void SetNull()
     {
         phashBlock = NULL;
@@ -222,6 +225,7 @@ public:
         nStatus = 0;
         nSequenceId = 0;
         nTimeMax = 0;
+        dDifficulty = 0.0;
 
         nVersion = 0;
         hashMerkleRoot = uint256();
@@ -364,6 +368,12 @@ arith_uint256 GetBlockProof(const CBlockIndex& block);
 /** Return the time it would take to redo the work difference between from and to, assuming the current hashrate corresponds to the difficulty at tip, in seconds. */
 int64_t GetBlockProofEquivalentTime(const CBlockIndex& to, const CBlockIndex& from, const CBlockIndex& tip, const Consensus::Params&);
 
+//! Block index database format version with cached difficulty
+static const int BLOCKINDEX_VERSION_WITH_DIFFICULTY = 100000;
+
+// Forward declaration - implemented in rpc/blockchain.cpp
+double GetDifficultyFromBits(unsigned int nBits);
+
 /** Used to marshal pointers into hashes for db storage. */
 class CDiskBlockIndex : public CBlockIndex
 {
@@ -376,6 +386,8 @@ public:
 
     explicit CDiskBlockIndex(const CBlockIndex* pindex) : CBlockIndex(*pindex) {
         hashPrev = (pprev ? pprev->GetBlockHash() : uint256());
+        // Pre-compute difficulty from nBits for storage
+        dDifficulty = GetDifficultyFromBits(nBits);
     }
 
     ADD_SERIALIZE_METHODS;
@@ -403,6 +415,9 @@ public:
         READWRITE(nTime);
         READWRITE(nBits);
         READWRITE(nNonce);
+
+        // Cached difficulty - stored to avoid recalculation during startup
+        READWRITE(dDifficulty);
     }
 
     uint256 GetBlockHash() const
