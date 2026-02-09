@@ -37,7 +37,7 @@ test=false
 SIGNER=
 VERSION=
 url=https://github.com/chromatic/whippet-experimental-blockchain
-proc=2
+proc=6
 mem=2000
 scriptName=$(basename -- "$0")
 outputDir=$(pwd)/gitian-output
@@ -295,6 +295,8 @@ pushd gitian-descriptors || exit 1
 if [[ $build == true || $verify == true ]]; then
     for descriptor in "${DESCRIPTORS[@]}"; do
         download_descriptor "$descriptor" "$COMMIT"
+        echo "[DEBUG] Downloaded descriptor gitian-${descriptor}.yml with content:"
+        grep '"commit"' gitian-"$descriptor".yml || echo "[DEBUG] No commit field found"
     done
 fi
 
