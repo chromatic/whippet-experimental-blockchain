@@ -296,10 +296,21 @@ static bool ParseUapOutputScript(const CScript& script, valtype& pubkeyOut, CScr
 }
 
 /**
- * Shared validation for OP_MINT and OP_MINT_TRANSFER: the transaction's
- * outputs must all be UAP covenant outputs (OP_MINT_TRANSFER) carrying the
- * same multiplier as the input being spent, and must not create value out
- * of thin air (sum(outputs) <= input value; the difference is miner fee).
+ * Shared validation for OP_MINT and OP_MINT_TRANSFER: at least one output
+ * must be a same-multiplier UAP_TRANSFER covenant continuing the position,
+ * their combined value must not exceed the input's value (no value out of
+ * thin air; the difference is miner fee), and no output may claim to be a
+ * fresh mint or a *different*-multiplier covenant funded by this input
+ * (that would be ambiguous about provenance). Any other, non-UAP-shaped
+ * output is left alone -- e.g. a marketplace payment leg or plain change,
+ * which is how an atomic token-for-WHIP swap coexists with a transfer in
+ * the same transaction. Because this check runs independently for *every*
+ * UAP input in a transaction, each demanding the matching-covenant total
+ * fit within its own value, transactions combining multiple same-multiplier
+ * inputs from different mint lineages are inherently rejected: the shared
+ * output total can satisfy at most one input's ceiling. This is what keeps
+ * distinct mint lineages from being merged/diluted, without any separate
+ * token-identity bookkeeping.
  */
 static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, const CScriptNum& mult, CAmount nValueIn, ScriptError* serror)
 {
@@ -312,18 +323,25 @@ static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, cons
         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
 
     CAmount nValueOut = 0;
+    bool fHasMatchingCovenantOutput = false;
     for (const CTxOut& out : tx.vout) {
         valtype pubkey;
         CScriptNum outMult(0);
         bool fIsMint;
-        if (!ParseUapOutputScript(out.scriptPubKey, pubkey, outMult, fIsMint) || fIsMint)
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-        if (outMult != mult)
+        if (!ParseUapOutputScript(out.scriptPubKey, pubkey, outMult, fIsMint)) {
+            // Not UAP-shaped at all: ordinary WHIP, not part of this
+            // input's token accounting (e.g. a swap's payment leg).
+            continue;
+        }
+        if (fIsMint || outMult != mult)
             return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
         if (out.nValue < 0 || nValueOut > MAX_MONEY - out.nValue)
             return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
         nValueOut += out.nValue;
+        fHasMatchingCovenantOutput = true;
     }
+    if (!fHasMatchingCovenantOutput)
+        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
     if (nValueOut > nValueIn)
         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
     return true;
