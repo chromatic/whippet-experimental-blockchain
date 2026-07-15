@@ -50,6 +50,13 @@ instead of the proxy's own connecting IP — only do this if something
 upstream actually sets that header, otherwise any client can bypass the
 limiter by setting it themselves.
 
+Pass `-mirror=http://peer1:8961,http://peer2:8961` to also pull open
+orders from other `uap-indexer` instances (see
+`doc/uap-marketplace-operators-guide.md` for why this is safe without
+trusting the peer: every mirrored order is independently revalidated
+against your own chain view before being adopted). `-mirrorinterval`
+controls how often (default 30s).
+
 State is persisted to `-statefile` periodically (`-saveevery`, default
 every 20 blocks) and on clean shutdown (SIGINT/SIGTERM), so restarts resume
 from where they left off rather than rescanning from `-startheight`.

@@ -3,7 +3,9 @@
 This documents how token-for-WHIP trading works for UAP positions
 (`OP_MINT` / `OP_MINT_TRANSFER`), what's already implemented and verified,
 and what's still needed to build a real maker/taker marketplace on top of
-it.
+it. If you want to actually run one, see
+`doc/uap-marketplace-operators-guide.md` instead — this document is about
+why it works, that one is about standing it up.
 
 ## No new opcode needed
 

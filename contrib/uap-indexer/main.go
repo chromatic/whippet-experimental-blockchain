@@ -31,6 +31,8 @@ func main() {
 		rateLimit    = flag.Float64("ratelimit", 30, "max requests per minute per client IP on write endpoints (POST/DELETE /orders); 0 disables rate limiting")
 		rateBurst    = flag.Float64("rateburst", 10, "extra requests a client may burst immediately before -ratelimit throttling applies")
 		trustProxy   = flag.Bool("trustproxy", false, "trust the X-Forwarded-For header for rate-limiting client identity (only if genuinely deployed behind a reverse proxy that sets it -- otherwise this lets any client bypass the limiter)")
+		mirrorPeers  = flag.String("mirror", "", "comma-separated base URLs of other uap-indexer instances to pull open orders from (e.g. http://peer1:8961,http://peer2:8961), for sharing liquidity across independently-run marketplaces -- see doc/uap-marketplace-operators-guide.md")
+		mirrorEvery  = flag.Duration("mirrorinterval", 30*time.Second, "how often to poll -mirror peers for new orders")
 	)
 	flag.Parse()
 
@@ -53,6 +55,11 @@ func main() {
 	if *rateLimit > 0 {
 		rl = NewRateLimiter(*rateLimit, *rateBurst)
 		log.Printf("rate limiting write endpoints: %.0f req/min per IP, burst %.0f", *rateLimit, *rateBurst)
+	}
+
+	if peers := parseMirrorPeers(*mirrorPeers); len(peers) > 0 {
+		log.Printf("mirroring orders from %d peer(s) every %s: %v", len(peers), *mirrorEvery, peers)
+		go MirrorPeers(idx, peers, *mirrorEvery)
 	}
 
 	server := &http.Server{Addr: *listen, Handler: newAPIServer(idx, rl, *trustProxy)}
