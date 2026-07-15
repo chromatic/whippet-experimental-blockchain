@@ -71,6 +71,7 @@ static CBlock CreateGenesisBlock(uint32_t nTime, uint32_t nNonce, uint32_t nBits
 class CMainParams : public CChainParams {
 private:
     Consensus::Params digishieldConsensus;
+    Consensus::Params chainIdFixConsensus;
     Consensus::Params auxpowConsensus;
 public:
     CMainParams() {
@@ -136,8 +137,15 @@ public:
         digishieldConsensus.nPowTargetTimespan = 60; // LWMA: 1 minute (10 blocks at 6 sec)
         digishieldConsensus.nCoinbaseMaturity = 240;
 
+        // Blocks 80000+ use a distinct AuxPoW chain ID; 0x0062 collides with
+        // Dogecoin's registered merge-mining chain ID, which would let
+        // Dogecoin-merge-mining pools produce blocks that appear valid on Whippet.
+        chainIdFixConsensus = digishieldConsensus;
+        chainIdFixConsensus.nHeightEffective = 80000;
+        chainIdFixConsensus.nAuxpowChainId = 0x5750; // "WP" - distinct from Dogecoin (0x0062)
+
         // Blocks 371337+ are AuxPoW with LWMA
-        auxpowConsensus = digishieldConsensus;
+        auxpowConsensus = chainIdFixConsensus;
         auxpowConsensus.nHeightEffective = 371337;
         auxpowConsensus.fAllowLegacyBlocks = false;
         auxpowConsensus.fLWMADifficultyCalculation = true;
@@ -145,7 +153,8 @@ public:
         // Assemble the binary search tree of consensus parameters
         pConsensusRoot = &digishieldConsensus;
         digishieldConsensus.pLeft = &consensus;
-        digishieldConsensus.pRight = &auxpowConsensus;
+        digishieldConsensus.pRight = &chainIdFixConsensus;
+        chainIdFixConsensus.pRight = &auxpowConsensus;
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.
@@ -163,8 +172,9 @@ public:
 
         consensus.hashGenesisBlock = genesis.GetHash();
         digishieldConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
+        chainIdFixConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         auxpowConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
-        
+
         assert(consensus.hashGenesisBlock == uint256S("0x863714e1c1a15526a0081a35097c56e28dbd43ef97f76fec0ccd5a7510326292"));
         assert(genesis.hashMerkleRoot == uint256S("0x7bef007a121450dc80c102774fe3d97803761b75820cb7af56344868897c916e"));
 
@@ -230,6 +240,7 @@ static CMainParams mainParams;
 class CTestNetParams : public CChainParams {
 private:
     Consensus::Params digishieldConsensus;
+    Consensus::Params chainIdFixConsensus;
     Consensus::Params auxpowConsensus;
     Consensus::Params minDifficultyConsensus;
 public:
@@ -297,8 +308,14 @@ public:
         digishieldConsensus.fPowAllowMinDifficultyBlocks = false;
         digishieldConsensus.nCoinbaseMaturity = 240;
 
+        // Blocks 80000+ use a distinct AuxPoW chain ID; 0x0062 collides with
+        // Dogecoin's registered merge-mining chain ID (see mainnet for details).
+        chainIdFixConsensus = digishieldConsensus;
+        chainIdFixConsensus.nHeightEffective = 80000;
+        chainIdFixConsensus.nAuxpowChainId = 0x5750; // "WP" - distinct from Dogecoin (0x0062)
+
         // Blocks 157500 - 158099 are Digishield with minimum difficulty on all blocks
-        minDifficultyConsensus = digishieldConsensus;
+        minDifficultyConsensus = chainIdFixConsensus;
         minDifficultyConsensus.nHeightEffective = 157500;
         minDifficultyConsensus.fPowAllowDigishieldMinDifficultyBlocks = true;
         minDifficultyConsensus.fPowAllowMinDifficultyBlocks = true;
@@ -312,7 +329,8 @@ public:
         // Assemble the binary search tree of parameters
         pConsensusRoot = &digishieldConsensus;
         digishieldConsensus.pLeft = &consensus;
-        digishieldConsensus.pRight = &minDifficultyConsensus;
+        digishieldConsensus.pRight = &chainIdFixConsensus;
+        chainIdFixConsensus.pRight = &minDifficultyConsensus;
         minDifficultyConsensus.pRight = &auxpowConsensus;
 
         pchMessageStart[0] = 0xfc;
@@ -325,6 +343,7 @@ public:
         genesis = CreateGenesisBlock(1767254400, 2684381204, 0x1f00ffff, 1, 76 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         digishieldConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
+        chainIdFixConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         minDifficultyConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         auxpowConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         assert(consensus.hashGenesisBlock == uint256S("0x863714e1c1a15526a0081a35097c56e28dbd43ef97f76fec0ccd5a7510326292"));
@@ -388,6 +407,7 @@ class CRegTestParams : public CChainParams {
 private:
     Consensus::Params digishieldConsensus;
     Consensus::Params auxpowConsensus;
+    Consensus::Params chainIdFixConsensus;
 public:
     CRegTestParams() {
         strNetworkID = "regtest";
@@ -443,9 +463,16 @@ public:
         auxpowConsensus.fAllowLegacyBlocks = false;
         auxpowConsensus.nHeightEffective = 20;
 
+        // Blocks 80000+ use a distinct AuxPoW chain ID; 0x0062 collides with
+        // Dogecoin's registered merge-mining chain ID (see mainnet for details).
+        chainIdFixConsensus = auxpowConsensus;
+        chainIdFixConsensus.nHeightEffective = 80000;
+        chainIdFixConsensus.nAuxpowChainId = 0x5750; // "WP" - distinct from Dogecoin (0x0062)
+
         // Assemble the binary search tree of parameters
         digishieldConsensus.pLeft = &consensus;
         digishieldConsensus.pRight = &auxpowConsensus;
+        auxpowConsensus.pRight = &chainIdFixConsensus;
         pConsensusRoot = &digishieldConsensus;
 
         pchMessageStart[0] = 0xfa;
@@ -459,6 +486,7 @@ public:
         consensus.hashGenesisBlock = genesis.GetHash();
         digishieldConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         auxpowConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
+        chainIdFixConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         // Regtest genesis hash: 2fd0127392635992184580433b3fc43eeaa5e8a40220d751ba39b742e9488ce0
 
         vFixedSeeds.clear(); //!< Regtest mode doesn't have any fixed seeds.
