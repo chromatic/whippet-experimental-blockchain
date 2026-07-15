@@ -14,7 +14,22 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func newAPIServer(idx *Index) http.Handler {
+// checkRateLimit returns true if the request may proceed. If not, it has
+// already written a 429 response and the caller must not do anything
+// further. rl may be nil to disable rate limiting entirely.
+func checkRateLimit(rl *RateLimiter, trustProxy bool, w http.ResponseWriter, r *http.Request) bool {
+	if rl == nil {
+		return true
+	}
+	if rl.Allow(clientIP(r, trustProxy)) {
+		return true
+	}
+	w.Header().Set("Retry-After", "1")
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded, slow down"})
+	return false
+}
+
+func newAPIServer(idx *Index, rl *RateLimiter, trustProxy bool) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +76,9 @@ func newAPIServer(idx *Index) http.Handler {
 	mux.HandleFunc("/orders", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
+			if !checkRateLimit(rl, trustProxy, w, r) {
+				return
+			}
 			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read request body"})
@@ -122,6 +140,9 @@ func newAPIServer(idx *Index) http.Handler {
 			writeJSON(w, http.StatusOK, o)
 
 		case http.MethodDelete:
+			if !checkRateLimit(rl, trustProxy, w, r) {
+				return
+			}
 			scriptSig := r.URL.Query().Get("script_sig")
 			if scriptSig == "" {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing script_sig query parameter"})

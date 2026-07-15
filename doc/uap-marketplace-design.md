@@ -153,13 +153,15 @@ rejected and the right one succeeds.
   gets reorged out, the pruned order isn't restored. Acceptable for
   ephemeral, non-consensus data -- the maker can republish -- but worth
   knowing.
-- **No authentication/rate-limiting on the relay's write endpoints.**
-  Anyone can `POST` a (structurally valid) order or attempt cancellations;
-  this is fine for the trust model (garbage orders just fail to fill,
-  cancellation requires reproducing the signed contents) but a public
-  deployment would want basic abuse protection (rate limits, maybe requiring
-  the position's pubkey to be provided and cross-checked before considering
-  an order "featured," etc.) -- operational hardening, not a protocol gap.
+- **No authentication on the relay's write endpoints, by design.** Anyone
+  can `POST` a (structurally valid) order or attempt cancellations; this
+  is fine for the trust model itself (garbage orders just fail to fill,
+  cancellation requires reproducing the signed contents) -- there's no
+  private key material a relay could authenticate against even if it
+  wanted to. Basic per-IP rate limiting on the write endpoints is in place
+  (`-ratelimit`/`-rateburst`/`-trustproxy` in `uap-indexer`) as a floor
+  against casual abuse; a public deployment fronted by real infrastructure
+  (CDN, reverse proxy) would likely still want more.
 
 ## Summary of what's verified live (regtest)
 

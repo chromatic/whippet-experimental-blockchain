@@ -28,6 +28,9 @@ func main() {
 		listen       = flag.String("listen", "127.0.0.1:8961", "HTTP API listen address")
 		stateFile    = flag.String("statefile", "uap-index.json", "path to persist indexer state, so restarts don't rescan from genesis")
 		saveEvery    = flag.Int("saveevery", 20, "save state to disk every N blocks indexed")
+		rateLimit    = flag.Float64("ratelimit", 30, "max requests per minute per client IP on write endpoints (POST/DELETE /orders); 0 disables rate limiting")
+		rateBurst    = flag.Float64("rateburst", 10, "extra requests a client may burst immediately before -ratelimit throttling applies")
+		trustProxy   = flag.Bool("trustproxy", false, "trust the X-Forwarded-For header for rate-limiting client identity (only if genuinely deployed behind a reverse proxy that sets it -- otherwise this lets any client bypass the limiter)")
 	)
 	flag.Parse()
 
@@ -46,7 +49,13 @@ func main() {
 		log.Printf("resuming from height %d (%s), %d positions known", idx.TipHeight, idx.TipHash, len(idx.Positions))
 	}
 
-	server := &http.Server{Addr: *listen, Handler: newAPIServer(idx)}
+	var rl *RateLimiter
+	if *rateLimit > 0 {
+		rl = NewRateLimiter(*rateLimit, *rateBurst)
+		log.Printf("rate limiting write endpoints: %.0f req/min per IP, burst %.0f", *rateLimit, *rateBurst)
+	}
+
+	server := &http.Server{Addr: *listen, Handler: newAPIServer(idx, rl, *trustProxy)}
 	go func() {
 		log.Printf("HTTP API listening on %s", *listen)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

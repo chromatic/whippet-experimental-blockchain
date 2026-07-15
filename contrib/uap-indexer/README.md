@@ -42,6 +42,14 @@ By default it starts indexing from genesis (`-startheight=0`). If you know
 the height UAP activated on the network you're indexing, pass
 `-startheight` to skip scanning irrelevant history on a fresh state file.
 
+`POST`/`DELETE /orders` are rate-limited per client IP by default
+(`-ratelimit=30` requests/minute, `-rateburst=10`; set `-ratelimit=0` to
+disable). If the relay is genuinely deployed behind a reverse proxy, pass
+`-trustproxy` so the limiter keys on the proxy's `X-Forwarded-For` header
+instead of the proxy's own connecting IP — only do this if something
+upstream actually sets that header, otherwise any client can bypass the
+limiter by setting it themselves.
+
 State is persisted to `-statefile` periodically (`-saveevery`, default
 every 20 blocks) and on clean shutdown (SIGINT/SIGTERM), so restarts resume
 from where they left off rather than rescanning from `-startheight`.
