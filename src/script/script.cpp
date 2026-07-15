@@ -138,6 +138,7 @@ const char* GetOpName(opcodetype opcode)
 
     // UAP opcodes
     case OP_MINT                   : return "OP_MINT";
+    case OP_MINT_TRANSFER          : return "OP_MINT_TRANSFER";
     case OP_INSPECT                : return "OP_INSPECT";
     case OP_INSPECT_SELF           : return "OP_INSPECT_SELF";
 

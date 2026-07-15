@@ -13,13 +13,26 @@ This guide explains how to create OP_MINT transactions to mint tokens and spend 
 
 ## Overview
 
+> **Design note:** an earlier version of OP_MINT required no signature to
+> spend, which meant the real WHIP value locked in a mint output was
+> spendable by anyone, not just the intended recipient, and the declared
+> multiplier was discarded rather than enforced. The design below fixes both:
+> spending now requires the recipient's signature, and every output of a
+> spending transaction must carry the same, enforced multiplier.
+
 ### What is OP_MINT?
 
-OP_MINT is an opcode that allows you to mint new tokens on the Whippet blockchain. It works by:
+OP_MINT is an opcode used as an output's scriptPubKey to mint new tokens on
+the Whippet blockchain. Like any Bitcoin-style script, it is evaluated when
+that output is later *spent*, not when it is created — so all of its rules
+are enforced at spend time, against the position's own declared fields:
 
-1. **Input Validation**: Verifies the transaction input has sufficient value (entry fee ≥ 1000 COIN satoshis)
-2. **Salt Validation**: Ensures a unique identifier (salt) is at least 16 bytes
-3. **Token Generation**: Computes a unique token ID from the salt and assigns token balance to the output
+1. **Signature**: only the recipient pubkey embedded in the script may authorize a spend
+2. **Entry Fee**: the position must hold ≥ 1000 COIN satoshis to mint
+3. **Salt Validation**: the salt (unique identifier) must be at least 16 bytes
+4. **Overflow Guard**: `(input value in whole coins) × multiplier` must not exceed 2^48
+5. **One-Shot**: a mint transaction may not also spend another UAP position as a sibling input
+6. **Strict Script**: every output of the spending transaction must itself be a conforming `OP_MINT_TRANSFER` covenant carrying the same multiplier, with total output value not exceeding the input's value (the difference becomes miner fee)
 
 ### Token Multiplier
 
@@ -30,35 +43,44 @@ Tokens use a **multiplier** to represent fractional amounts:
 
 **Example**: If you mint 1 WHIP (100,000 satoshis) with multiplier 1000, you create 100,000,000 tokens.
 
+The multiplier is declared in the output's own script and is read back by
+`OP_INSPECT` (selector 11, "virtual balance") — it is not a hardcoded
+constant, and every output in a transfer chain must carry the same value as
+the position it spends.
+
 ### Entry Fee Requirement
 
-To prevent spam, OP_MINT requires the transaction input to have value ≥ 1000 COIN satoshis:
-- Use UTXOs from coinbase rewards (typically 50 WHIP) or other sources with sufficient value
-- The entry fee is the transaction fee - it's deducted from the input value
+To prevent spam, a fresh OP_MINT requires the position being minted to hold
+value ≥ 1000 COIN satoshis. This is checked when that position is later
+spent (against its own value), which is equivalent to checking it at mint
+time since neither the script nor the value can change in between. Transfers
+(`OP_MINT_TRANSFER`) are not subject to this floor — only the initial mint.
 
 ## Creating OP_MINT Transactions
 
 ### Step 1: Build the OP_MINT Script
 
-The OP_MINT script consists of three elements:
+The OP_MINT script consists of four elements:
 
 ```
-[multiplier] [salt] OP_MINT
+<recipient_pubkey> <multiplier> <salt> OP_MINT
 ```
 
 **Parameters:**
+- `recipient_pubkey`: the only key that may authorize spending this position
 - `multiplier`: Integer defining token granularity (e.g., 100, 1000)
 - `salt`: Unique byte string ≥ 16 bytes to identify this token
 
 **Example using Whippet RPC:**
 
 ```bash
-# Create a script with multiplier=1000 and a unique salt
+# Create a script with a recipient pubkey, multiplier=1000, and a unique salt
+# recipient_pubkey: 33-byte compressed pubkey
 # multiplier: 1000 (varint)
 # salt: "my_token_salt_16" (16 bytes)
 # opcode: OP_MINT
 
-scriptPubKey = [1000, "my_token_salt_16", OP_MINT]
+scriptPubKey = [recipient_pubkey, 1000, "my_token_salt_16", OP_MINT]
 ```
 
 ### Step 2: Create and Fund the Transaction
@@ -110,11 +132,14 @@ vout = utxo["vout"]
 amount = utxo["amount"]
 
 # 2. Define token parameters
+recipient_key = CECKey()
+recipient_key.set_secretbytes(b"recipient_key_unique_bytes_123")
+recipient_pubkey = recipient_key.get_pubkey()
 multiplier = 1000  # 1 WHIP = 1,000 tokens
 salt = b"my_unique_token_salt_1234"  # Must be ≥ 16 bytes
 
 # 3. Build OP_MINT script
-mint_script = CScript([multiplier, salt, OP_MINT])
+mint_script = CScript([recipient_pubkey, multiplier, salt, OP_MINT])
 
 # 4. Create the transaction
 inputs = [{"txid": txid, "vout": vout}]
@@ -137,61 +162,39 @@ print(f"Token supply: {amount} WHIP × {multiplier} = {amount * multiplier} toke
 
 ## Token Transfer via Covenants
 
-Tokens created with OP_MINT are constrained by **covenant scripts** that enforce how they can be transferred.
+Tokens created with OP_MINT are constrained by a dedicated **OP_MINT_TRANSFER**
+covenant opcode (not a generic hand-assembled script) that enforces how they
+can be transferred. This is checked by consensus directly, not by convention.
 
 ### UAP Transfer Template
 
-The UAP transfer template is a covenant script that enforces token transfer rules:
-
 ```
-[recipient_pubkey] [multiplier] OP_INSPECT OP_INSPECT_SELF OP_INSPECT_SELF OP_DUP OP_INSPECT OP_INSPECT_SELF OP_INSPECT_SELF OP_EQUAL OP_VERIFY [recipient_pubkey] OP_CHECKSIG
+<recipient_pubkey> <multiplier> OP_MINT_TRANSFER
 ```
 
-**What it does:**
-1. Verifies each output is a valid covenant script (same token multiplier)
-2. Ensures tokens are conserved (no creation or destruction)
-3. Requires the recipient to sign the transaction
+**What it does, when this output is later spent:**
+1. Requires a valid signature from `recipient_pubkey`
+2. Requires every output of the spending transaction to itself be an
+   `OP_MINT_TRANSFER` covenant carrying the *same* multiplier
+3. Requires `sum(output values) <= input value` (tokens are conserved; the
+   difference becomes miner fee, never new tokens)
 
 ### Building a Transfer Script
 
 ```python
-def build_uap_transfer_script(multiplier, recipient_pubkey):
-    """
-    Build a UAP transfer template covenant script.
-
-    Args:
-        multiplier: Token multiplier (e.g., 1000)
-        recipient_pubkey: Recipient's public key (bytes)
-
-    Returns:
-        CScript with covenant constraints
-    """
-    script = CScript([
-        recipient_pubkey,
-        multiplier,
-        OP_INSPECT,
-        OP_INSPECT_SELF,
-        OP_INSPECT_SELF,
-        OP_DUP,
-        OP_INSPECT,
-        OP_INSPECT_SELF,
-        OP_INSPECT_SELF,
-        OP_EQUAL,
-        OP_VERIFY,
-        recipient_pubkey,
-        OP_CHECKSIG
-    ])
-    return script
+def build_uap_transfer_script(recipient_pubkey, multiplier):
+    """Build a UAP_TRANSFER covenant output script."""
+    return CScript([recipient_pubkey, multiplier, OP_MINT_TRANSFER])
 ```
 
 ### Spending Minted Tokens
 
-To spend tokens from an OP_MINT output, you must:
+To spend tokens from an OP_MINT or OP_MINT_TRANSFER output, you must:
 
-1. **Create a new transaction** that spends the OP_MINT output
-2. **Set outputs to covenant scripts** (not standard addresses)
-3. **Ensure token conservation**: input_tokens = sum(output_tokens) + fees
-4. **Sign with the appropriate key** for each output's covenant
+1. **Create a new transaction** that spends the position
+2. **Set every output to an `OP_MINT_TRANSFER` covenant** carrying the same multiplier
+3. **Ensure token conservation**: `sum(output values) <= input value`
+4. **Sign scriptSig with the recipient key** named in the position being spent — the signature is verified against `SignatureHash(scriptCode, tx, nIn, SIGHASH_ALL, ...)`, the same construction used for a normal P2PK spend
 
 ### Example: Spending Minted Tokens
 
@@ -201,14 +204,15 @@ mint_txid = "..."  # From earlier OP_MINT transaction
 mint_tx = node.getrawtransaction(mint_txid, True)
 minted_output = mint_tx["vout"][0]
 mint_value = minted_output["value"]  # In WHIP
+mint_script = CScript(bytes.fromhex(minted_output["scriptPubKey"]["hex"]))
 
-# 2. Create recipient keys and covenants
+# 2. Create recipient keys and covenant. minter_key must be the same key
+#    named in the OP_MINT script being spent.
 recipient_key = CECKey()
 recipient_key.set_secretbytes(b"recipient_key_unique_bytes_123")
 recipient_pubkey = recipient_key.get_pubkey()
 
-# Build covenant for recipient
-covenant_script = build_uap_transfer_script(multiplier, recipient_pubkey)
+covenant_script = build_uap_transfer_script(recipient_pubkey, multiplier)
 
 # 3. Create spend transaction
 spend_input = CTxIn(COutPoint(int(mint_txid, 16), 0))
@@ -221,8 +225,10 @@ spend_tx.vout = [
     CTxOut(int(output_amount * COIN), covenant_script)
 ]
 
-# 4. Sign the spend transaction
-spend_tx.vin[0].scriptSig = CScript([])  # OP_MINT requires no signature
+# 4. Sign with the key named in the position being spent (mint_script here)
+sighash = SignatureHash(mint_script, spend_tx, 0, SIGHASH_ALL, 0, SIGVERSION_BASE)
+sig = minter_key.sign(sighash) + bytes([SIGHASH_ALL])
+spend_tx.vin[0].scriptSig = CScript([sig])
 spend_raw = ToHex(spend_tx)
 
 # 5. Broadcast
@@ -234,6 +240,13 @@ print(f"Token conservation: {mint_value} WHIP input → {output_amount} WHIP out
 ```
 
 ## Complete Example: End-to-End Workflow
+
+> **Note:** the walkthrough below has not yet been updated to the
+> `<recipient_pubkey> <multiplier> [<salt>] OP_MINT[_TRANSFER]` script format
+> and signed-spend flow described above (it still uses the old two-field
+> mint script and the old `OP_INSPECT`-based covenant). Use the "Building a
+> Transfer Script" and "Spending Minted Tokens" sections above as the source
+> of truth; this section is a known follow-up.
 
 This example demonstrates the complete flow:
 1. Mint 10,000 tokens

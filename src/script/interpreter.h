@@ -135,6 +135,12 @@ public:
     virtual int32_t GetInputIndex() const { return 0; } // Default to 0 if not overridden
     virtual int32_t GetInputCount() const { return 0; } // Default to 0 if not overridden
     virtual int32_t GetOutputCount() const { return 0; } // Default to 0 if not overridden
+    // Returns the scriptPubKey of the coin being spent by input nIndex of the
+    // current transaction, if the checker has that data available. Used by
+    // UAP opcodes (e.g. OP_MINT's one-shot check) to inspect sibling inputs.
+    // Returns false (not true with an empty script) when unavailable, so
+    // callers must fail closed rather than treat "unknown" as "not a UAP asset".
+    virtual bool GetInputScriptPubKey(unsigned int nIndex, CScript& scriptPubKeyOut) const { return false; }
     virtual ~BaseSignatureChecker() {}
 };
 
@@ -145,13 +151,15 @@ public:
     unsigned int nIn;
     const CAmount amount;
     const PrecomputedTransactionData* txdata;
+    // Parallel to txTo->vin: scriptPubKey of each input's prevout, if known.
+    const std::vector<CScript>* vPrevScriptPubKeys;
 
 protected:
     virtual bool VerifySignature(const std::vector<unsigned char>& vchSig, const CPubKey& vchPubKey, const uint256& sighash) const;
 
 public:
-    TransactionSignatureChecker(const CTransaction* txToIn, unsigned int nInIn, const CAmount& amountIn) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(NULL) {}
-    TransactionSignatureChecker(const CTransaction* txToIn, unsigned int nInIn, const CAmount& amountIn, const PrecomputedTransactionData& txdataIn) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(&txdataIn) {}
+    TransactionSignatureChecker(const CTransaction* txToIn, unsigned int nInIn, const CAmount& amountIn, const std::vector<CScript>* vPrevScriptPubKeysIn = NULL) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(NULL), vPrevScriptPubKeys(vPrevScriptPubKeysIn) {}
+    TransactionSignatureChecker(const CTransaction* txToIn, unsigned int nInIn, const CAmount& amountIn, const PrecomputedTransactionData& txdataIn, const std::vector<CScript>* vPrevScriptPubKeysIn = NULL) : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(&txdataIn), vPrevScriptPubKeys(vPrevScriptPubKeysIn) {}
     bool CheckSig(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const;
     bool CheckLockTime(const CScriptNum& nLockTime) const;
     bool CheckSequence(const CScriptNum& nSequence) const;
@@ -159,6 +167,12 @@ public:
     int32_t GetInputIndex() const override { return nIn; }
     int32_t GetInputCount() const override { return txTo ? txTo->vin.size() : 0; }
     int32_t GetOutputCount() const override { return txTo ? txTo->vout.size() : 0; }
+    bool GetInputScriptPubKey(unsigned int nIndex, CScript& scriptPubKeyOut) const override {
+        if (!vPrevScriptPubKeys || nIndex >= vPrevScriptPubKeys->size())
+            return false;
+        scriptPubKeyOut = (*vPrevScriptPubKeys)[nIndex];
+        return true;
+    }
 };
 
 class MutableTransactionSignatureChecker : public TransactionSignatureChecker
@@ -167,7 +181,7 @@ private:
     const CTransaction txTo;
 
 public:
-    MutableTransactionSignatureChecker(const CMutableTransaction* txToIn, unsigned int nInIn, const CAmount& amount) : TransactionSignatureChecker(&txTo, nInIn, amount), txTo(*txToIn) {}
+    MutableTransactionSignatureChecker(const CMutableTransaction* txToIn, unsigned int nInIn, const CAmount& amount, const std::vector<CScript>* vPrevScriptPubKeysIn = NULL) : TransactionSignatureChecker(&txTo, nInIn, amount, vPrevScriptPubKeysIn), txTo(*txToIn) {}
 };
 
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, unsigned int flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* error = NULL);

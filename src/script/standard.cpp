@@ -56,45 +56,45 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
         // Sender provides N pubkeys, receivers provides M signatures
         mTemplates.insert(make_pair(TX_MULTISIG, CScript() << OP_SMALLINTEGER << OP_PUBKEYS << OP_SMALLINTEGER << OP_CHECKMULTISIG));
 
-        // Strict OP_MINT: [minimal push] OP_MINT
-        // Template: OP_PUSHDATA (any minimal push) + OP_MINT
-        // Use OP_PUBKEY as a stand-in for any minimal push (since OP_PUBKEY is 33 bytes, but template matching will check minimal push)
-        mTemplates.insert(make_pair(TX_OP_MINT, CScript() << OP_PUBKEY << OP_MINT));
-
-        // UAP Transfer: <multiplier> OP_INSPECT_SELF <0> <12> OP_INSPECT OP_EQUALVERIFY <this_index> <1> OP_INSPECT <0> <11> OP_INSPECT OP_EQUALVERIFY <pubkey> OP_CHECKSIG
-        // For template matching, use OP_PUBKEY as a stand-in for <pubkey>, and OP_SMALLINTEGER for <this_index>
-        mTemplates.insert(make_pair(
-            TX_OP_TRANSFER,
-            CScript()
-                << OP_PUBKEY // <multiplier>
-                << OP_INSPECT_SELF
-                << 0 << 12 << OP_INSPECT
-                << OP_EQUALVERIFY
-                << OP_SMALLINTEGER // <this_index>
-                << 1 << OP_INSPECT
-                << 0 << 11 << OP_INSPECT
-                << OP_EQUALVERIFY
-                << OP_PUBKEY // <pubkey>
-                << OP_CHECKSIG
-        ));
-    }
-    // Special case for strict OP_MINT: [minimal push] OP_MINT
-    if (scriptPubKey.size() >= 2 && scriptPubKey.back() == OP_MINT) {
-        // Check that the script is [data] [data] OP_MINT (multiplier, salt, then OP_MINT)
-        // This is: push(multiplier) push(salt) OP_MINT
-        typeRet = TX_OP_MINT;
-        vSolutionsRet.clear();
-        return true;
+        // UAP mint and transfer outputs are recognized below by dedicated
+        // parsing rather than the generic template matcher, since their
+        // multiplier/salt fields don't fit the fixed wildcard opcode set
+        // (OP_PUBKEY, OP_PUBKEYHASH, OP_SMALLINTEGER, OP_PUBKEYS).
     }
 
-    // Special case for simple UAP covenant transfer: <pubkey> OP_CHECKSIG
-    // We recognize this as TX_OP_TRANSFER for simple covenant outputs
-    if (scriptPubKey.size() == 34 &&
-        scriptPubKey[0] == 33 &&  // push 33 bytes (pubkey)
-        scriptPubKey[33] == OP_CHECKSIG) {
-        typeRet = TX_OP_TRANSFER;
+    // UAP mint: <recipient_pubkey> <multiplier> <salt> OP_MINT
+    // UAP transfer/covenant: <recipient_pubkey> <multiplier> OP_MINT_TRANSFER
+    if (scriptPubKey.size() >= 2 && (scriptPubKey.back() == OP_MINT || scriptPubKey.back() == OP_MINT_TRANSFER)) {
+        const bool fIsMint = (scriptPubKey.back() == OP_MINT);
+        CScript::const_iterator pc = scriptPubKey.begin();
+        opcodetype opcode;
+        valtype vch;
+
+        if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4 || vch.size() < 33 || vch.size() > 65)
+            return false;
+        valtype pubkey = vch;
+
+        if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
+            return false;
+
+        if (!scriptPubKey.GetOp(pc, opcode, vch))
+            return false;
+
+        if (fIsMint) {
+            if (opcode > OP_PUSHDATA4 || vch.size() < 16)
+                return false;
+            opcodetype opcodeMint;
+            valtype vchMint;
+            if (!scriptPubKey.GetOp(pc, opcodeMint, vchMint) || opcodeMint != OP_MINT || pc != scriptPubKey.end())
+                return false;
+        } else {
+            if (opcode != OP_MINT_TRANSFER || pc != scriptPubKey.end())
+                return false;
+        }
+
+        typeRet = fIsMint ? TX_OP_MINT : TX_OP_TRANSFER;
         vSolutionsRet.clear();
-        vSolutionsRet.push_back(std::vector<unsigned char>(scriptPubKey.begin() + 1, scriptPubKey.begin() + 34));
+        vSolutionsRet.push_back(pubkey);
         return true;
     }
 

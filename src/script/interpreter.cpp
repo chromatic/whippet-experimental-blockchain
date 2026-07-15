@@ -245,6 +245,113 @@ bool static CheckMinimalPush(const valtype& data, opcodetype opcode) {
     return true;
 }
 
+/**
+ * Recognize a UAP mint or mint-transfer output and extract its declared
+ * recipient pubkey and multiplier. Matches exactly one of:
+ *   <pubkey> <multiplier> <salt> OP_MINT           (fresh mint)
+ *   <pubkey> <multiplier> OP_MINT_TRANSFER         (transfer/covenant)
+ * Any other script shape is not a UAP output and this returns false.
+ */
+static bool ParseUapOutputScript(const CScript& script, valtype& pubkeyOut, CScriptNum& multiplierOut, bool& fIsMintOut)
+{
+    CScript::const_iterator pc = script.begin();
+    opcodetype opcode;
+    valtype vch;
+
+    // <pubkey>
+    if (!script.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4 || vch.empty())
+        return false;
+    pubkeyOut = vch;
+
+    // <multiplier>
+    if (!script.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
+        return false;
+    try {
+        multiplierOut = CScriptNum(vch, true);
+    } catch (const scriptnum_error&) {
+        return false;
+    }
+    if (multiplierOut < 0)
+        return false;
+
+    if (!script.GetOp(pc, opcode, vch))
+        return false;
+
+    if (opcode == OP_MINT_TRANSFER) {
+        if (pc != script.end())
+            return false;
+        fIsMintOut = false;
+        return true;
+    }
+
+    // Otherwise this must have been the <salt> push, followed by OP_MINT.
+    if (opcode > OP_PUSHDATA4 || vch.size() < 16)
+        return false;
+    opcodetype opcode2;
+    valtype vch2;
+    if (!script.GetOp(pc, opcode2, vch2) || opcode2 != OP_MINT || pc != script.end())
+        return false;
+    fIsMintOut = true;
+    return true;
+}
+
+/**
+ * Shared validation for OP_MINT and OP_MINT_TRANSFER: the transaction's
+ * outputs must all be UAP covenant outputs (OP_MINT_TRANSFER) carrying the
+ * same multiplier as the input being spent, and must not create value out
+ * of thin air (sum(outputs) <= input value; the difference is miner fee).
+ */
+static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, const CScriptNum& mult, CAmount nValueIn, ScriptError* serror)
+{
+    const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
+    if (!tchecker || !tchecker->txTo)
+        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+    const CTransaction& tx = *tchecker->txTo;
+    if (tx.vout.empty())
+        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+    CAmount nValueOut = 0;
+    for (const CTxOut& out : tx.vout) {
+        valtype pubkey;
+        CScriptNum outMult(0);
+        bool fIsMint;
+        if (!ParseUapOutputScript(out.scriptPubKey, pubkey, outMult, fIsMint) || fIsMint)
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        if (outMult != mult)
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        if (out.nValue < 0 || nValueOut > MAX_MONEY - out.nValue)
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        nValueOut += out.nValue;
+    }
+    if (nValueOut > nValueIn)
+        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+    return true;
+}
+
+/**
+ * OP_MINT's one-shot rule: none of the *other* inputs of this transaction
+ * may themselves be spending a UAP mint/transfer output. Keeps a mint
+ * transaction's accounting isolated to a single asset position.
+ */
+static bool CheckUapOneShot(const BaseSignatureChecker& checker, unsigned int nInSelf, ScriptError* serror)
+{
+    int32_t nInputs = checker.GetInputCount();
+    for (int32_t i = 0; i < nInputs; i++) {
+        if ((unsigned int)i == nInSelf)
+            continue;
+        CScript prevScript;
+        if (!checker.GetInputScriptPubKey((unsigned int)i, prevScript))
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        valtype pubkey;
+        CScriptNum mult(0);
+        bool fIsMint;
+        if (ParseUapOutputScript(prevScript, pubkey, mult, fIsMint))
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+    }
+    return true;
+}
+
 bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, unsigned int flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* serror)
 {
     static const CScriptNum bnZero(0);
@@ -1029,56 +1136,83 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
 
 
                 // UAP opcodes
+                //
+                // Mint output:    <recipient_pubkey> <multiplier> <salt> OP_MINT
+                // Transfer output:<recipient_pubkey> <multiplier> OP_MINT_TRANSFER
+                //
+                // Spending either requires scriptSig = <sig>. The recipient's
+                // signature authorizes the spend, and every output of the
+                // spending transaction must itself be a UAP_TRANSFER covenant
+                // carrying the same multiplier, with total output value not
+                // exceeding the value held by this input (conservation).
                 case OP_MINT:
+                case OP_MINT_TRANSFER:
                 {
-                    // [multiplier] [salt] OP_MINT
-                    if (stack.size() < 2)
+                    const bool fIsMint = (opcode == OP_MINT);
+
+                    if (stack.size() < (fIsMint ? 4u : 3u))
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
 
-                    valtype salt = stacktop(-1);
-                    CScriptNum multiplier(stacktop(-2), fRequireMinimal);
-                    popstack(stack); // salt
-                    popstack(stack); // multiplier
+                    valtype salt;
+                    if (fIsMint) {
+                        salt = stacktop(-1);
+                        popstack(stack);
+                    }
+                    CScriptNum multiplier(stacktop(-1), fRequireMinimal);
+                    popstack(stack);
+                    valtype vchPubKey = stacktop(-1);
+                    popstack(stack);
+                    valtype vchSig = stacktop(-1);
+                    popstack(stack);
 
-                    // 1. Entry Fee: input nValue >= 1,000.0 coin
-                    CAmount nValueIn = 0;
+                    // 1. Signature: only the declared recipient may spend this position.
+                    CScript scriptCode(pbegincodehash, pend);
+                    if (sigversion == SIGVERSION_BASE) {
+                        scriptCode.FindAndDelete(CScript(vchSig));
+                    }
+                    if (!CheckSignatureEncoding(vchSig, flags, serror) || !CheckPubKeyEncoding(vchPubKey, flags, sigversion, serror)) {
+                        return false;
+                    }
+                    if (!checker.CheckSig(vchSig, vchPubKey, scriptCode, sigversion)) {
+                        if ((flags & SCRIPT_VERIFY_NULLFAIL) && vchSig.size())
+                            return set_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
                     const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
-                    if (tchecker && tchecker->txTo && tchecker->nIn < tchecker->txTo->vin.size()) {
-                        // NOTE: This assumes tchecker->amount is set to the input value
-                        nValueIn = tchecker->amount;
-                    } else {
-                        // Could not determine input value, fail
+                    if (!tchecker || !tchecker->txTo || tchecker->nIn >= tchecker->txTo->vin.size())
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                    }
-                    if (nValueIn < 1000 * COIN) {
-                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                    }
+                    const CAmount nValueIn = tchecker->amount;
 
-                    // 2. Salt: at least 16 bytes
-                    if (salt.size() < 16) {
+                    // 2. Entry fee: a fresh mint must lock at least 1,000 coin.
+                    if (fIsMint && nValueIn < 1000 * COIN)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                    }
 
-                    // 3. Overflow Guard: (Base Coin * Multiplier) <= 2^48
+                    // 3. Salt: at least 16 bytes (fresh mints only).
+                    if (fIsMint && salt.size() < 16)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+                    // 4. Overflow guard: (base coin * multiplier) <= 2^48
+                    if (multiplier < 0)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     const int64_t base_coin = nValueIn / COIN;
                     const int64_t mult = static_cast<int64_t>(multiplier.getint());
                     const int64_t kMaxVirtualBalance = (int64_t)1 << 48;
-                    if (mult < 0) {
+                    if (mult > 0 && base_coin > 0 && base_coin > kMaxVirtualBalance / mult)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                    }
-                    if (mult > 0 && base_coin > 0 && base_coin > kMaxVirtualBalance / mult) {
-                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                    }
 
-                    // 4. One-Shot: input must not already carry a UAP asset
-                    // TODO: Check input for existing asset
+                    // 5. One-shot (mint only): no sibling input may already
+                    //    be spending a UAP mint/transfer position.
+                    if (fIsMint && !CheckUapOneShot(checker, tchecker->nIn, serror))
+                        return false; // serror set
 
-                    // 5. Strict Script: output script must match allowed template
-                    // TODO: Check output script template
+                    // 6. Strict script: every output must be a conforming
+                    //    UAP_TRANSFER covenant carrying this multiplier, and
+                    //    total output value may not exceed this input's value.
+                    if (!CheckUapOutputConservation(checker, multiplier, nValueIn, serror))
+                        return false; // serror set
 
-                    // If all checks pass, OP_MINT succeeds
                     stack.push_back(vchTrue);
-                    break;
                 }
                 break;
 
@@ -1127,9 +1261,18 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                                 case 10: // nValue
                                     stack.push_back(CScriptNum(out.nValue).getvch());
                                     break;
-                                case 11: // virtual balance (nValue * 1000 as placeholder)
-                                    stack.push_back(CScriptNum(out.nValue * 1000).getvch());
+                                case 11: { // virtual balance = nValue * the output's own declared multiplier
+                                    valtype pubkey;
+                                    CScriptNum outMult(0);
+                                    bool fIsMint;
+                                    if (!ParseUapOutputScript(out.scriptPubKey, pubkey, outMult, fIsMint)) {
+                                        // Not a UAP output: it carries no tokens.
+                                        stack.push_back(CScriptNum(0).getvch());
+                                    } else {
+                                        stack.push_back(CScriptNum(out.nValue * outMult.getint()).getvch());
+                                    }
                                     break;
+                                }
                                 case 12: // scriptPubKey
                                     stack.push_back(valtype(out.scriptPubKey.begin(), out.scriptPubKey.end()));
                                     break;
