@@ -114,6 +114,7 @@ for n in range(0xff+1):
 OP_MINT = CScriptOp(0xb5)
 OP_INSPECT_SELF = CScriptOp(0xb6)
 OP_INSPECT = CScriptOp(0xb7)
+OP_MINT_TRANSFER = CScriptOp(0xba)
 
 # push value
 OP_0 = CScriptOp(0x00)
