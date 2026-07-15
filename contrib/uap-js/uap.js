@@ -197,32 +197,64 @@ function txToHex(tx) {
   return bytesToHex(serializeTx(tx));
 }
 
+const SIGHASH_NONE = 2;
+const SIGHASH_SINGLE = 3;
+const SIGHASH_ANYONECANPAY = 0x80;
+
+// The classic Satoshi-client degenerate case: SignatureHash() returns the
+// 256-bit value 1 (little-endian byte order: 0x01 followed by 31 zero
+// bytes) rather than erroring, for nIn out of range or SIGHASH_SINGLE with
+// no matching output. Preserved for exact consensus compatibility with
+// SignatureHash() in src/script/interpreter.cpp.
+const SIGHASH_DEGENERATE_HASH = concatBytes(Uint8Array.of(1), new Uint8Array(31));
+
 /**
  * Legacy (pre-segwit) SignatureHash, matching SignatureHash() in
- * src/script/interpreter.cpp for SIGVERSION_BASE / qa/rpc-tests'
- * test_framework/script.py implementation: blank all scriptSigs, set
- * the input being signed to scriptCode, apply SIGHASH_* transforms,
- * append the 4-byte hash type, then hash256 the result.
- *
- * Only SIGHASH_ALL is implemented, since that's all OP_MINT/
- * OP_MINT_TRANSFER spends use in practice.
+ * src/script/interpreter.cpp for SIGVERSION_BASE. Supports all four base
+ * types (ALL/NONE/SINGLE) combined with the ANYONECANPAY flag.
  */
 function signatureHash(scriptCode, tx, nIn, hashType) {
   hashType = hashType === undefined ? SIGHASH_ALL : hashType;
-  if (hashType !== SIGHASH_ALL) {
-    throw new Error('only SIGHASH_ALL is implemented');
+  const baseType = hashType & 0x1f;
+  const anyoneCanPay = !!(hashType & SIGHASH_ANYONECANPAY);
+
+  if (nIn >= tx.vin.length) {
+    return SIGHASH_DEGENERATE_HASH;
   }
-  const tmp = {
-    version: tx.version,
-    locktime: tx.locktime,
-    vin: tx.vin.map((vin, i) => ({
+  if (baseType === SIGHASH_SINGLE && nIn >= tx.vout.length) {
+    return SIGHASH_DEGENERATE_HASH;
+  }
+
+  const inputIndices = anyoneCanPay ? [nIn] : tx.vin.map((_, i) => i);
+  const vinOut = inputIndices.map((i) => {
+    const vin = tx.vin[i];
+    const isSigned = i === nIn;
+    const zeroSequence = !isSigned && (baseType === SIGHASH_SINGLE || baseType === SIGHASH_NONE);
+    return {
       txid: vin.txid,
       vout: vin.vout,
-      scriptSig: i === nIn ? scriptCode : new Uint8Array(0),
-      sequence: vin.sequence,
-    })),
-    vout: tx.vout,
-  };
+      scriptSig: isSigned ? scriptCode : new Uint8Array(0),
+      sequence: zeroSequence ? 0 : vin.sequence,
+    };
+  });
+
+  let voutOut;
+  if (baseType === SIGHASH_NONE) {
+    voutOut = [];
+  } else if (baseType === SIGHASH_SINGLE) {
+    // Null (value=-1, empty script) placeholders for every output before
+    // nIn, then the one real output being pinned. Outputs after nIn are
+    // dropped entirely (not committed to at all).
+    voutOut = [];
+    for (let i = 0; i < nIn; i++) {
+      voutOut.push({ value: -1, scriptPubKey: new Uint8Array(0) });
+    }
+    voutOut.push(tx.vout[nIn]);
+  } else {
+    voutOut = tx.vout;
+  }
+
+  const tmp = { version: tx.version, locktime: tx.locktime, vin: vinOut, vout: voutOut };
   const preimage = concatBytes(serializeTx(tmp), encodeUint32LE(hashType));
   return hash256(preimage);
 }
@@ -269,10 +301,97 @@ function buildTransferTx(secp, opts) {
   return tx;
 }
 
+/**
+ * Sign a standing, fillable sell order for a UAP position: "I'll give up
+ * this token IF the final transaction pays me exactly this much." Uses
+ * SIGHASH_SINGLE|ANYONECANPAY, which commits only to the maker's own
+ * input and the output at the *same index* (their payment, not the
+ * token's eventual destination -- that's unconstrained, since
+ * CheckUapOutputConservation independently guarantees a valid covenant
+ * exists without caring who it's addressed to). Any taker can later
+ * complete the trade with fillOrder() without further input from the
+ * maker. See doc/uap-marketplace-design.md for the full design.
+ *
+ * @param secp EC library, see signSpend.
+ * @param opts {
+ *   input: { txid, vout, scriptCode (the position being sold) },
+ *   privKey: maker's private key (must match the pubkey in scriptCode),
+ *   paymentScript: scriptPubKey the maker wants paid (Uint8Array),
+ *   paymentValue: asking price in satoshis,
+ * }
+ * @returns { scriptSig, input: {txid, vout}, paymentScript, paymentValue }
+ *   -- everything a taker needs to fill the order. Publish this whole
+ *   object to an order relay.
+ */
+function signMakerOrder(secp, opts) {
+  const tx = {
+    version: 1,
+    locktime: 0,
+    vin: [{ txid: opts.input.txid, vout: opts.input.vout, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+    vout: [{ value: opts.paymentValue, scriptPubKey: opts.paymentScript }],
+  };
+  const hashType = SIGHASH_SINGLE | SIGHASH_ANYONECANPAY;
+  const scriptSig = signSpend(secp, opts.input.scriptCode, opts.privKey, tx, 0, hashType);
+  return {
+    scriptSig,
+    input: { txid: opts.input.txid, vout: opts.input.vout },
+    paymentScript: opts.paymentScript,
+    paymentValue: opts.paymentValue,
+  };
+}
+
+/**
+ * Complete a signed maker order (see signMakerOrder): append the taker's
+ * own payment input and a covenant output sending the token to
+ * themselves, plus change, and return the finished (but not yet
+ * taker-signed) transaction. The maker's input/payment output are kept
+ * at index 0 -- the same index the maker signed against -- since
+ * SIGHASH_SINGLE ties the signature to output N when the signed input
+ * ends up at index N in the final transaction; everything the taker adds
+ * comes after.
+ *
+ * The taker must still sign their own input(s) themselves (e.g. via
+ * their wallet's normal signing for an ordinary payment UTXO) before
+ * broadcasting -- this only assembles the transaction, it doesn't
+ * complete it.
+ *
+ * @param order the object returned by signMakerOrder
+ * @param opts {
+ *   toPubkey, multiplier: the covenant the taker wants the token sent to,
+ *   tokenValue: the position's full value (satoshis) -- the maker's
+ *     order doesn't carry this, since SIGHASH_SINGLE|ANYONECANPAY didn't
+ *     commit to it; the taker must know it independently (e.g. from
+ *     uap-indexer) and gets rejected by consensus if wrong,
+ *   takerInputs: [{ txid, vout }] the taker's own payment UTXO(s),
+ *   changeScript, changeValue: the taker's change output,
+ * }
+ */
+function fillOrder(order, opts) {
+  const tx = {
+    version: 1,
+    locktime: 0,
+    vin: [
+      { txid: order.input.txid, vout: order.input.vout, scriptSig: order.scriptSig, sequence: 0xffffffff },
+      ...opts.takerInputs.map((inp) => ({ txid: inp.txid, vout: inp.vout, scriptSig: new Uint8Array(0), sequence: 0xffffffff })),
+    ],
+    vout: [
+      order.paymentScript !== undefined ? { value: order.paymentValue, scriptPubKey: order.paymentScript } : null,
+      { value: opts.tokenValue, scriptPubKey: buildTransferScript(opts.toPubkey, opts.multiplier) },
+    ].filter(Boolean),
+  };
+  if (opts.changeValue) {
+    tx.vout.push({ value: opts.changeValue, scriptPubKey: opts.changeScript });
+  }
+  return tx;
+}
+
 export {
   OP_MINT,
   OP_MINT_TRANSFER,
   SIGHASH_ALL,
+  SIGHASH_NONE,
+  SIGHASH_SINGLE,
+  SIGHASH_ANYONECANPAY,
   COIN,
   hexToBytes,
   bytesToHex,
@@ -285,4 +404,6 @@ export {
   signatureHash,
   signSpend,
   buildTransferTx,
+  signMakerOrder,
+  fillOrder,
 };

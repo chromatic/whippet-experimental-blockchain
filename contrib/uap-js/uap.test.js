@@ -72,11 +72,49 @@ assert.strictEqual(UAP.bytesToHex(UAP.hexToBytes('')), '');
   assert.strictEqual(UAP.txToHex(tx), UAP.bytesToHex(raw));
 }
 
-// signatureHash: only SIGHASH_ALL is supported; anything else must throw
-// rather than silently doing the wrong thing.
+// signatureHash: the classic Satoshi-client degenerate cases (nIn out of
+// range; SIGHASH_SINGLE with no matching output) return the fixed "hash of
+// 1" constant rather than throwing, matching SignatureHash() in
+// src/script/interpreter.cpp exactly (needed for consensus compatibility,
+// however unlikely to be hit in practice).
 {
+  const ONE = UAP.hexToBytes('01' + '00'.repeat(31));
   const tx = { version: 1, locktime: 0, vin: [{ txid: '00'.repeat(32), vout: 0, sequence: 0xffffffff }], vout: [] };
-  assert.throws(() => UAP.signatureHash(new Uint8Array(0), tx, 0, 2 /* SIGHASH_NONE */), /only SIGHASH_ALL/);
+
+  // nIn out of range.
+  assert.deepStrictEqual(UAP.signatureHash(new Uint8Array(0), tx, 5, UAP.SIGHASH_ALL), ONE);
+
+  // SIGHASH_SINGLE with no output at nIn.
+  assert.deepStrictEqual(UAP.signatureHash(new Uint8Array(0), tx, 0, UAP.SIGHASH_SINGLE), ONE);
+}
+
+// Different hash types (and the ANYONECANPAY flag) must actually change
+// the resulting hash -- a cheap sanity check that they're not accidentally
+// all collapsing to the same computation. The live regtest verification
+// (see doc/uap-marketplace-design.md) is what actually proves correctness
+// against the real consensus rules.
+{
+  const scriptCode = new Uint8Array([1, 2, 3]);
+  const tx = {
+    version: 1,
+    locktime: 0,
+    vin: [
+      { txid: 'aa'.repeat(32), vout: 0, sequence: 0xffffffff },
+      { txid: 'bb'.repeat(32), vout: 1, sequence: 0xffffffff },
+    ],
+    vout: [
+      { value: 100, scriptPubKey: new Uint8Array([4, 5]) },
+      { value: 200, scriptPubKey: new Uint8Array([6, 7]) },
+    ],
+  };
+  const hashes = new Set([
+    UAP.bytesToHex(UAP.signatureHash(scriptCode, tx, 0, UAP.SIGHASH_ALL)),
+    UAP.bytesToHex(UAP.signatureHash(scriptCode, tx, 0, UAP.SIGHASH_NONE)),
+    UAP.bytesToHex(UAP.signatureHash(scriptCode, tx, 0, UAP.SIGHASH_SINGLE)),
+    UAP.bytesToHex(UAP.signatureHash(scriptCode, tx, 0, UAP.SIGHASH_ALL | UAP.SIGHASH_ANYONECANPAY)),
+    UAP.bytesToHex(UAP.signatureHash(scriptCode, tx, 1, UAP.SIGHASH_ALL)),
+  ]);
+  assert.strictEqual(hashes.size, 5, 'expected all five hash-type/index combinations to differ');
 }
 
 console.log('uap.js: all tests passed');

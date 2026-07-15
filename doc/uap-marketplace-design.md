@@ -102,12 +102,21 @@ otherwise enforce: getting paid.
    because the consensus-level conservation check -- not the signature --
    is what guarantees a valid covenant exists at all.
 
-**This exact construction is a design, not yet a verified one.** Unlike
-the rest of this document, it has not been built or run against a live
-node -- `uap.js` doesn't implement `SIGHASH_SINGLE`/`ANYONECANPAY` yet
-(see below), so this hasn't been exercised end to end. Treat it as the
-intended shape, to be confirmed the same way everything else here was:
-by actually running it.
+**This construction is now implemented and verified live**, the same way
+as everything else in this document: `uap.js` implements the full legacy
+sighash transform (`signatureHash` supports `ALL`/`NONE`/`SINGLE` combined
+with `ANYONECANPAY`, including the classic Satoshi-client degenerate
+"hash of 1" edge cases, matching `SignatureHash()` in
+`src/script/interpreter.cpp` byte for byte), plus two convenience
+functions: `signMakerOrder()` (produces the maker's signed fragment) and
+`fillOrder()` (assembles the taker's completing transaction, keeping the
+maker's input/payment output paired at the same index as signed). Run
+against a live regtest node: a maker signs an order with no taker
+present, a taker later fills it with their own payment input and a
+covenant destination the maker never specified, and the trade confirms
+with no live coordination between the two parties. A second test
+confirmed a taker cannot alter the maker's payment output (e.g. reduce
+the agreed price) without invalidating the maker's signature.
 
 This is the standard non-custodial "maker signs once, any taker can fill
 later" pattern used by UTXO-chain orderbooks (e.g. Bitcoin's classic
@@ -115,19 +124,9 @@ later" pattern used by UTXO-chain orderbooks (e.g. Bitcoin's classic
 custody of funds -- the relay only ever holds *signed order fragments*,
 which are worthless without a taker completing them exactly as signed.
 
-### What's not built yet
+### What's still not built
 
-- **`uap.js` only implements `SIGHASH_ALL`** (`signatureHash`/`signSpend`
-  throw for anything else). Supporting `SIGHASH_SINGLE|ANYONECANPAY`
-  requires implementing the correct legacy sighash transform for those
-  flags (blank all other inputs' sequence numbers for `NONE`/no-op for
-  `SINGLE`, truncate `vout` to just the matching index for `SINGLE`, and
-  reduce `vin` to just the signer's own input for `ANYONECANPAY`) --
-  this is spec'd in Bitcoin's legacy sighash algorithm and mirrored in
-  `qa/rpc-tests/test_framework/script.py`'s `SignatureHash`, which already
-  handles all of this; `uap.js`'s current implementation deliberately
-  only ported the `ALL` path.
-- **No order relay exists.** This could be a new small service (possibly
+- **No order relay exists yet.** This could be a new small service (possibly
   an extension of `uap-indexer`, since it already has chain visibility to
   verify a listed position is real and still unspent) exposing something
   like `POST /orders` (publish a signed fragment + asking price) and
@@ -151,3 +150,10 @@ which are worthless without a taker completing them exactly as signed.
   covenant + payment + change) succeeds end to end.
 - Tampering with the agreed payment amount after the seller signs
   invalidates their signature -- the atomicity/no-cheating property holds.
+- A maker's `SIGHASH_SINGLE|ANYONECANPAY` sell order, signed with no taker
+  present, is later filled by a taker adding their own payment input and
+  a covenant destination the maker never specified -- with no live
+  coordination between the two parties -- and confirms successfully.
+- A taker attempting to alter the maker's payment output (e.g. pay less
+  than the signed asking price) is rejected: the maker's signature no
+  longer validates against the modified transaction.
