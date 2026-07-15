@@ -34,6 +34,7 @@ const char* GetTxnOutputType(txnouttype t)
     case TX_WITNESS_V0_KEYHASH: return "witness_v0_keyhash";
     case TX_WITNESS_V0_SCRIPTHASH: return "witness_v0_scripthash";
     case TX_OP_MINT: return "op_mint";
+    case TX_OP_TRANSFER: return "op_mint_transfer";
     }
     return NULL;
 }
