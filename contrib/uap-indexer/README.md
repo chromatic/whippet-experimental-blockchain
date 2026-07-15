@@ -57,7 +57,7 @@ chain forward from there.
 
 ## HTTP API
 
-- `GET /status` — `{tip_height, tip_hash, position_count}`
+- `GET /status` — `{tip_height, tip_hash, position_count, order_count}`
 - `GET /positions?pubkey=<hex>[&unspent=true]` — all known positions
   (mint or transfer outputs) for a recipient pubkey, optionally filtered
   to unspent only
@@ -81,6 +81,51 @@ Each position:
 `value` is in satoshis. `is_mint` is true for a fresh `OP_MINT` output,
 false for an `OP_MINT_TRANSFER` covenant output. A `spent` position also
 carries `spent_txid` and `spent_height`.
+
+### Order relay (marketplace)
+
+See `doc/uap-marketplace-design.md` for the full design. In short: a maker
+sells a position by signing a transaction fragment with
+`SIGHASH_SINGLE|ANYONECANPAY` (via `uap-js`'s `signMakerOrder`), which
+commits only to their own input and their own payment output — not the
+token's eventual destination, since that doesn't need to exist yet. The
+relay stores and serves these signed fragments; it never holds funds or
+private keys, and does no cryptographic signature verification itself
+(deliberately staying dependency-free — no EC library). It does do
+structural validation (the scriptSig must be a single minimal push of a
+DER-shaped signature ending in the `SIGHASH_SINGLE|ANYONECANPAY` byte) and
+confirms the referenced position is real, unspent, and matches the
+claimed multiplier. **The real, authoritative check is always the node
+itself when a taker broadcasts a fill** — a malformed or dishonest order
+just fails to fill; nothing here needs to be trusted for security.
+
+- `POST /orders` — publish a signed order. Body:
+  ```json
+  {
+    "txid": "...", "vout": 0, "multiplier": 1000,
+    "script_sig": "<hex>", "payment_script": "<hex>", "payment_value": 700000000
+  }
+  ```
+  Returns the stored order (with `pubkey` filled in from the position) on
+  success, `400` with an error message otherwise.
+- `GET /orders[?multiplier=1000]` — list open orders (i.e. whose
+  underlying position is still unspent), optionally filtered.
+- `GET /orders/{txid}/{vout}` — a single open order, `404` if filled,
+  cancelled, or never existed.
+- `DELETE /orders/{txid}/{vout}?script_sig=<hex>` — withdraw an order.
+  Reproducing the exact `script_sig` originally published is required —
+  not real authentication (there isn't any private key material here to
+  authenticate with), just enough friction that only someone who already
+  had the signed order can remove it from the relay. The maker can always
+  unilaterally invalidate their own order for real by spending the
+  position elsewhere.
+
+An order is automatically pruned the moment the indexer observes its
+underlying position get spent (filled by a taker, or moved by the maker
+some other way) — no separate cleanup step needed. Note this pruning
+isn't reorg-aware: if the block that spent a position gets reorged out,
+the order is not restored (an acceptable gap for ephemeral, non-consensus
+data — the maker can just republish).
 
 ## Caveats
 

@@ -124,19 +124,42 @@ later" pattern used by UTXO-chain orderbooks (e.g. Bitcoin's classic
 custody of funds -- the relay only ever holds *signed order fragments*,
 which are worthless without a taker completing them exactly as signed.
 
+### Order relay: built and verified
+
+`uap-indexer` now hosts the relay (see its README for the full API):
+`POST /orders`, `GET /orders[?multiplier=]`, `GET /orders/{txid}/{vout}`,
+`DELETE /orders/{txid}/{vout}?script_sig=`. It never holds funds or keys,
+does no cryptographic signature verification (deliberately staying
+dependency-free -- a taker's own node broadcast is the real check), and
+only does structural sanity checks (correct hashtype byte, DER-shaped
+signature, referenced position real/unspent/matching multiplier) plus
+automatic pruning the moment a position is observed spent.
+
+Verified live end to end through the *actual HTTP API* (not just the Go
+functions directly): a maker mints a position, signs an order, and
+publishes it over real HTTP; a taker -- a separate process with no
+back-channel to the maker -- browses `GET /orders`, fetches the specific
+order, fills it, and broadcasts; the indexer notices the fill and the
+order disappears from listings and 404s on direct lookup. A separate
+cancellation test confirmed withdrawing with the wrong `script_sig` is
+rejected and the right one succeeds.
+
 ### What's still not built
 
-- **No order relay exists yet.** This could be a new small service (possibly
-  an extension of `uap-indexer`, since it already has chain visibility to
-  verify a listed position is real and still unspent) exposing something
-  like `POST /orders` (publish a signed fragment + asking price) and
-  `GET /orders?multiplier=1000` (browse). It needs to invalidate orders
-  once the underlying position is spent (whether filled or moved
-  elsewhere) -- straightforward given the indexer already tracks
-  spent-status per position.
 - **No fee/price-index UX.** A real marketplace UI would want to show
   "N tokens for P WHIP" in a comparable unit; that's presentation logic on
   top of the primitives here, not a protocol concern.
+- **Relay pruning isn't reorg-aware.** If the block that spent a position
+  gets reorged out, the pruned order isn't restored. Acceptable for
+  ephemeral, non-consensus data -- the maker can republish -- but worth
+  knowing.
+- **No authentication/rate-limiting on the relay's write endpoints.**
+  Anyone can `POST` a (structurally valid) order or attempt cancellations;
+  this is fine for the trust model (garbage orders just fail to fill,
+  cancellation requires reproducing the signed contents) but a public
+  deployment would want basic abuse protection (rate limits, maybe requiring
+  the position's pubkey to be provided and cross-checked before considering
+  an order "featured," etc.) -- operational hardening, not a protocol gap.
 
 ## Summary of what's verified live (regtest)
 
@@ -157,3 +180,7 @@ which are worthless without a taker completing them exactly as signed.
 - A taker attempting to alter the maker's payment output (e.g. pay less
   than the signed asking price) is rejected: the maker's signature no
   longer validates against the modified transaction.
+- A full maker/taker cycle through `uap-indexer`'s actual HTTP order relay
+  (publish, browse, fetch, fill, on-chain confirmation, auto-pruning, and
+  cancellation) all work end to end between two independent processes
+  with no direct communication.

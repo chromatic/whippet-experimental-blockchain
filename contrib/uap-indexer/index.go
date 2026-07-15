@@ -45,6 +45,7 @@ type Index struct {
 	HeightLog map[int64]*heightChange    `json:"height_log"` // height -> undo log
 	TipHeight int64                      `json:"tip_height"`
 	TipHash   string                     `json:"tip_hash"`
+	Orders    map[string]*Order          `json:"orders"` // positionKey -> standing sell order
 }
 
 func NewIndex() *Index {
@@ -53,6 +54,7 @@ func NewIndex() *Index {
 		ByPubKey:  make(map[string]map[string]bool),
 		Heights:   make(map[int64]string),
 		HeightLog: make(map[int64]*heightChange),
+		Orders:    make(map[string]*Order),
 		TipHeight: -1,
 	}
 }
@@ -85,6 +87,9 @@ func (idx *Index) ApplyBlock(block *RPCBlock) {
 				pos.SpentTxID = tx.TxID
 				pos.SpentHeight = block.Height
 				change.SpentKeys = append(change.SpentKeys, k)
+				// Any standing order for this position is now stale
+				// (filled, or the maker moved it some other way).
+				delete(idx.Orders, k)
 			}
 		}
 		for _, vout := range tx.Vout {
@@ -183,12 +188,13 @@ type Status struct {
 	TipHeight     int64  `json:"tip_height"`
 	TipHash       string `json:"tip_hash"`
 	PositionCount int    `json:"position_count"`
+	OrderCount    int    `json:"order_count"`
 }
 
 func (idx *Index) StatusSnapshot() Status {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return Status{TipHeight: idx.TipHeight, TipHash: idx.TipHash, PositionCount: len(idx.Positions)}
+	return Status{TipHeight: idx.TipHeight, TipHash: idx.TipHash, PositionCount: len(idx.Positions), OrderCount: len(idx.Orders)}
 }
 
 // persisted is the on-disk snapshot format, saved periodically so a
@@ -200,6 +206,7 @@ type persisted struct {
 	HeightLog map[int64]*heightChange    `json:"height_log"`
 	TipHeight int64                      `json:"tip_height"`
 	TipHash   string                     `json:"tip_hash"`
+	Orders    map[string]*Order          `json:"orders"`
 }
 
 func (idx *Index) Save(path string) error {
@@ -211,6 +218,7 @@ func (idx *Index) Save(path string) error {
 		HeightLog: idx.HeightLog,
 		TipHeight: idx.TipHeight,
 		TipHash:   idx.TipHash,
+		Orders:    idx.Orders,
 	}
 	data, err := json.Marshal(p)
 	idx.mu.RUnlock()
@@ -248,6 +256,9 @@ func LoadIndex(path string) (*Index, error) {
 	}
 	if p.HeightLog != nil {
 		idx.HeightLog = p.HeightLog
+	}
+	if p.Orders != nil {
+		idx.Orders = p.Orders
 	}
 	idx.TipHeight = p.TipHeight
 	idx.TipHash = p.TipHash

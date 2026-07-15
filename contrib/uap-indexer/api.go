@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,6 +54,88 @@ func newAPIServer(idx *Index) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, pos)
+	})
+
+	// POST /orders -- publish a signed maker order (see orders.go).
+	// GET /orders?multiplier=1000 -- list open orders, optionally filtered.
+	mux.HandleFunc("/orders", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read request body"})
+				return
+			}
+			var o Order
+			if err := json.Unmarshal(body, &o); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+				return
+			}
+			if err := idx.PublishOrder(&o); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, o)
+
+		case http.MethodGet:
+			var multiplierFilter *int64
+			if s := r.URL.Query().Get("multiplier"); s != "" {
+				m, err := strconv.ParseInt(s, 10, 64)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid multiplier"})
+					return
+				}
+				multiplierFilter = &m
+			}
+			orders := idx.ListOrders(multiplierFilter)
+			if orders == nil {
+				orders = []Order{}
+			}
+			writeJSON(w, http.StatusOK, orders)
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+
+	// GET /orders/{txid}/{vout} -- fetch a single open order.
+	// DELETE /orders/{txid}/{vout}?script_sig=<hex> -- withdraw it (see CancelOrder).
+	mux.HandleFunc("/orders/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/orders/"), "/")
+		if len(parts) != 2 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expected /orders/{txid}/{vout}"})
+			return
+		}
+		vout, err := strconv.ParseUint(parts[1], 10, 32)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid vout"})
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			o, ok := idx.GetOrder(parts[0], uint32(vout))
+			if !ok {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "order not found"})
+				return
+			}
+			writeJSON(w, http.StatusOK, o)
+
+		case http.MethodDelete:
+			scriptSig := r.URL.Query().Get("script_sig")
+			if scriptSig == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing script_sig query parameter"})
+				return
+			}
+			if err := idx.CancelOrder(parts[0], uint32(vout), scriptSig); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	})
 
 	return mux
