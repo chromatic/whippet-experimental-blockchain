@@ -206,8 +206,12 @@ minted_output = mint_tx["vout"][0]
 mint_value = minted_output["value"]  # In WHIP
 mint_script = CScript(bytes.fromhex(minted_output["scriptPubKey"]["hex"]))
 
-# 2. Create recipient keys and covenant. minter_key must be the same key
-#    named in the OP_MINT script being spent.
+# 2. minter_key must be the same key named in the OP_MINT script being
+#    spent (mint_script) -- it's what authorizes this spend, not the
+#    recipient's key. recipient_key names the new covenant's owner.
+minter_key = CECKey()
+minter_key.set_secretbytes(b"minter_private_key_16bytes_1234")
+
 recipient_key = CECKey()
 recipient_key.set_secretbytes(b"recipient_key_unique_bytes_123")
 recipient_pubkey = recipient_key.get_pubkey()
@@ -241,38 +245,36 @@ print(f"Token conservation: {mint_value} WHIP input → {output_amount} WHIP out
 
 ## Complete Example: End-to-End Workflow
 
-> **Note:** the walkthrough below has not yet been updated to the
-> `<recipient_pubkey> <multiplier> [<salt>] OP_MINT[_TRANSFER]` script format
-> and signed-spend flow described above (it still uses the old two-field
-> mint script and the old `OP_INSPECT`-based covenant). Use the "Building a
-> Transfer Script" and "Spending Minted Tokens" sections above as the source
-> of truth; this section is a known follow-up.
-
 This example demonstrates the complete flow:
-1. Mint 10,000 tokens
-2. Transfer to recipient
-3. Recipient spends tokens
+1. Mint tokens to the minter's own key
+2. Transfer to a recipient
+3. Recipient transfers onward again
+
+Every hop requires a signature from the key named in the position being
+spent, and every output must be a conforming `OP_MINT_TRANSFER` covenant
+carrying the same multiplier (see "Token Transfer via Covenants" above).
 
 ```python
 import sys
 from decimal import Decimal
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.messages import CTransaction, CTxIn, CTxOut, COutPoint, FromHex, ToHex
-from test_framework.script import CScript, OP_MINT
+from test_framework.script import CScript, OP_MINT, OP_MINT_TRANSFER, SignatureHash, SIGHASH_ALL, SIGVERSION_BASE
+from test_framework.key import CECKey
 from test_framework.util import *
 
 COIN = 100000000
 
-def build_mint_script(multiplier, salt):
-    return CScript([multiplier, salt, OP_MINT])
+def build_mint_script(recipient_pubkey, multiplier, salt):
+    return CScript([recipient_pubkey, multiplier, salt, OP_MINT])
 
-def build_uap_transfer_script(multiplier, recipient_pubkey):
-    from test_framework.script import OP_INSPECT, OP_INSPECT_SELF, OP_DUP, OP_EQUAL, OP_VERIFY, OP_CHECKSIG
-    return CScript([
-        recipient_pubkey, multiplier, OP_INSPECT, OP_INSPECT_SELF, OP_INSPECT_SELF,
-        OP_DUP, OP_INSPECT, OP_INSPECT_SELF, OP_INSPECT_SELF, OP_EQUAL, OP_VERIFY,
-        recipient_pubkey, OP_CHECKSIG
-    ])
+def build_uap_transfer_script(recipient_pubkey, multiplier):
+    return CScript([recipient_pubkey, multiplier, OP_MINT_TRANSFER])
+
+def sign_spend(script_code, key, tx, n_in):
+    sighash = SignatureHash(script_code, tx, n_in, SIGHASH_ALL, 0, SIGVERSION_BASE)
+    sig = key.sign(sighash) + bytes([SIGHASH_ALL])
+    return CScript([sig])
 
 class TokenEndToEndTest(BitcoinTestFramework):
     def setup_network(self):
@@ -280,29 +282,31 @@ class TokenEndToEndTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-
-        print("\n=== Step 1: Mint 10,000 tokens ===")
-
-        # Get UTXO
-        utxo = node.listunspent()[0]
         multiplier = 1000
+
+        print("\n=== Step 1: Mint tokens ===")
+
+        minter_key = CECKey()
+        minter_key.set_secretbytes(b"minter_private_key_16bytes_1234")
+        minter_pubkey = minter_key.get_pubkey()
         salt = b"e2e_test_salt_16_bytes_plus"
 
-        # Build mint script
-        mint_script = build_mint_script(multiplier, salt)
+        # Get UTXO (must hold >= 1000 coin, the OP_MINT entry fee)
+        utxo = node.listunspent()[0]
+        mint_script = build_mint_script(minter_pubkey, multiplier, salt)
 
-        # Create transaction
         inputs = [{"txid": utxo["txid"], "vout": utxo["vout"]}]
         amount = float(utxo["amount"])
         outputs = {node.getnewaddress(): amount - 0.01}
         rawtx = node.createrawtransaction(inputs, outputs)
 
-        # Modify scriptPubKey
         tx = FromHex(CTransaction(), rawtx)
         tx.vout[0].scriptPubKey = mint_script
         rawtx = ToHex(tx)
 
-        # Sign and broadcast
+        # This entry's scriptSig is unrelated to OP_MINT (it authorizes
+        # spending the funding UTXO, e.g. a normal P2PKH input); sign it
+        # with the wallet as usual.
         signed = node.signrawtransaction(rawtx)["hex"]
         mint_txid = node.sendrawtransaction(signed)
         node.generate(1)
@@ -316,15 +320,12 @@ class TokenEndToEndTest(BitcoinTestFramework):
 
         print("\n=== Step 2: Transfer tokens to recipient ===")
 
-        # Create recipient key
         recipient_key = CECKey()
         recipient_key.set_secretbytes(b"recipient_private_key_16bytes_1")
         recipient_pubkey = recipient_key.get_pubkey()
 
-        # Build covenant script
-        covenant_script = build_uap_transfer_script(multiplier, recipient_pubkey)
+        covenant_script = build_uap_transfer_script(recipient_pubkey, multiplier)
 
-        # Create spend transaction
         spend_input = CTxIn(COutPoint(int(mint_txid, 16), 0))
         spend_tx = CTransaction()
         spend_tx.vin = [spend_input]
@@ -334,11 +335,10 @@ class TokenEndToEndTest(BitcoinTestFramework):
             CTxOut(int(transfer_amount * COIN), covenant_script)
         ]
 
-        # Sign (empty scriptSig for OP_MINT)
-        spend_tx.vin[0].scriptSig = CScript([])
+        # Signed by the minter (the key named in mint_script), not the recipient.
+        spend_tx.vin[0].scriptSig = sign_spend(mint_script, minter_key, spend_tx, 0)
         spend_raw = ToHex(spend_tx)
 
-        # Broadcast
         transfer_txid = node.sendrawtransaction(spend_raw)
         node.generate(1)
 
@@ -348,34 +348,32 @@ class TokenEndToEndTest(BitcoinTestFramework):
         print(f"✓ Transferred: {transfer_value} WHIP = {transfer_tokens} tokens")
         print(f"✓ Transfer TxID: {transfer_txid}")
 
-        print("\n=== Step 3: Recipient spends tokens ===")
+        print("\n=== Step 3: Recipient transfers onward ===")
 
-        # Get transfer output
-        transfer_tx = node.getrawtransaction(transfer_txid, True)
-        transfer_output = transfer_tx["vout"][0]
+        next_key = CECKey()
+        next_key.set_secretbytes(b"next_holder_private_key_16bytes1")
+        next_pubkey = next_key.get_pubkey()
 
-        # Recipient creates a new transaction
         recipient_spend_input = CTxIn(COutPoint(int(transfer_txid, 16), 0))
         recipient_spend_tx = CTransaction()
         recipient_spend_tx.vin = [recipient_spend_input]
 
         spend_amount = transfer_value - Decimal('0.001')
         recipient_spend_tx.vout = [
-            CTxOut(int(spend_amount * COIN), build_uap_transfer_script(multiplier, recipient_pubkey))
+            CTxOut(int(spend_amount * COIN), build_uap_transfer_script(next_pubkey, multiplier))
         ]
 
-        # Recipient signs with their key
-        recipient_spend_tx.vin[0].scriptSig = CScript([recipient_pubkey.to_bytes()])
+        # Signed by the recipient (the key named in covenant_script).
+        recipient_spend_tx.vin[0].scriptSig = sign_spend(covenant_script, recipient_key, recipient_spend_tx, 0)
         recipient_spend_raw = ToHex(recipient_spend_tx)
 
-        # Broadcast
         final_txid = node.sendrawtransaction(recipient_spend_raw)
         node.generate(1)
 
         final_value = Decimal(str(spend_amount))
         final_tokens = final_value * multiplier
 
-        print(f"✓ Recipient spent: {final_value} WHIP = {final_tokens} tokens")
+        print(f"✓ Recipient forwarded: {final_value} WHIP = {final_tokens} tokens")
         print(f"✓ Spend TxID: {final_txid}")
 
         print("\n=== Token Chain Verification ===")
