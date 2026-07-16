@@ -61,6 +61,51 @@ State is persisted to `-statefile` periodically (`-saveevery`, default
 every 20 blocks) and on clean shutdown (SIGINT/SIGTERM), so restarts resume
 from where they left off rather than rescanning from `-startheight`.
 
+## Running with Docker
+
+```sh
+cd contrib/uap-indexer
+docker build -t uap-indexer .
+
+docker volume create uap-indexer-data
+docker run -d --name uap-indexer \
+  -p 8961:8961 \
+  -e UAP_RPC_HOST=your-node-host \
+  -e UAP_RPC_PORT=33665 \
+  -e UAP_RPC_USER=youruser \
+  -e UAP_RPC_PASSWORD=yourpassword \
+  -v uap-indexer-data:/data \
+  uap-indexer
+```
+
+The image is built `FROM scratch` — a statically-linked Go binary and
+nothing else (no shell, no package manager), running as a fixed non-root
+UID. Every RPC/behavior flag has an `env UAP_*` equivalent (see `-help`
+for the full list, or the flag descriptions in `main.go`); credentials
+passed via `-e` don't end up baked into the container's command line the
+way flags would.
+
+**Provide your own RPC credentials** — there's no default. If you're
+running `whippetd` on the same host, either use `--network host` (Linux
+only) so the container can reach `127.0.0.1:<rpcport>` directly, or put
+both containers on the same Docker network and use the node container's
+name as `UAP_RPC_HOST`. If `whippetd` uses cookie auth, mount the cookie
+file's directory read-only and set `UAP_RPC_COOKIEFILE` to its path
+inside the container instead of `UAP_RPC_USER`/`UAP_RPC_PASSWORD`.
+
+**Always mount `/data` as a volume.** The image bakes in
+`UAP_STATEFILE=/data/uap-index.json`; without a volume there, state is
+lost (and has to fully resync) every time the container is recreated.
+`docker volume create` (as above) or a bind mount both work — either way,
+the volume needs to end up owned by UID/GID `65532` (what the image runs
+as) for the process to actually be able to write to it, which the image
+already arranges for a *fresh* named volume (Docker initializes a new
+named volume's ownership from whatever already exists at that path in
+the image). A bind mount to an existing host directory won't get that
+treatment automatically — `chown -R 65532:65532` it yourself first, or
+writes will fail silently until you notice state isn't surviving
+restarts.
+
 ## Reorg handling
 
 The indexer keeps a small per-height undo log (which positions were

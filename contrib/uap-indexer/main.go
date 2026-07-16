@@ -12,21 +12,43 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
 
+// envOr returns the given environment variable's value, or def if unset.
+// Used so RPC credentials can be supplied via environment (e.g. Docker
+// secrets/env files) instead of command-line flags, which show up in
+// `docker inspect`/process listings far more readily than env vars do.
+// An explicit flag always overrides the environment default.
+func envOr(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
+}
+
+func envOrInt(key string, def int) int {
+	if v, ok := os.LookupEnv(key); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 func main() {
 	var (
-		rpcHost      = flag.String("rpchost", "127.0.0.1", "whippetd RPC host")
-		rpcPort      = flag.Int("rpcport", 33665, "whippetd RPC port (mainnet default)")
-		rpcUser      = flag.String("rpcuser", "", "whippetd RPC username (ignored if -rpccookiefile is set)")
-		rpcPass      = flag.String("rpcpassword", "", "whippetd RPC password (ignored if -rpccookiefile is set)")
-		rpcCookie    = flag.String("rpccookiefile", "", "path to whippetd's .cookie file (preferred over -rpcuser/-rpcpassword)")
+		rpcHost      = flag.String("rpchost", envOr("UAP_RPC_HOST", "127.0.0.1"), "whippetd RPC host (env UAP_RPC_HOST)")
+		rpcPort      = flag.Int("rpcport", envOrInt("UAP_RPC_PORT", 33665), "whippetd RPC port, mainnet default (env UAP_RPC_PORT)")
+		rpcUser      = flag.String("rpcuser", envOr("UAP_RPC_USER", ""), "whippetd RPC username, ignored if -rpccookiefile is set (env UAP_RPC_USER)")
+		rpcPass      = flag.String("rpcpassword", envOr("UAP_RPC_PASSWORD", ""), "whippetd RPC password, ignored if -rpccookiefile is set (env UAP_RPC_PASSWORD)")
+		rpcCookie    = flag.String("rpccookiefile", envOr("UAP_RPC_COOKIEFILE", ""), "path to whippetd's .cookie file, preferred over -rpcuser/-rpcpassword (env UAP_RPC_COOKIEFILE)")
 		startHeight  = flag.Int64("startheight", 0, "block height to start indexing from on a fresh state file (e.g. a UAP activation height, to avoid scanning irrelevant history)")
 		pollInterval = flag.Duration("pollinterval", 5*time.Second, "how often to poll the node for new blocks")
-		listen       = flag.String("listen", "127.0.0.1:8961", "HTTP API listen address")
-		stateFile    = flag.String("statefile", "uap-index.json", "path to persist indexer state, so restarts don't rescan from genesis")
+		listen       = flag.String("listen", envOr("UAP_LISTEN", "127.0.0.1:8961"), "HTTP API listen address (env UAP_LISTEN)")
+		stateFile    = flag.String("statefile", envOr("UAP_STATEFILE", "uap-index.json"), "path to persist indexer state, so restarts don't rescan from genesis (env UAP_STATEFILE)")
 		saveEvery    = flag.Int("saveevery", 20, "save state to disk every N blocks indexed")
 		rateLimit    = flag.Float64("ratelimit", 30, "max requests per minute per client IP on write endpoints (POST/DELETE /orders); 0 disables rate limiting")
 		rateBurst    = flag.Float64("rateburst", 10, "extra requests a client may burst immediately before -ratelimit throttling applies")

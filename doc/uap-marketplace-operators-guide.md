@@ -27,6 +27,29 @@ design doc's trust-model discussion).
 
 ## Quick start
 
+The fastest path is Docker — see "Running with Docker" in
+`contrib/uap-indexer/README.md` for the full walkthrough (credentials via
+env vars, volume ownership gotchas, connecting to a node on the same host
+vs. a separate container). Short version:
+
+```sh
+cd contrib/uap-indexer
+docker build -t uap-indexer .
+docker volume create uap-indexer-data
+docker run -d --name uap-indexer -p 8961:8961 \
+  -e UAP_RPC_HOST=your-node-host -e UAP_RPC_PORT=33665 \
+  -e UAP_RPC_USER=youruser -e UAP_RPC_PASSWORD=yourpassword \
+  -v uap-indexer-data:/data \
+  uap-indexer
+```
+
+You have to provide your own `whippetd` — the container only runs the
+indexer, not a node. Point `UAP_RPC_*` at whatever node you already have
+running (this repo, or the same network's public infrastructure if you're
+not operating your own node).
+
+Or build and run the Go binary directly, without Docker:
+
 ```sh
 # 1. Run a node (example: regtest, for local testing)
 whippetd -regtest -server -rpcuser=you -rpcpassword=changeme
@@ -42,10 +65,11 @@ go build -o uap-indexer .
 # 3. Point a frontend at http://127.0.0.1:8961
 ```
 
-For mainnet, use `-rpccookiefile` instead of `-rpcuser`/`-rpcpassword` if
-your node uses cookie auth, and set `-startheight` to whatever block UAP
-activates at on the network you're indexing, so a fresh instance doesn't
-waste time scanning irrelevant history.
+For mainnet, use `-rpccookiefile` (or `UAP_RPC_COOKIEFILE` in Docker)
+instead of `-rpcuser`/`-rpcpassword` if your node uses cookie auth, and
+set `-startheight` to whatever block UAP activates at on the network
+you're indexing, so a fresh instance doesn't waste time scanning
+irrelevant history.
 
 ## Operational notes
 
