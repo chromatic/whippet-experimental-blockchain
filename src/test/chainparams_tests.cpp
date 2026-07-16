@@ -63,4 +63,14 @@ BOOST_AUTO_TEST_CASE(regtest_auxpow_chain_id_fix)
     BOOST_CHECK_EQUAL(params.GetConsensus(CHAIN_ID_FIX_HEIGHT + 1).nAuxpowChainId, WHIPPET_CHAIN_ID);
 }
 
+BOOST_AUTO_TEST_CASE(uap_mint_activation_height)
+{
+    // Same height as the chain-ID fix on mainnet/testnet (chain tip was
+    // 79398 on mainnet when this was set); active from genesis on regtest
+    // for testability.
+    BOOST_CHECK_EQUAL(Params(CBaseChainParams::MAIN).GetConsensus(0).UAPMintHeight, 80000);
+    BOOST_CHECK_EQUAL(Params(CBaseChainParams::TESTNET).GetConsensus(0).UAPMintHeight, 80000);
+    BOOST_CHECK_EQUAL(Params(CBaseChainParams::REGTEST).GetConsensus(0).UAPMintHeight, 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

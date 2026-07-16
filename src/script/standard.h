@@ -40,7 +40,19 @@ extern unsigned nMaxDatacarrierBytes;
  * Failing one of these tests may trigger a DoS ban - see CheckInputs() for
  * details.
  */
-static const unsigned int MANDATORY_SCRIPT_VERIFY_FLAGS = SCRIPT_VERIFY_P2SH;
+// SCRIPT_VERIFY_UAP_MINT is included here (not just in
+// STANDARD_SCRIPT_VERIFY_FLAGS) so that AcceptToMemoryPool's internal
+// self-consistency recheck (anything passing STANDARD must also pass
+// MANDATORY, or it's treated as a bug -- see the "BUG! PLEASE REPORT
+// THIS!" check in validation.cpp) doesn't trip on a genuinely valid
+// OP_MINT/OP_MINT_TRANSFER transaction. This does NOT weaken the actual
+// height-gated activation: ConnectBlock computes its own per-height
+// flags independently (see UAPMintHeight in consensus/params.h) and is
+// the real consensus floor for what a mined block may contain. Only
+// mempool-relay policy is affected -- a pre-activation OP_MINT
+// transaction may be relayed, but still cannot be mined into a valid
+// block before the activation height.
+static const unsigned int MANDATORY_SCRIPT_VERIFY_FLAGS = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_UAP_MINT;
 
 enum txnouttype
 {

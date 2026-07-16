@@ -6,8 +6,6 @@
 ["correct prevout hash), using the given scriptSig. All nLockTimes are 0, all"],
 ["nSequences are max."],
 
-[[1000], "", "0x01 0x01 0x10 0x112233445566778899aabbccddeeff OP_MINT", "P2SH,STRICTENC", "OK", "1 16-byte salt, OP_MINT should succeed", "0x01 0x01 0x10 0x112233445566778899aabbccddeeff OP_MINT"],
-[[1000], "", "0x01 0x01 0x02 0x0011 OP_MINT", "P2SH,STRICTENC", "INVALID_STACK_OPERATION", "1 2-byte salt, OP_MINT should fail (salt too short)", "0x01 0x01 0x02 0x0011 OP_MINT"],
 ["", "0 INSPECT 1 EQUAL", "P2SH,STRICTENC", "OK", "OP_INSPECT with selector 0 (version) should push 1 and succeed"],
 ["0", "0 INSPECT 10", "P2SH,STRICTENC", "OK", "INSPECT 10 (output nValue) should push 0 (default output value)"],
 ["0", "0 INSPECT 11", "P2SH,STRICTENC", "OK", "INSPECT 11 (output virtual balance) should push 0 (default output value * 1000)"],

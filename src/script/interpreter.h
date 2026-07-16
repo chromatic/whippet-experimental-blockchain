@@ -106,6 +106,12 @@ enum
     // Public keys in segregated witness scripts must be compressed
     //
     SCRIPT_VERIFY_WITNESS_PUBKEYTYPE = (1U << 15),
+
+    // OP_MINT/OP_MINT_TRANSFER are recognized at all (height-gated
+    // activation; before this is set, both opcodes fail closed as if
+    // undefined, same as SCRIPT_ERR_BAD_OPCODE).
+    //
+    SCRIPT_VERIFY_UAP_MINT = (1U << 16),
 };
 
 bool CheckSignatureEncoding(const std::vector<unsigned char> &vchSig, unsigned int flags, ScriptError* serror);

@@ -13,6 +13,8 @@
 #include "script/script.h"
 #include "uint256.h"
 
+#include <limits>
+
 using namespace std;
 
 typedef vector<unsigned char> valtype;
@@ -245,6 +247,14 @@ bool static CheckMinimalPush(const valtype& data, opcodetype opcode) {
     return true;
 }
 
+// Multiplier values are read out via CScriptNum::getint(), which silently
+// clamps to [INT32_MIN, INT32_MAX] rather than erroring -- a CScriptNum
+// itself can hold up to 8 bytes (~9.2e18). Bounding the accepted range
+// here to fit safely within getint()'s range means every later
+// getint() call on a multiplier that passed this check returns the exact
+// declared value, never a silently truncated one.
+static const int64_t MAX_UAP_MULTIPLIER = std::numeric_limits<int32_t>::max();
+
 /**
  * Recognize a UAP mint or mint-transfer output and extract its declared
  * recipient pubkey and multiplier. Matches exactly one of:
@@ -258,8 +268,14 @@ static bool ParseUapOutputScript(const CScript& script, valtype& pubkeyOut, CScr
     opcodetype opcode;
     valtype vch;
 
-    // <pubkey>
-    if (!script.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4 || vch.empty())
+    // <pubkey>: must be exactly compressed (33) or uncompressed (65) length.
+    // A wrong-length "pubkey" can never have a valid signature produced for
+    // it, so accepting it here would let a malformed covenant output
+    // silently satisfy CheckUapOutputConservation's "at least one
+    // continuing covenant" requirement while being permanently unspendable.
+    if (!script.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
+        return false;
+    if (vch.size() != 33 && vch.size() != 65)
         return false;
     pubkeyOut = vch;
 
@@ -271,7 +287,7 @@ static bool ParseUapOutputScript(const CScript& script, valtype& pubkeyOut, CScr
     } catch (const scriptnum_error&) {
         return false;
     }
-    if (multiplierOut < 0)
+    if (multiplierOut < 0 || multiplierOut > MAX_UAP_MULTIPLIER)
         return false;
 
     if (!script.GetOp(pc, opcode, vch))
@@ -1166,6 +1182,13 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                 case OP_MINT:
                 case OP_MINT_TRANSFER:
                 {
+                    // 0. Height-gated activation: before this flag is set
+                    //    (see SCRIPT_VERIFY_UAP_MINT / Consensus::Params::UAPMintHeight),
+                    //    these opcodes are disabled entirely, identical to an
+                    //    undefined opcode. No legacy behavior is preserved.
+                    if (!(flags & SCRIPT_VERIFY_UAP_MINT))
+                        return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+
                     const bool fIsMint = (opcode == OP_MINT);
 
                     if (stack.size() < (fIsMint ? 4u : 3u))
@@ -1183,18 +1206,33 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     valtype vchSig = stacktop(-1);
                     popstack(stack);
 
-                    // 1. Signature: only the declared recipient may spend this position.
+                    // 1. Signature: only the declared recipient may spend this
+                    //    position. Encoding strictness (DER/low-S/defined
+                    //    hashtype, pubkey format) is enforced unconditionally
+                    //    here rather than gated on flags -- SCRIPT_VERIFY_STRICTENC/
+                    //    NULLFAIL/LOW_S are mempool-policy-only, not
+                    //    consensus-mandatory (see MANDATORY_SCRIPT_VERIFY_FLAGS
+                    //    vs. STANDARD_SCRIPT_VERIFY_FLAGS), so relying on the
+                    //    passed-in flags here would let a miner include a
+                    //    malformed-encoding signature or pubkey directly in a
+                    //    block. This is new functionality with no legacy
+                    //    scripts to stay compatible with, so there's no reason
+                    //    not to require strict encoding always.
                     CScript scriptCode(pbegincodehash, pend);
                     if (sigversion == SIGVERSION_BASE) {
                         scriptCode.FindAndDelete(CScript(vchSig));
                     }
-                    if (!CheckSignatureEncoding(vchSig, flags, serror) || !CheckPubKeyEncoding(vchPubKey, flags, sigversion, serror)) {
-                        return false;
+                    if (!IsValidSignatureEncoding(vchSig) || (vchSig.size() && !IsLowDERSignature(vchSig, serror)) || !IsDefinedHashtypeSignature(vchSig)) {
+                        return set_error(serror, SCRIPT_ERR_SIG_DER);
+                    }
+                    if (vchPubKey.size() != 33 && vchPubKey.size() != 65) {
+                        return set_error(serror, SCRIPT_ERR_PUBKEYTYPE);
                     }
                     if (!checker.CheckSig(vchSig, vchPubKey, scriptCode, sigversion)) {
-                        if ((flags & SCRIPT_VERIFY_NULLFAIL) && vchSig.size())
-                            return set_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
-                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                        // vchSig is guaranteed non-empty here: an empty
+                        // signature fails IsValidSignatureEncoding above and
+                        // returns SCRIPT_ERR_SIG_DER before reaching this point.
+                        return set_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
                     }
 
                     const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
@@ -1210,8 +1248,13 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     if (fIsMint && salt.size() < 16)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
 
-                    // 4. Overflow guard: (base coin * multiplier) <= 2^48
-                    if (multiplier < 0)
+                    // 4. Multiplier range + overflow guard: multiplier must
+                    //    fit safely within what CScriptNum::getint() can
+                    //    represent without silently clamping (that clamp is
+                    //    what OP_INSPECT's virtual-balance calc and this
+                    //    guard itself both rely on downstream), and
+                    //    (base coin * multiplier) <= 2^48.
+                    if (multiplier < 0 || multiplier > MAX_UAP_MULTIPLIER)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     const int64_t base_coin = nValueIn / COIN;
                     const int64_t mult = static_cast<int64_t>(multiplier.getint());

@@ -6,11 +6,14 @@
 #include "script/interpreter.h"
 #include "script/script.h"
 #include "script/script_error.h"
+#include "script/standard.h"
 #include "uint256.h"
 
 #include "test/test_bitcoin.h"
 
 #include <boost/test/unit_test.hpp>
+
+#include <limits>
 
 typedef std::vector<unsigned char> valtype;
 
@@ -18,7 +21,7 @@ BOOST_FIXTURE_TEST_SUITE(uap_mint_tests, BasicTestingSetup)
 
 namespace {
 
-const unsigned int FLAGS = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC | SCRIPT_VERIFY_NULLFAIL;
+const unsigned int FLAGS = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC | SCRIPT_VERIFY_NULLFAIL | SCRIPT_VERIFY_UAP_MINT;
 const int64_t MULTIPLIER = 1000;
 const valtype SALT(16, 0x42);
 
@@ -369,6 +372,133 @@ BOOST_AUTO_TEST_CASE(transfer_solo_spend_of_either_lineage_still_works)
     bool ok = VerifyScript(soloTx.vin[0].scriptSig, transferScriptA, NULL, FLAGS,
         MutableTransactionSignatureChecker(&soloTx, 0, valueA), &err);
     BOOST_CHECK_MESSAGE(ok, ScriptErrorString(err));
+}
+
+// Height-gated activation: an otherwise fully valid mint spend must be
+// rejected as an unrecognized opcode when SCRIPT_VERIFY_UAP_MINT isn't
+// set (i.e. before Consensus::Params::UAPMintHeight), and accepted once
+// it is -- proving the flag genuinely gates the opcode rather than being
+// vestigial.
+BOOST_AUTO_TEST_CASE(mint_disabled_without_uap_mint_flag)
+{
+    CKey minter, recipient;
+    minter.MakeNewKey(true);
+    recipient.MakeNewKey(true);
+
+    CScript mintScript = MintScript(minter.GetPubKey());
+    const CAmount nValueIn = 1000 * COIN;
+
+    CMutableTransaction spendTx;
+    spendTx.vin.resize(1);
+    spendTx.vout.resize(1);
+    spendTx.vout[0].nValue = nValueIn;
+    spendTx.vout[0].scriptPubKey = TransferScript(recipient.GetPubKey());
+    spendTx.vin[0].scriptSig = SignSpend(mintScript, minter, spendTx, 0);
+
+    const unsigned int flagsWithoutUapMint = FLAGS & ~SCRIPT_VERIFY_UAP_MINT;
+
+    ScriptError errDisabled;
+    bool okDisabled = VerifyScript(spendTx.vin[0].scriptSig, mintScript, NULL, flagsWithoutUapMint,
+        MutableTransactionSignatureChecker(&spendTx, 0, nValueIn), &errDisabled);
+    BOOST_CHECK(!okDisabled);
+    BOOST_CHECK_EQUAL(errDisabled, SCRIPT_ERR_BAD_OPCODE);
+
+    // The exact same transaction succeeds once the flag is set (FLAGS
+    // already includes it) -- confirming the rejection above was
+    // specifically about the flag, not some other defect in the fixture.
+    ScriptError errEnabled;
+    bool okEnabled = VerifyScript(spendTx.vin[0].scriptSig, mintScript, NULL, FLAGS,
+        MutableTransactionSignatureChecker(&spendTx, 0, nValueIn), &errEnabled);
+    BOOST_CHECK_MESSAGE(okEnabled, ScriptErrorString(errEnabled));
+}
+
+// A multiplier above INT32_MAX must be rejected outright rather than
+// silently truncated by CScriptNum::getint() (which clamps to
+// [INT32_MIN, INT32_MAX] instead of erroring). Both the input's own
+// declared multiplier and a covenant output's multiplier go through this
+// same bound.
+BOOST_AUTO_TEST_CASE(mint_rejects_multiplier_above_int32_max)
+{
+    CKey minter, recipient;
+    minter.MakeNewKey(true);
+    recipient.MakeNewKey(true);
+
+    const int64_t hugeMultiplier = int64_t(std::numeric_limits<int32_t>::max()) + 1;
+    CScript mintScript = MintScript(minter.GetPubKey(), hugeMultiplier);
+    const CAmount nValueIn = 1000 * COIN;
+
+    CMutableTransaction spendTx;
+    spendTx.vin.resize(1);
+    spendTx.vout.resize(1);
+    spendTx.vout[0].nValue = nValueIn;
+    spendTx.vout[0].scriptPubKey = TransferScript(recipient.GetPubKey(), hugeMultiplier);
+    spendTx.vin[0].scriptSig = SignSpend(mintScript, minter, spendTx, 0);
+
+    ScriptError err;
+    bool ok = VerifyScript(spendTx.vin[0].scriptSig, mintScript, NULL, FLAGS,
+        MutableTransactionSignatureChecker(&spendTx, 0, nValueIn), &err);
+    BOOST_CHECK(!ok);
+}
+
+// The exact boundary value (INT32_MAX itself) must still be accepted --
+// confirming the previous test rejects specifically for exceeding the
+// bound, not multipliers in general once they get large.
+BOOST_AUTO_TEST_CASE(mint_accepts_multiplier_at_int32_max)
+{
+    CKey minter, recipient;
+    minter.MakeNewKey(true);
+    recipient.MakeNewKey(true);
+
+    const int64_t maxMultiplier = std::numeric_limits<int32_t>::max();
+    CScript mintScript = MintScript(minter.GetPubKey(), maxMultiplier);
+    const CAmount nValueIn = 1000 * COIN;
+
+    CMutableTransaction spendTx;
+    spendTx.vin.resize(1);
+    spendTx.vout.resize(1);
+    spendTx.vout[0].nValue = nValueIn;
+    spendTx.vout[0].scriptPubKey = TransferScript(recipient.GetPubKey(), maxMultiplier);
+    spendTx.vin[0].scriptSig = SignSpend(mintScript, minter, spendTx, 0);
+
+    ScriptError err;
+    bool ok = VerifyScript(spendTx.vin[0].scriptSig, mintScript, NULL, FLAGS,
+        MutableTransactionSignatureChecker(&spendTx, 0, nValueIn), &err);
+    BOOST_CHECK_MESSAGE(ok, ScriptErrorString(err));
+}
+
+// Solver()'s UAP recognition in standard.cpp triggers on a script's LAST
+// byte matching OP_MINT/OP_MINT_TRANSFER, which is not on its own good
+// evidence of a real UAP script -- an unrelated script (e.g. a witness
+// program, whose final byte is just the tail of a hash) can coincidentally
+// end that way. This must fall through to normal classification rather
+// than misclassifying (or outright failing to classify) an unrelated,
+// perfectly valid script. Found via a ~1/256-odds collision in
+// transaction_tests' test_witness (which uses randomly generated keys
+// each run) silently mismatching a P2WSH witness program.
+BOOST_AUTO_TEST_CASE(solver_falls_through_on_coincidental_last_byte_match)
+{
+    // A witness-v0 program is just <OP_0> <push of a 20 or 32-byte hash>.
+    // Construct one whose hash happens to end in the OP_MINT byte.
+    valtype hash(32, 0x00);
+    hash[hash.size() - 1] = OP_MINT; // 0xb5 -- coincidental collision
+    CScript witnessProgram = CScript() << OP_0 << hash;
+    BOOST_CHECK_EQUAL(witnessProgram[witnessProgram.size() - 1], (unsigned char)OP_MINT);
+
+    txnouttype whichType;
+    std::vector<valtype> solutions;
+    bool ok = Solver(witnessProgram, whichType, solutions);
+    BOOST_CHECK(ok);
+    BOOST_CHECK_EQUAL(whichType, TX_WITNESS_V0_SCRIPTHASH);
+
+    // Same check for the OP_MINT_TRANSFER byte.
+    valtype hash2(20, 0x00);
+    hash2[hash2.size() - 1] = OP_MINT_TRANSFER; // 0xba
+    CScript witnessProgram2 = CScript() << OP_0 << hash2;
+    txnouttype whichType2;
+    std::vector<valtype> solutions2;
+    bool ok2 = Solver(witnessProgram2, whichType2, solutions2);
+    BOOST_CHECK(ok2);
+    BOOST_CHECK_EQUAL(whichType2, TX_WITNESS_V0_KEYHASH);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

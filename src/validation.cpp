@@ -1915,6 +1915,11 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
     }
 
+    // Start enforcing OP_MINT/OP_MINT_TRANSFER.
+    if (pindex->nHeight >= chainparams.GetConsensus(0).UAPMintHeight) {
+        flags |= SCRIPT_VERIFY_UAP_MINT;
+    }
+
     // Start enforcing BIP68 (sequence locks) and BIP112 (CHECKSEQUENCEVERIFY) using versionbits logic.
     int nLockTimeFlags = 0;
     if (VersionBitsState(pindex->pprev, consensus, Consensus::DEPLOYMENT_CSV, versionbitscache) == THRESHOLD_ACTIVE) {

@@ -65,38 +65,56 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
 
     // UAP mint: <recipient_pubkey> <multiplier> <salt> OP_MINT
     // UAP transfer/covenant: <recipient_pubkey> <multiplier> OP_MINT_TRANSFER
+    //
+    // A script's *last byte* matching OP_MINT/OP_MINT_TRANSFER is not on
+    // its own good evidence this is a UAP script -- an unrelated script
+    // (e.g. a witness program, whose final byte is just the tail of a
+    // hash) can coincidentally end that way. So a structural mismatch
+    // below must fall through to the normal template matching, not
+    // return false outright -- returning false here would abort Solver()
+    // entirely and misclassify a perfectly valid, unrelated script that
+    // just happens to share a last byte.
     if (scriptPubKey.size() >= 2 && (scriptPubKey.back() == OP_MINT || scriptPubKey.back() == OP_MINT_TRANSFER)) {
         const bool fIsMint = (scriptPubKey.back() == OP_MINT);
         CScript::const_iterator pc = scriptPubKey.begin();
         opcodetype opcode;
         valtype vch;
+        valtype pubkey;
+        bool matched = false;
 
-        if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4 || vch.size() < 33 || vch.size() > 65)
-            return false;
-        valtype pubkey = vch;
+        do {
+            if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4 || vch.size() < 33 || vch.size() > 65)
+                break;
+            pubkey = vch;
 
-        if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
-            return false;
+            if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
+                break;
 
-        if (!scriptPubKey.GetOp(pc, opcode, vch))
-            return false;
+            if (!scriptPubKey.GetOp(pc, opcode, vch))
+                break;
 
-        if (fIsMint) {
-            if (opcode > OP_PUSHDATA4 || vch.size() < 16)
-                return false;
-            opcodetype opcodeMint;
-            valtype vchMint;
-            if (!scriptPubKey.GetOp(pc, opcodeMint, vchMint) || opcodeMint != OP_MINT || pc != scriptPubKey.end())
-                return false;
-        } else {
-            if (opcode != OP_MINT_TRANSFER || pc != scriptPubKey.end())
-                return false;
+            if (fIsMint) {
+                if (opcode > OP_PUSHDATA4 || vch.size() < 16)
+                    break;
+                opcodetype opcodeMint;
+                valtype vchMint;
+                if (!scriptPubKey.GetOp(pc, opcodeMint, vchMint) || opcodeMint != OP_MINT || pc != scriptPubKey.end())
+                    break;
+            } else {
+                if (opcode != OP_MINT_TRANSFER || pc != scriptPubKey.end())
+                    break;
+            }
+
+            matched = true;
+        } while (false);
+
+        if (matched) {
+            typeRet = fIsMint ? TX_OP_MINT : TX_OP_TRANSFER;
+            vSolutionsRet.clear();
+            vSolutionsRet.push_back(pubkey);
+            return true;
         }
-
-        typeRet = fIsMint ? TX_OP_MINT : TX_OP_TRANSFER;
-        vSolutionsRet.clear();
-        vSolutionsRet.push_back(pubkey);
-        return true;
+        // else fall through to the normal classification below.
     }
 
     vSolutionsRet.clear();
