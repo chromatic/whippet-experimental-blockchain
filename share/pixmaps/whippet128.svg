@@ -9,8 +9,10 @@
       <stop offset="100%" stop-color="#38bdf8" />
     </linearGradient>
   </defs>
-  <rect width="256" height="256" rx="48" fill="url(#bg)" />
-  <circle cx="128" cy="128" r="92" fill="#0b1224" opacity="0.7" />
-  <path d="M64 188L96 68h24l16 72 16-72h24l32 120h-28l-18-76-16 76h-24l-16-76-18 76H64z" fill="url(#accent)" />
-  <circle cx="128" cy="128" r="110" stroke="#38bdf8" stroke-width="6" fill="none" opacity="0.2" />
+  <g transform="rotate(180 128 128)">
+    <rect width="256" height="256" rx="48" fill="url(#bg)" />
+    <circle cx="128" cy="128" r="92" fill="#0b1224" opacity="0.7" />
+    <path d="M64 188L96 68h24l16 72 16-72h24l32 120h-28l-18-76-16 76h-24l-16-76-18 76H64z" fill="url(#accent)" />
+    <circle cx="128" cy="128" r="110" stroke="#38bdf8" stroke-width="6" fill="none" opacity="0.2" />
+  </g>
 </svg>
