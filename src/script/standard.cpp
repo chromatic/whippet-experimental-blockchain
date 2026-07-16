@@ -34,6 +34,7 @@ const char* GetTxnOutputType(txnouttype t)
     case TX_WITNESS_V0_KEYHASH: return "witness_v0_keyhash";
     case TX_WITNESS_V0_SCRIPTHASH: return "witness_v0_scripthash";
     case TX_OP_MINT: return "op_mint";
+    case TX_OP_TRANSFER: return "op_mint_transfer";
     }
     return NULL;
 }
@@ -56,46 +57,64 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
         // Sender provides N pubkeys, receivers provides M signatures
         mTemplates.insert(make_pair(TX_MULTISIG, CScript() << OP_SMALLINTEGER << OP_PUBKEYS << OP_SMALLINTEGER << OP_CHECKMULTISIG));
 
-        // Strict OP_MINT: [minimal push] OP_MINT
-        // Template: OP_PUSHDATA (any minimal push) + OP_MINT
-        // Use OP_PUBKEY as a stand-in for any minimal push (since OP_PUBKEY is 33 bytes, but template matching will check minimal push)
-        mTemplates.insert(make_pair(TX_OP_MINT, CScript() << OP_PUBKEY << OP_MINT));
-
-        // UAP Transfer: <multiplier> OP_INSPECT_SELF <0> <12> OP_INSPECT OP_EQUALVERIFY <this_index> <1> OP_INSPECT <0> <11> OP_INSPECT OP_EQUALVERIFY <pubkey> OP_CHECKSIG
-        // For template matching, use OP_PUBKEY as a stand-in for <pubkey>, and OP_SMALLINTEGER for <this_index>
-        mTemplates.insert(make_pair(
-            TX_OP_TRANSFER,
-            CScript()
-                << OP_PUBKEY // <multiplier>
-                << OP_INSPECT_SELF
-                << 0 << 12 << OP_INSPECT
-                << OP_EQUALVERIFY
-                << OP_SMALLINTEGER // <this_index>
-                << 1 << OP_INSPECT
-                << 0 << 11 << OP_INSPECT
-                << OP_EQUALVERIFY
-                << OP_PUBKEY // <pubkey>
-                << OP_CHECKSIG
-        ));
-    }
-    // Special case for strict OP_MINT: [minimal push] OP_MINT
-    if (scriptPubKey.size() >= 2 && scriptPubKey.back() == OP_MINT) {
-        // Check that the script is [data] [data] OP_MINT (multiplier, salt, then OP_MINT)
-        // This is: push(multiplier) push(salt) OP_MINT
-        typeRet = TX_OP_MINT;
-        vSolutionsRet.clear();
-        return true;
+        // UAP mint and transfer outputs are recognized below by dedicated
+        // parsing rather than the generic template matcher, since their
+        // multiplier/salt fields don't fit the fixed wildcard opcode set
+        // (OP_PUBKEY, OP_PUBKEYHASH, OP_SMALLINTEGER, OP_PUBKEYS).
     }
 
-    // Special case for simple UAP covenant transfer: <pubkey> OP_CHECKSIG
-    // We recognize this as TX_OP_TRANSFER for simple covenant outputs
-    if (scriptPubKey.size() == 34 &&
-        scriptPubKey[0] == 33 &&  // push 33 bytes (pubkey)
-        scriptPubKey[33] == OP_CHECKSIG) {
-        typeRet = TX_OP_TRANSFER;
-        vSolutionsRet.clear();
-        vSolutionsRet.push_back(std::vector<unsigned char>(scriptPubKey.begin() + 1, scriptPubKey.begin() + 34));
-        return true;
+    // UAP mint: <recipient_pubkey> <multiplier> <salt> OP_MINT
+    // UAP transfer/covenant: <recipient_pubkey> <multiplier> OP_MINT_TRANSFER
+    //
+    // A script's *last byte* matching OP_MINT/OP_MINT_TRANSFER is not on
+    // its own good evidence this is a UAP script -- an unrelated script
+    // (e.g. a witness program, whose final byte is just the tail of a
+    // hash) can coincidentally end that way. So a structural mismatch
+    // below must fall through to the normal template matching, not
+    // return false outright -- returning false here would abort Solver()
+    // entirely and misclassify a perfectly valid, unrelated script that
+    // just happens to share a last byte.
+    if (scriptPubKey.size() >= 2 && (scriptPubKey.back() == OP_MINT || scriptPubKey.back() == OP_MINT_TRANSFER)) {
+        const bool fIsMint = (scriptPubKey.back() == OP_MINT);
+        CScript::const_iterator pc = scriptPubKey.begin();
+        opcodetype opcode;
+        valtype vch;
+        valtype pubkey;
+        bool matched = false;
+
+        do {
+            if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4 || vch.size() < 33 || vch.size() > 65)
+                break;
+            pubkey = vch;
+
+            if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
+                break;
+
+            if (!scriptPubKey.GetOp(pc, opcode, vch))
+                break;
+
+            if (fIsMint) {
+                if (opcode > OP_PUSHDATA4 || vch.size() < 16)
+                    break;
+                opcodetype opcodeMint;
+                valtype vchMint;
+                if (!scriptPubKey.GetOp(pc, opcodeMint, vchMint) || opcodeMint != OP_MINT || pc != scriptPubKey.end())
+                    break;
+            } else {
+                if (opcode != OP_MINT_TRANSFER || pc != scriptPubKey.end())
+                    break;
+            }
+
+            matched = true;
+        } while (false);
+
+        if (matched) {
+            typeRet = fIsMint ? TX_OP_MINT : TX_OP_TRANSFER;
+            vSolutionsRet.clear();
+            vSolutionsRet.push_back(pubkey);
+            return true;
+        }
+        // else fall through to the normal classification below.
     }
 
     vSolutionsRet.clear();

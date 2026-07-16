@@ -1397,7 +1397,20 @@ void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight)
 bool CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
-    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata), &error)) {
+
+    // Prevout scriptPubKeys for every input of this transaction, so UAP
+    // opcodes (e.g. OP_MINT's one-shot check) can inspect sibling inputs.
+    std::vector<CScript> vPrevScriptPubKeys;
+    if (inputsView) {
+        vPrevScriptPubKeys.reserve(ptxTo->vin.size());
+        for (const auto& txin : ptxTo->vin) {
+            const CCoins* coins = inputsView->AccessCoins(txin.prevout.hash);
+            bool fAvailable = coins && coins->IsAvailable(txin.prevout.n);
+            vPrevScriptPubKeys.push_back(fAvailable ? coins->vout[txin.prevout.n].scriptPubKey : CScript());
+        }
+    }
+
+    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata, inputsView ? &vPrevScriptPubKeys : NULL), &error)) {
         return false;
     }
     return true;
@@ -1484,7 +1497,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 assert(coins);
 
                 // Verify signature
-                CScriptCheck check(*coins, tx, i, flags, cacheStore, &txdata);
+                CScriptCheck check(*coins, tx, i, flags, cacheStore, &txdata, &inputs);
                 if (pvChecks) {
                     pvChecks->push_back(CScriptCheck());
                     check.swap(pvChecks->back());
@@ -1497,7 +1510,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                         // avoid splitting the network between upgraded and
                         // non-upgraded nodes.
                         CScriptCheck check2(*coins, tx, i,
-                                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS, cacheStore, &txdata);
+                                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS, cacheStore, &txdata, &inputs);
                         if (check2())
                             return state.Invalid(false, REJECT_NONSTANDARD, strprintf("non-mandatory-script-verify-flag (%s)", ScriptErrorString(check.GetScriptError())));
                     }
@@ -1900,6 +1913,11 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     // Start enforcing CHECKLOCKTIMEVERIFY, (BIP65) for block.nVersion=4 blocks
     if (pindex->nHeight >= chainparams.GetConsensus(0).BIP65Height) {
         flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
+    }
+
+    // Start enforcing OP_MINT/OP_MINT_TRANSFER.
+    if (pindex->nHeight >= chainparams.GetConsensus(0).UAPMintHeight) {
+        flags |= SCRIPT_VERIFY_UAP_MINT;
     }
 
     // Start enforcing BIP68 (sequence locks) and BIP112 (CHECKSEQUENCEVERIFY) using versionbits logic.

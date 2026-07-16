@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>UAP mint/transfer demo (uap.js)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  fieldset { margin-bottom: 1.5rem; }
+  label { display: block; margin-top: 0.5rem; font-size: 0.9em; }
+  input, textarea { width: 100%; box-sizing: border-box; font-family: monospace; }
+  textarea { height: 5em; }
+  button { margin-top: 0.75rem; padding: 0.4em 1em; }
+  pre { background: #f4f4f4; padding: 0.75em; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .warn { background: #fff3cd; border: 1px solid #d9c27a; padding: 0.75em 1em; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>UAP mint/transfer demo</h1>
+
+<p class="warn">
+  <strong>Demo only, not production-ready key handling.</strong> Keys here are
+  generated in-browser and kept only in page memory — they are never sent
+  anywhere. But this page does not persist keys, has no backup/recovery, and
+  should not be used with real funds. It also builds and signs
+  transactions locally and shows you the resulting hex; it does not
+  broadcast anything on its own (see "Broadcasting" below).
+</p>
+
+<fieldset>
+  <legend>1. Generate a keypair</legend>
+  <button id="genKeyBtn">Generate new keypair</button>
+  <label>Private key (hex, keep secret)</label>
+  <input id="privKey" readonly />
+  <label>Public key (hex, compressed)</label>
+  <input id="pubKey" readonly />
+</fieldset>
+
+<fieldset>
+  <legend>2. Build an OP_MINT output script</legend>
+  <label>Multiplier</label>
+  <input id="multiplier" value="1000" />
+  <label>Salt (hex, &ge;16 bytes -- click to randomize)</label>
+  <input id="salt" readonly onclick="randomizeSalt()" />
+  <button onclick="buildMint()">Build mint script</button>
+  <label>Mint scriptPubKey (hex)</label>
+  <textarea id="mintScript" readonly></textarea>
+  <p>
+    Give this script's hex to whoever is funding the mint: it becomes
+    output 0's <code>scriptPubKey</code> in a transaction spending a UTXO
+    worth &ge; 1000 coin (the OP_MINT entry fee), in place of a normal
+    address. See <code>doc/uap-minting-guide.md</code> for the raw
+    transaction construction steps -- that part still goes through your
+    node's wallet as usual, since it's an ordinary funding input, not a
+    UAP spend.
+  </p>
+</fieldset>
+
+<fieldset>
+  <legend>3. Sign a transfer spend</legend>
+  <p>Once a mint (or an earlier transfer) is confirmed, spend it here.</p>
+  <label>Input txid</label>
+  <input id="inTxid" placeholder="64-character hex txid" />
+  <label>Input vout</label>
+  <input id="inVout" value="0" />
+  <label>Input scriptPubKey (hex) -- the exact script being spent</label>
+  <textarea id="inScript"></textarea>
+  <label>Input value (satoshis)</label>
+  <input id="inValue" />
+  <label>Spender's private key (hex) -- must match the pubkey named in the input script</label>
+  <input id="spendPrivKey" />
+  <label>Recipient pubkey (hex, compressed)</label>
+  <input id="toPubkey" />
+  <label>Multiplier (must match the input's own multiplier)</label>
+  <input id="xferMultiplier" value="1000" />
+  <label>Fee (satoshis)</label>
+  <input id="fee" value="50000" />
+  <button onclick="buildTransfer()">Build and sign transfer</button>
+  <label>Signed raw transaction (hex)</label>
+  <textarea id="rawTx" readonly></textarea>
+</fieldset>
+
+<fieldset>
+  <legend>Broadcasting</legend>
+  <p>
+    This page never talks to a node directly -- browsers should not be
+    pointed at raw node RPC (no CORS, and it's a trusted-operator
+    interface, not a public API). To actually submit the hex above,
+    send it to a backend you control that calls
+    <code>sendrawtransaction</code>, or paste it into
+    <code>whippet-cli sendrawtransaction &lt;hex&gt;</code> yourself.
+    Query <a href="../uap-indexer/README.md">uap-indexer</a>'s
+    <code>/positions?pubkey=...</code> endpoint to find UTXOs to spend.
+  </p>
+</fieldset>
+
+<script type="module">
+  import * as secp from 'https://esm.sh/@noble/secp256k1@1.7.1';
+  import * as UAP from './uap.js';
+
+  UAP.configureSecp(secp);
+  window.secp = secp;
+  window.UAP = UAP;
+
+  window.randomizeSalt = function () {
+    document.getElementById('salt').value = UAP.bytesToHex(UAP.randomSalt(20));
+  };
+  randomizeSalt();
+
+  document.getElementById('genKeyBtn').addEventListener('click', () => {
+    const priv = secp.utils.randomPrivateKey();
+    const pub = secp.getPublicKey(priv, true);
+    document.getElementById('privKey').value = UAP.bytesToHex(priv);
+    document.getElementById('pubKey').value = UAP.bytesToHex(pub);
+  });
+
+  window.buildMint = function () {
+    const pub = UAP.hexToBytes(document.getElementById('pubKey').value.trim());
+    const multiplier = parseInt(document.getElementById('multiplier').value, 10);
+    const salt = UAP.hexToBytes(document.getElementById('salt').value.trim());
+    const script = UAP.buildMintScript(pub, multiplier, salt);
+    document.getElementById('mintScript').value = UAP.bytesToHex(script);
+  };
+
+  window.buildTransfer = function () {
+    const input = {
+      txid: document.getElementById('inTxid').value.trim(),
+      vout: parseInt(document.getElementById('inVout').value, 10),
+      scriptCode: UAP.hexToBytes(document.getElementById('inScript').value.trim()),
+      value: parseInt(document.getElementById('inValue').value, 10),
+      privKey: UAP.hexToBytes(document.getElementById('spendPrivKey').value.trim()),
+    };
+    const toPubkey = UAP.hexToBytes(document.getElementById('toPubkey').value.trim());
+    const multiplier = parseInt(document.getElementById('xferMultiplier').value, 10);
+    const fee = parseInt(document.getElementById('fee').value, 10);
+
+    const tx = UAP.buildTransferTx(secp, { input, toPubkey, multiplier, fee });
+    document.getElementById('rawTx').value = UAP.txToHex(tx);
+  };
+</script>
+</body>
+</html>

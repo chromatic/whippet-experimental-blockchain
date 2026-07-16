@@ -176,6 +176,7 @@ enum opcodetype
     OP_MINT = 0xb5,
     OP_INSPECT_SELF = 0xb6,
     OP_INSPECT = 0xb7,
+    OP_MINT_TRANSFER = 0xba,
 
     // still expansion
     OP_NOP9 = 0xb8,

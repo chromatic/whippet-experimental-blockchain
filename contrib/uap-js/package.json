@@ -1,0 +1,9 @@
+{
+  "name": "uap-js",
+  "private": true,
+  "type": "module",
+  "description": "Build and sign Whippet UAP (OP_MINT / OP_MINT_TRANSFER) transactions in plain JavaScript.",
+  "scripts": {
+    "test": "node sha256.test.js && node uap.test.js"
+  }
+}

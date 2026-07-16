@@ -6,8 +6,6 @@
 ["correct prevout hash), using the given scriptSig. All nLockTimes are 0, all"],
 ["nSequences are max."],
 
-[[1000], "", "0x01 0x01 0x10 0x112233445566778899aabbccddeeff OP_MINT", "P2SH,STRICTENC", "OK", "1 16-byte salt, OP_MINT should succeed", "0x01 0x01 0x10 0x112233445566778899aabbccddeeff OP_MINT"],
-[[1000], "", "0x01 0x01 0x02 0x0011 OP_MINT", "P2SH,STRICTENC", "INVALID_STACK_OPERATION", "1 2-byte salt, OP_MINT should fail (salt too short)", "0x01 0x01 0x02 0x0011 OP_MINT"],
 ["", "0 INSPECT 1 EQUAL", "P2SH,STRICTENC", "OK", "OP_INSPECT with selector 0 (version) should push 1 and succeed"],
 ["0", "0 INSPECT 10", "P2SH,STRICTENC", "OK", "INSPECT 10 (output nValue) should push 0 (default output value)"],
 ["0", "0 INSPECT 11", "P2SH,STRICTENC", "OK", "INSPECT 11 (output virtual balance) should push 0 (default output value * 1000)"],
@@ -890,8 +888,7 @@
  "P2SH,DISCOURAGE_UPGRADABLE_NOPS", "DISCOURAGE_UPGRADABLE_NOPS", "Discouraged NOP10 in redeemScript"],
 
 ["0x50","1", "P2SH,STRICTENC", "BAD_OPCODE", "opcode 0x50 is reserved"],
-["1", "IF 0xba ELSE 1 ENDIF", "P2SH,STRICTENC", "BAD_OPCODE", "opcodes above NOP10 invalid if executed"],
-["1", "IF 0xbb ELSE 1 ENDIF", "P2SH,STRICTENC", "BAD_OPCODE"],
+["1", "IF 0xbb ELSE 1 ENDIF", "P2SH,STRICTENC", "BAD_OPCODE", "opcodes above NOP10 invalid if executed"],
 ["1", "IF 0xbc ELSE 1 ENDIF", "P2SH,STRICTENC", "BAD_OPCODE"],
 ["1", "IF 0xbd ELSE 1 ENDIF", "P2SH,STRICTENC", "BAD_OPCODE"],
 ["1", "IF 0xbe ELSE 1 ENDIF", "P2SH,STRICTENC", "BAD_OPCODE"],
@@ -1013,7 +1010,6 @@
 ["1","RESERVED", "P2SH,STRICTENC", "BAD_OPCODE", "OP_RESERVED is reserved"],
 ["1","RESERVED1", "P2SH,STRICTENC", "BAD_OPCODE", "OP_RESERVED1 is reserved"],
 ["1","RESERVED2", "P2SH,STRICTENC", "BAD_OPCODE", "OP_RESERVED2 is reserved"],
-["1","0xba", "P2SH,STRICTENC", "BAD_OPCODE", "0xba == OP_NOP10 + 1"],
 
 ["2147483648", "1ADD 1", "P2SH,STRICTENC", "UNKNOWN_ERROR", "We cannot do math on 5-byte integers"],
 ["2147483648", "NEGATE 1", "P2SH,STRICTENC", "UNKNOWN_ERROR", "We cannot do math on 5-byte integers"],
