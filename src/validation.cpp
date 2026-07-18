@@ -1398,19 +1398,7 @@ bool CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
 
-    // Prevout scriptPubKeys for every input of this transaction, so UAP
-    // opcodes (e.g. OP_MINT's one-shot check) can inspect sibling inputs.
-    std::vector<CScript> vPrevScriptPubKeys;
-    if (inputsView) {
-        vPrevScriptPubKeys.reserve(ptxTo->vin.size());
-        for (const auto& txin : ptxTo->vin) {
-            const CCoins* coins = inputsView->AccessCoins(txin.prevout.hash);
-            bool fAvailable = coins && coins->IsAvailable(txin.prevout.n);
-            vPrevScriptPubKeys.push_back(fAvailable ? coins->vout[txin.prevout.n].scriptPubKey : CScript());
-        }
-    }
-
-    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata, inputsView ? &vPrevScriptPubKeys : NULL), &error)) {
+    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata, fHavePrevScriptPubKeys ? &vPrevScriptPubKeys : NULL), &error)) {
         return false;
     }
     return true;
