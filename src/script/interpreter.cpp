@@ -1330,12 +1330,11 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                                         // Not a UAP output: it carries no tokens.
                                         stack.push_back(CScriptNum(0).getvch());
                                     } else {
-                                        __int128 balance = (__int128)out.nValue * outMult.getint();
-                                        if (balance < std::numeric_limits<int64_t>::min() ||
-                                            balance > std::numeric_limits<int64_t>::max()) {
+                                        int64_t balance;
+                                        if (__builtin_mul_overflow((int64_t)out.nValue, (int64_t)outMult.getint(), &balance)) {
                                             return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                                         }
-                                        stack.push_back(CScriptNum((int64_t)balance).getvch());
+                                        stack.push_back(CScriptNum(balance).getvch());
                                     }
                                     break;
                                 }
