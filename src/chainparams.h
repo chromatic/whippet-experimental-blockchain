@@ -125,4 +125,13 @@ void SelectParams(const std::string& chain);
  */
 void UpdateRegtestBIP9Parameters(Consensus::DeploymentPos d, int64_t nStartTime, int64_t nTimeout);
 
+/**
+ * Allows moving the regtest OP_MINT/OP_MINT_TRANSFER activation height.
+ * Regtest activates at genesis so that the opcodes are usable in tests at
+ * all; raising the height above the chain tip is the only way to exercise
+ * the pre-activation path, which is where mempool policy and ConnectBlock
+ * have to agree. Tests must restore the previous value.
+ */
+void UpdateRegtestUAPMintHeight(int nHeight);
+
 #endif // BITCOIN_CHAINPARAMS_H

@@ -385,6 +385,15 @@ int64_t GetTransactionSigOpCost(const CTransaction& tx, const CCoinsViewCache& i
 bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &view, bool fScriptChecks,
                  unsigned int flags, bool cacheStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck> *pvChecks = NULL);
 
+/**
+ * SCRIPT_VERIFY_UAP_MINT if OP_MINT/OP_MINT_TRANSFER are active at nHeight,
+ * otherwise 0. Sole definition of the activation test: ConnectBlock asks for
+ * the block's own height, AcceptToMemoryPool for chainActive.Height() + 1.
+ * The flag is deliberately absent from MANDATORY_SCRIPT_VERIFY_FLAGS and
+ * STANDARD_SCRIPT_VERIFY_FLAGS, which cannot express a height-gated rule.
+ */
+unsigned int GetUapMintFlags(int nHeight, const Consensus::Params& params);
+
 /** Apply the effects of this transaction on the UTXO set represented by view */
 void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight);
 

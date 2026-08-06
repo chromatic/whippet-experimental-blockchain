@@ -523,6 +523,11 @@ public:
         consensus.vDeployments[d].nStartTime = nStartTime;
         consensus.vDeployments[d].nTimeout = nTimeout;
     }
+
+    void UpdateUAPMintHeight(int nHeight)
+    {
+        consensus.UAPMintHeight = nHeight;
+    }
 };
 static CRegTestParams regTestParams;
 
@@ -568,4 +573,9 @@ void SelectParams(const std::string& network)
 void UpdateRegtestBIP9Parameters(Consensus::DeploymentPos d, int64_t nStartTime, int64_t nTimeout)
 {
     regTestParams.UpdateBIP9Parameters(d, nStartTime, nTimeout);
+}
+
+void UpdateRegtestUAPMintHeight(int nHeight)
+{
+    regTestParams.UpdateUAPMintHeight(nHeight);
 }

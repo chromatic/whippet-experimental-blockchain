@@ -604,6 +604,11 @@ static bool IsCurrentForFeeEstimation()
     return true;
 }
 
+unsigned int GetUapMintFlags(int nHeight, const Consensus::Params& params)
+{
+    return nHeight >= params.UAPMintHeight ? SCRIPT_VERIFY_UAP_MINT : 0;
+}
+
 bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const CTransactionRef& ptx, bool fLimitFree,
                               bool* pfMissingInputs, int64_t nAcceptTime, std::list<CTransactionRef>* plTxnReplaced,
                               bool fOverrideMempoolLimit, const CAmount& nAbsurdFee, std::vector<uint256>& vHashTxnToUncache)
@@ -975,10 +980,59 @@ bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const C
             }
         }
 
+        // OP_MINT/OP_MINT_TRANSFER are height-gated, so the flag has to be
+        // derived for the block this transaction could go into -- the next
+        // one -- rather than read from a constant. Deriving it here is what
+        // keeps the mempool from accepting a transaction ConnectBlock will
+        // refuse: with the flag baked into STANDARD/MANDATORY, a spend of a
+        // UAP output was accepted into the mempool before the activation
+        // height, then failed TestBlockValidity inside CreateNewBlock, which
+        // throws -- so a single cheap transaction could stop block templates
+        // being produced at all.
+        //
+        // GetConsensus(0), not GetConsensus(nNextBlockHeight): Consensus::Params
+        // is a binary tree of per-height variants (difficulty regime, AuxPoW
+        // rules), and each variant is an independent copy. Activation heights
+        // are global values that live on the base variant, which is what
+        // GetConsensus(0) returns -- the same convention BIP34Height,
+        // BIP65Height and BIP66Height already use, and the same one
+        // ConnectBlock reads. Asking for the variant covering the target
+        // height would read a different copy of the field.
+        const int nNextBlockHeight = chainActive.Height() + 1;
+        const unsigned int uapMintFlags = GetUapMintFlags(nNextBlockHeight, Params().GetConsensus(0));
+
+        // Reject a premature spend explicitly rather than letting it fall
+        // through to the script check. CheckInputs cannot tell "invalid" from
+        // "not activated yet" -- both surface as SCRIPT_ERR_BAD_OPCODE, and
+        // its failure path DoS-bans the peer at score 100. Relaying a spend
+        // that is merely early is not misbehaviour, and banning for it would
+        // partition the network across the activation boundary, so this
+        // rejects at DoS score 0.
+        if (!uapMintFlags) {
+            for (const CTxIn& txin : tx.vin) {
+                const CCoins* coins = view.AccessCoins(txin.prevout.hash);
+                if (!coins || txin.prevout.n >= coins->vout.size())
+                    continue;
+                const CScript& prevScript = coins->vout[txin.prevout.n].scriptPubKey;
+                std::vector<unsigned char> pubkey;
+                CScriptNum multiplier(0);
+                bool fIsMint;
+                if (ParseUapOutputScript(prevScript, pubkey, multiplier, fIsMint)) {
+                    return state.DoS(0, false, REJECT_NONSTANDARD, "premature-uap-spend", false,
+                                     strprintf("OP_MINT/OP_MINT_TRANSFER activates at height %d",
+                                               Params().GetConsensus(0).UAPMintHeight));
+                }
+            }
+        }
+
         unsigned int scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
         if (!Params().RequireStandard()) {
             scriptVerifyFlags = GetArg("-promiscuousmempoolflags", scriptVerifyFlags);
         }
+        // After the -promiscuousmempoolflags override, not before: the
+        // activation height is consensus and is not a knob that flag is
+        // allowed to turn off.
+        scriptVerifyFlags |= uapMintFlags;
 
         // Check against previous transactions
         // This is done last to help prevent CPU exhaustion denial-of-service attacks.
@@ -1005,7 +1059,12 @@ bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const C
         // There is a similar check in CreateNewBlock() to prevent creating
         // invalid blocks, however allowing such transactions into the mempool
         // can be exploited as a DoS attack.
-        if (!CheckInputs(tx, state, view, true, MANDATORY_SCRIPT_VERIFY_FLAGS, true, txdata))
+        // uapMintFlags is included here for the same reason it is included in
+        // scriptVerifyFlags: this recheck asserts that anything passing
+        // STANDARD also passes MANDATORY. Leaving a height-derived flag out
+        // of one side of that comparison would make every valid post-
+        // activation UAP spend look like the bug this check reports.
+        if (!CheckInputs(tx, state, view, true, MANDATORY_SCRIPT_VERIFY_FLAGS | uapMintFlags, true, txdata))
         {
             return error("%s: BUG! PLEASE REPORT THIS! ConnectInputs failed against MANDATORY but not STANDARD flags %s, %s",
                 __func__, hash.ToString(), FormatStateMessage(state));
@@ -1903,10 +1962,11 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
     }
 
-    // Start enforcing OP_MINT/OP_MINT_TRANSFER.
-    if (pindex->nHeight >= chainparams.GetConsensus(0).UAPMintHeight) {
-        flags |= SCRIPT_VERIFY_UAP_MINT;
-    }
+    // Start enforcing OP_MINT/OP_MINT_TRANSFER. This is the consensus floor;
+    // AcceptToMemoryPool derives the same flag from chainActive.Height() + 1
+    // through the same helper, so mempool policy and block validity cannot
+    // disagree about whether the opcodes are active.
+    flags |= GetUapMintFlags(pindex->nHeight, chainparams.GetConsensus(0));
 
     // Start enforcing BIP68 (sequence locks) and BIP112 (CHECKSEQUENCEVERIFY) using versionbits logic.
     int nLockTimeFlags = 0;

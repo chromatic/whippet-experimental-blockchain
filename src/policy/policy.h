@@ -99,8 +99,12 @@ static const unsigned int STANDARD_SCRIPT_VERIFY_FLAGS = MANDATORY_SCRIPT_VERIFY
                                                          SCRIPT_VERIFY_LOW_S |
                                                          SCRIPT_VERIFY_WITNESS |
                                                          SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM |
-                                                         SCRIPT_VERIFY_WITNESS_PUBKEYTYPE |
-                                                         SCRIPT_VERIFY_UAP_MINT;
+                                                         SCRIPT_VERIFY_WITNESS_PUBKEYTYPE;
+// SCRIPT_VERIFY_UAP_MINT is absent on purpose: it is height-gated, and so
+// cannot be expressed as a compile-time constant without the mempool and
+// ConnectBlock disagreeing about when it applies. AcceptToMemoryPool ORs it
+// in for chainActive.Height() + 1. See MANDATORY_SCRIPT_VERIFY_FLAGS in
+// script/standard.h.
 
 /** For convenience, standard but not mandatory verify flags. */
 static const unsigned int STANDARD_NOT_MANDATORY_VERIFY_FLAGS = STANDARD_SCRIPT_VERIFY_FLAGS & ~MANDATORY_SCRIPT_VERIFY_FLAGS;
