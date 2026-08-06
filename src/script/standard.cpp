@@ -74,41 +74,16 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
     // return false outright -- returning false here would abort Solver()
     // entirely and misclassify a perfectly valid, unrelated script that
     // just happens to share a last byte.
+    //
+    // The shape test itself is ParseUapOutputScript (script.cpp) -- the
+    // very function consensus uses. Classifying by any other rule would
+    // let policy accept a shape consensus rejects, or vice versa; this
+    // file previously carried its own looser copy of the parse.
     if (scriptPubKey.size() >= 2 && (scriptPubKey.back() == OP_MINT || scriptPubKey.back() == OP_MINT_TRANSFER)) {
-        const bool fIsMint = (scriptPubKey.back() == OP_MINT);
-        CScript::const_iterator pc = scriptPubKey.begin();
-        opcodetype opcode;
-        valtype vch;
         valtype pubkey;
-        bool matched = false;
-
-        do {
-            if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4 || vch.size() < 33 || vch.size() > 65)
-                break;
-            pubkey = vch;
-
-            if (!scriptPubKey.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
-                break;
-
-            if (!scriptPubKey.GetOp(pc, opcode, vch))
-                break;
-
-            if (fIsMint) {
-                if (opcode > OP_PUSHDATA4 || vch.size() < 16)
-                    break;
-                opcodetype opcodeMint;
-                valtype vchMint;
-                if (!scriptPubKey.GetOp(pc, opcodeMint, vchMint) || opcodeMint != OP_MINT || pc != scriptPubKey.end())
-                    break;
-            } else {
-                if (opcode != OP_MINT_TRANSFER || pc != scriptPubKey.end())
-                    break;
-            }
-
-            matched = true;
-        } while (false);
-
-        if (matched) {
+        CScriptNum multiplier(0);
+        bool fIsMint;
+        if (ParseUapOutputScript(scriptPubKey, pubkey, multiplier, fIsMint)) {
             typeRet = fIsMint ? TX_OP_MINT : TX_OP_TRANSFER;
             vSolutionsRet.clear();
             vSolutionsRet.push_back(pubkey);

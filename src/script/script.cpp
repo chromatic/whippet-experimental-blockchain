@@ -265,6 +265,105 @@ bool CScript::IsPushOnly() const
     return this->IsPushOnly(begin());
 }
 
+bool CheckMinimalPush(const std::vector<unsigned char>& data, opcodetype opcode) {
+    if (data.size() == 0) {
+        // Could have used OP_0.
+        return opcode == OP_0;
+    } else if (data.size() == 1 && data[0] >= 1 && data[0] <= 16) {
+        // Could have used OP_1 .. OP_16.
+        return opcode == OP_1 + (data[0] - 1);
+    } else if (data.size() == 1 && data[0] == 0x81) {
+        // Could have used OP_1NEGATE.
+        return opcode == OP_1NEGATE;
+    } else if (data.size() <= 75) {
+        // Could have used a direct push (opcode indicating number of bytes pushed + those bytes).
+        return opcode == data.size();
+    } else if (data.size() <= 255) {
+        // Could have used OP_PUSHDATA.
+        return opcode == OP_PUSHDATA1;
+    } else if (data.size() <= 65535) {
+        // Could have used OP_PUSHDATA2.
+        return opcode == OP_PUSHDATA2;
+    }
+    return true;
+}
+
+//! Read the next element of a UAP output script as a canonically-encoded
+//! data push. Non-push opcodes -- including the small-integer opcodes
+//! OP_1NEGATE and OP_1..OP_16, which push a value only when executed --
+//! are rejected here; the multiplier field handles those separately.
+static bool GetUapDataPush(const CScript& script, CScript::const_iterator& pc, std::vector<unsigned char>& vch)
+{
+    opcodetype opcode;
+    if (!script.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
+        return false;
+    return CheckMinimalPush(vch, opcode);
+}
+
+bool ParseUapOutputScript(const CScript& script, std::vector<unsigned char>& pubkeyOut, CScriptNum& multiplierOut, bool& fIsMintOut)
+{
+    CScript::const_iterator pc = script.begin();
+    opcodetype opcode;
+    std::vector<unsigned char> vch;
+
+    // <pubkey>: must be exactly compressed (33) or uncompressed (65) length.
+    // A wrong-length "pubkey" can never have a valid signature produced for
+    // it, so accepting it here would let a malformed covenant output
+    // silently satisfy CheckUapOutputConservation's "at least one
+    // continuing covenant" requirement while being permanently unspendable.
+    if (!GetUapDataPush(script, pc, vch))
+        return false;
+    if (vch.size() != 33 && vch.size() != 65)
+        return false;
+    pubkeyOut = vch;
+
+    // <multiplier>: canonically encoded, exactly as SCRIPT_VERIFY_MINIMALDATA
+    // would require of the same bytes at execution time. 0 is OP_0, 1..16
+    // are the small-integer opcodes OP_1..OP_16, and anything larger is a
+    // direct push of its minimal CScriptNum encoding. See the declaration
+    // in script.h for why nothing else is accepted.
+    if (!script.GetOp(pc, opcode, vch))
+        return false;
+    if (opcode >= OP_1 && opcode <= OP_16) {
+        multiplierOut = CScriptNum((int64_t)(opcode - (OP_1 - 1)));
+    } else if (opcode <= OP_PUSHDATA4) {
+        if (!CheckMinimalPush(vch, opcode))
+            return false;
+        // CheckMinimalPush constrains the *push*; CScriptNum's own minimal
+        // check constrains the *number* (it rejects e.g. the two-byte
+        // 0x0100, a perfectly minimal push of a non-minimal integer).
+        try {
+            multiplierOut = CScriptNum(vch, true);
+        } catch (const scriptnum_error&) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    if (multiplierOut < 0 || multiplierOut > MAX_UAP_MULTIPLIER)
+        return false;
+
+    if (!script.GetOp(pc, opcode, vch))
+        return false;
+
+    if (opcode == OP_MINT_TRANSFER) {
+        if (pc != script.end())
+            return false;
+        fIsMintOut = false;
+        return true;
+    }
+
+    // Otherwise this must have been the <salt> push, followed by OP_MINT.
+    if (opcode > OP_PUSHDATA4 || vch.size() < 16 || !CheckMinimalPush(vch, opcode))
+        return false;
+    opcodetype opcode2;
+    std::vector<unsigned char> vch2;
+    if (!script.GetOp(pc, opcode2, vch2) || opcode2 != OP_MINT || pc != script.end())
+        return false;
+    fIsMintOut = true;
+    return true;
+}
+
 std::string CScriptWitness::ToString() const
 {
     std::string ret = "CScriptWitness(";

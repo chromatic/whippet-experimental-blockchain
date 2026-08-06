@@ -224,92 +224,10 @@ bool static CheckPubKeyEncoding(const valtype &vchPubKey, unsigned int flags, co
     return true;
 }
 
-bool static CheckMinimalPush(const valtype& data, opcodetype opcode) {
-    if (data.size() == 0) {
-        // Could have used OP_0.
-        return opcode == OP_0;
-    } else if (data.size() == 1 && data[0] >= 1 && data[0] <= 16) {
-        // Could have used OP_1 .. OP_16.
-        return opcode == OP_1 + (data[0] - 1);
-    } else if (data.size() == 1 && data[0] == 0x81) {
-        // Could have used OP_1NEGATE.
-        return opcode == OP_1NEGATE;
-    } else if (data.size() <= 75) {
-        // Could have used a direct push (opcode indicating number of bytes pushed + those bytes).
-        return opcode == data.size();
-    } else if (data.size() <= 255) {
-        // Could have used OP_PUSHDATA.
-        return opcode == OP_PUSHDATA1;
-    } else if (data.size() <= 65535) {
-        // Could have used OP_PUSHDATA2.
-        return opcode == OP_PUSHDATA2;
-    }
-    return true;
-}
-
-// Multiplier values are read out via CScriptNum::getint(), which silently
-// clamps to [INT32_MIN, INT32_MAX] rather than erroring -- a CScriptNum
-// itself can hold up to 8 bytes (~9.2e18). Bounding the accepted range
-// here to fit safely within getint()'s range means every later
-// getint() call on a multiplier that passed this check returns the exact
-// declared value, never a silently truncated one.
-static const int64_t MAX_UAP_MULTIPLIER = std::numeric_limits<int32_t>::max();
-
-/**
- * Recognize a UAP mint or mint-transfer output and extract its declared
- * recipient pubkey and multiplier. Matches exactly one of:
- *   <pubkey> <multiplier> <salt> OP_MINT           (fresh mint)
- *   <pubkey> <multiplier> OP_MINT_TRANSFER         (transfer/covenant)
- * Any other script shape is not a UAP output and this returns false.
- */
-static bool ParseUapOutputScript(const CScript& script, valtype& pubkeyOut, CScriptNum& multiplierOut, bool& fIsMintOut)
-{
-    CScript::const_iterator pc = script.begin();
-    opcodetype opcode;
-    valtype vch;
-
-    // <pubkey>: must be exactly compressed (33) or uncompressed (65) length.
-    // A wrong-length "pubkey" can never have a valid signature produced for
-    // it, so accepting it here would let a malformed covenant output
-    // silently satisfy CheckUapOutputConservation's "at least one
-    // continuing covenant" requirement while being permanently unspendable.
-    if (!script.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
-        return false;
-    if (vch.size() != 33 && vch.size() != 65)
-        return false;
-    pubkeyOut = vch;
-
-    // <multiplier>
-    if (!script.GetOp(pc, opcode, vch) || opcode > OP_PUSHDATA4)
-        return false;
-    try {
-        multiplierOut = CScriptNum(vch, true);
-    } catch (const scriptnum_error&) {
-        return false;
-    }
-    if (multiplierOut < 0 || multiplierOut > MAX_UAP_MULTIPLIER)
-        return false;
-
-    if (!script.GetOp(pc, opcode, vch))
-        return false;
-
-    if (opcode == OP_MINT_TRANSFER) {
-        if (pc != script.end())
-            return false;
-        fIsMintOut = false;
-        return true;
-    }
-
-    // Otherwise this must have been the <salt> push, followed by OP_MINT.
-    if (opcode > OP_PUSHDATA4 || vch.size() < 16)
-        return false;
-    opcodetype opcode2;
-    valtype vch2;
-    if (!script.GetOp(pc, opcode2, vch2) || opcode2 != OP_MINT || pc != script.end())
-        return false;
-    fIsMintOut = true;
-    return true;
-}
+// CheckMinimalPush, MAX_UAP_MULTIPLIER and ParseUapOutputScript now live in
+// script.cpp, so that Solver()'s TX_OP_MINT/TX_OP_TRANSFER classification
+// shares one definition of UAP output shape with consensus rather than
+// keeping its own copy.
 
 /**
  * Shared validation for OP_MINT and OP_MINT_TRANSFER: at least one output

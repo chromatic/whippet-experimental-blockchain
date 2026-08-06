@@ -649,6 +649,50 @@ public:
     }
 };
 
+/**
+ * Multiplier values are read out via CScriptNum::getint(), which silently
+ * clamps to [INT32_MIN, INT32_MAX] rather than erroring -- a CScriptNum
+ * itself can hold up to 8 bytes (~9.2e18). Bounding the accepted range
+ * here to fit safely within getint()'s range means every later getint()
+ * call on a multiplier that passed this check returns the exact declared
+ * value, never a silently truncated one.
+ */
+static const int64_t MAX_UAP_MULTIPLIER = std::numeric_limits<int32_t>::max();
+
+/**
+ * Is `opcode` the minimal (canonical) way to push `data`? This is the
+ * BIP62 rule enforced by SCRIPT_VERIFY_MINIMALDATA during execution;
+ * ParseUapOutputScript applies it to output scripts as well, so that a
+ * consensus-valid UAP output is always spendable by a standard
+ * transaction.
+ */
+bool CheckMinimalPush(const std::vector<unsigned char>& data, opcodetype opcode);
+
+/**
+ * Recognize a UAP mint or mint-transfer output and extract its declared
+ * recipient pubkey and multiplier. Matches exactly one of:
+ *   <pubkey> <multiplier> <salt> OP_MINT           (fresh mint)
+ *   <pubkey> <multiplier> OP_MINT_TRANSFER         (transfer/covenant)
+ * Any other script shape is not a UAP output and this returns false.
+ *
+ * Every element must use its canonical push encoding (CheckMinimalPush):
+ * 0 is OP_0, a multiplier of 1..16 is OP_1..OP_16, and everything else is
+ * a direct data push of its minimal byte encoding. This matters because a
+ * covenant's scriptPubKey is *executed* when the position is spent, and
+ * execution applies SCRIPT_VERIFY_MINIMALDATA under standard relay
+ * policy. If consensus accepted a non-canonical encoding here, positions
+ * could be created that the network would refuse to relay a spend of --
+ * consensus-valid but stuck. Accepting exactly the canonical form keeps
+ * the two rules in agreement, and gives every position exactly one byte
+ * representation.
+ *
+ * This is the single authority on UAP output shape: the script
+ * interpreter (OP_MINT conservation, OP_MINT one-shot, OP_INSPECT's
+ * virtual-balance selector) and Solver()'s TX_OP_MINT/TX_OP_TRANSFER
+ * classification all call it, so policy cannot drift from consensus.
+ */
+bool ParseUapOutputScript(const CScript& script, std::vector<unsigned char>& pubkeyOut, CScriptNum& multiplierOut, bool& fIsMintOut);
+
 struct CScriptWitness
 {
     // Note that this encodes the data elements being pushed, rather than

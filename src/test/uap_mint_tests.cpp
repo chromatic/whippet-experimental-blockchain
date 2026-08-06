@@ -8,12 +8,18 @@
 #include "script/script_error.h"
 #include "script/standard.h"
 #include "uint256.h"
+#include "utilstrencodings.h"
+
+#include "data/uap_script_vectors.json.h"
 
 #include "test/test_bitcoin.h"
 
 #include <boost/test/unit_test.hpp>
+#include <univalue.h>
 
 #include <limits>
+
+extern UniValue read_json(const std::string& jsondata);
 
 typedef std::vector<unsigned char> valtype;
 
@@ -499,6 +505,313 @@ BOOST_AUTO_TEST_CASE(solver_falls_through_on_coincidental_last_byte_match)
     bool ok2 = Solver(witnessProgram2, whichType2, solutions2);
     BOOST_CHECK(ok2);
     BOOST_CHECK_EQUAL(whichType2, TX_WITNESS_V0_KEYHASH);
+}
+
+// ---------------------------------------------------------------------------
+// Shared UAP script-format fixture (src/test/data/uap_script_vectors.json).
+//
+// The same vector file is consumed by contrib/uap-indexer (Go) and
+// contrib/uap-js (JavaScript), so all three implementations agree on exactly
+// which byte sequences are UAP outputs. This is the C++ side.
+//
+// ParseUapOutputScript() is file-static in interpreter.cpp and cannot be
+// called directly. Rather than restate its rules (which would test the test),
+// each vector is pushed through the real interpreter via two probes:
+//
+//   Probe A -- OP_INSPECT selector 11 ("output virtual balance"). The
+//     interpreter calls ParseUapOutputScript on the named output and pushes
+//     either 0 (not a UAP output) or nValue * multiplier. This recovers the
+//     extracted multiplier, but cannot distinguish "not UAP" from "UAP with
+//     multiplier 0" -- both push 0.
+//
+//   Probe B -- OP_MINT's one-shot rule (CheckUapOneShot). A mint spend fails
+//     if any *sibling* input's prevout scriptPubKey parses as a UAP output.
+//     Putting the vector there gives a clean accept/reject bit for every
+//     vector, multiplier 0 included, so it is what pins down parse acceptance.
+//
+// Together: B decides parse/no-parse for every vector; A independently
+// confirms the multiplier for the vectors where it is observable.
+// ---------------------------------------------------------------------------
+namespace {
+
+// The fixture is compiled in via the usual JSON_TEST_FILES route (see
+// src/Makefile.test.include), so the test works in any build layout. The same
+// file stays on disk because the Go indexer and JS builder suites read it
+// directly -- it is the cross-implementation contract, not just a C++ input.
+std::string ReadUapVectorFile()
+{
+    return std::string(json_tests::uap_script_vectors,
+                       json_tests::uap_script_vectors + sizeof(json_tests::uap_script_vectors));
+}
+
+// A transaction whose vout[0] carries the candidate script, used as the
+// subject of both probes.
+CMutableTransaction TxWithOutput(const CScript& candidate, CAmount nValue)
+{
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vout.resize(1);
+    tx.vout[0].nValue = nValue;
+    tx.vout[0].scriptPubKey = candidate;
+    return tx;
+}
+
+// Probe A: run "<0> <11> OP_INSPECT" and return the bytes it pushed.
+// The interpreter pushes CScriptNum(balance).getvch(), so the caller compares
+// against CScriptNum(expected).getvch() rather than re-deriving the encoding.
+// Returns false only if the interpreter errored (e.g. the balance multiply
+// overflowed), which no vector in this file is expected to trigger.
+bool ProbeVirtualBalance(const CScript& candidate, CAmount nValue, valtype& balanceOut)
+{
+    CMutableTransaction tx = TxWithOutput(candidate, nValue);
+    CScript probe = CScript() << (int64_t)0 << (int64_t)11 << OP_INSPECT;
+
+    std::vector<valtype> stack;
+    ScriptError err;
+    if (!EvalScript(stack, probe, FLAGS, MutableTransactionSignatureChecker(&tx, 0, nValue), SIGVERSION_BASE, &err))
+        return false;
+    BOOST_REQUIRE_EQUAL(stack.size(), 1U);
+    balanceOut = stack.back();
+    return true;
+}
+
+// Probe B: does the interpreter consider `candidate` a UAP output?
+// A valid mint is spent at input 0; `candidate` is input 1's prevout script.
+// CheckUapOneShot rejects the spend iff `candidate` parses as UAP, so
+// "spend succeeded" == "candidate is not a UAP output".
+bool ProbeParsesAsUapOutput(const CScript& candidate)
+{
+    CKey minter, recipient;
+    minter.MakeNewKey(true);
+    recipient.MakeNewKey(true);
+
+    CScript mintScript = MintScript(minter.GetPubKey());
+    const CAmount nValueIn = 1000 * COIN;
+
+    CMutableTransaction spendTx;
+    spendTx.vin.resize(2);
+    spendTx.vout.resize(1);
+    spendTx.vout[0].nValue = nValueIn;
+    spendTx.vout[0].scriptPubKey = TransferScript(recipient.GetPubKey(), MULTIPLIER);
+    spendTx.vin[0].scriptSig = SignSpend(mintScript, minter, spendTx, 0);
+
+    std::vector<CScript> prevScripts;
+    prevScripts.push_back(mintScript);
+    prevScripts.push_back(candidate);
+
+    ScriptError err;
+    bool spendOk = VerifyScript(spendTx.vin[0].scriptSig, mintScript, NULL, FLAGS,
+        MutableTransactionSignatureChecker(&spendTx, 0, nValueIn, &prevScripts), &err);
+    return !spendOk;
+}
+
+} // namespace
+
+// Guard for probe B: with an ordinary non-UAP sibling the mint spend must
+// succeed, otherwise "rejected" below would mean nothing.
+BOOST_AUTO_TEST_CASE(uap_vectors_probe_baseline_is_sound)
+{
+    CKey k;
+    k.MakeNewKey(true);
+    CScript p2pkh = CScript() << OP_DUP << OP_HASH160 << ToByteVector(k.GetPubKey().GetID()) << OP_EQUALVERIFY << OP_CHECKSIG;
+    BOOST_CHECK_MESSAGE(!ProbeParsesAsUapOutput(p2pkh), "P2PKH sibling must not trip the one-shot rule");
+
+    // ...and a known-good covenant script must trip it, so the probe is not
+    // simply always answering "no".
+    BOOST_CHECK_MESSAGE(ProbeParsesAsUapOutput(TransferScript(k.GetPubKey(), MULTIPLIER)),
+        "a real OP_MINT_TRANSFER sibling must trip the one-shot rule");
+}
+
+BOOST_AUTO_TEST_CASE(uap_script_vectors)
+{
+    UniValue tests = read_json(ReadUapVectorFile());
+    BOOST_REQUIRE(tests.isArray());
+    BOOST_REQUIRE_GT(tests.size(), 0);
+
+    // Chosen so that nValue * INT32_MAX still fits an int64 comfortably, and
+    // so that a wrong multiplier cannot coincidentally give the right product.
+    const CAmount kProbeValue = 1234567;
+
+    size_t validCount = 0, invalidCount = 0, multiplierChecked = 0, multiplierAmbiguous = 0;
+
+    for (size_t idx = 0; idx < tests.size(); idx++) {
+        const UniValue& test = tests[idx];
+        BOOST_REQUIRE_MESSAGE(test.exists("script") && test.exists("valid") && test.exists("comment"),
+            "vector " << idx << ": missing required fields");
+
+        const std::string comment = test["comment"].get_str();
+        const bool expectValid = test["valid"].get_bool();
+        const std::vector<unsigned char> scriptBytes = ParseHex(test["script"].get_str());
+        const CScript candidate(scriptBytes.begin(), scriptBytes.end());
+        const std::string where = "vector " + std::to_string(idx) + " (" + comment + ")";
+
+        // --- Probe B: parse acceptance, authoritative for every vector. ---
+        BOOST_CHECK_MESSAGE(ProbeParsesAsUapOutput(candidate) == expectValid,
+            where << ": interpreter " << (expectValid ? "rejected" : "accepted")
+                  << " a script the fixture calls " << (expectValid ? "valid" : "invalid"));
+
+        if (!expectValid) {
+            invalidCount++;
+            // An unparseable script carries no tokens, so probe A must say 0.
+            valtype balance;
+            BOOST_CHECK_MESSAGE(ProbeVirtualBalance(candidate, kProbeValue, balance),
+                where << ": OP_INSPECT errored on an invalid script");
+            BOOST_CHECK_MESSAGE(balance == CScriptNum(0).getvch(),
+                where << ": invalid script reported balance 0x" << HexStr(balance));
+            continue;
+        }
+
+        validCount++;
+        BOOST_REQUIRE_MESSAGE(test.exists("multiplier") && test.exists("pubkey") && test.exists("is_mint"),
+            where << ": valid vector missing expected parse output");
+
+        const int64_t expectMultiplier = test["multiplier"].get_int64();
+
+        // --- Probe A: the multiplier the interpreter actually extracted. ---
+        valtype balance;
+        BOOST_REQUIRE_MESSAGE(ProbeVirtualBalance(candidate, kProbeValue, balance),
+            where << ": OP_INSPECT errored on a valid script");
+        const valtype expectBalance = CScriptNum(kProbeValue * expectMultiplier).getvch();
+        BOOST_CHECK_MESSAGE(balance == expectBalance,
+            where << ": virtual balance 0x" << HexStr(balance) << " != 0x" << HexStr(expectBalance)
+                  << " (" << kProbeValue << " * " << expectMultiplier << ")");
+
+        if (expectMultiplier == 0) {
+            // Honest limitation: probe A pushes 0 for "not a UAP output" too,
+            // so for these vectors the assertion above is only consistent
+            // with, not evidence of, a successful parse. Probe B above is
+            // what actually established that.
+            multiplierAmbiguous++;
+        } else {
+            multiplierChecked++;
+        }
+
+        // The fixture's declared pubkey must be the literal leading push, so
+        // the Go and JS consumers (which do expose the pubkey) are pinned to
+        // the same bytes this script really contains.
+        const std::vector<unsigned char> expectPubKey = ParseHex(test["pubkey"].get_str());
+        BOOST_CHECK_MESSAGE(expectPubKey.size() == 33 || expectPubKey.size() == 65,
+            where << ": declared pubkey is " << expectPubKey.size() << " bytes");
+        CScript::const_iterator pc = candidate.begin();
+        opcodetype op;
+        valtype firstPush;
+        BOOST_CHECK(candidate.GetOp(pc, op, firstPush));
+        BOOST_CHECK_MESSAGE(firstPush == expectPubKey, where << ": leading push is not the declared pubkey");
+
+        // A fresh mint has a salt push between the multiplier and the opcode;
+        // a transfer does not. Distinguish them by the terminating opcode.
+        BOOST_REQUIRE(!scriptBytes.empty());
+        const bool endsWithMint = scriptBytes.back() == OP_MINT;
+        BOOST_CHECK_MESSAGE(endsWithMint == test["is_mint"].get_bool(),
+            where << ": is_mint disagrees with the terminating opcode");
+    }
+
+    BOOST_CHECK_EQUAL(validCount, 17U);
+    BOOST_CHECK_EQUAL(invalidCount, 25U);
+    // Five valid vectors declare multiplier 0; probe A cannot observe them.
+    BOOST_CHECK_EQUAL(multiplierAmbiguous, 5U);
+    BOOST_CHECK_EQUAL(multiplierChecked, 12U);
+}
+
+// Evaluate the push-only prefix of a UAP output script (everything before the
+// terminating OP_MINT / OP_MINT_TRANSFER) under SCRIPT_VERIFY_MINIMALDATA.
+// Returns false, with serror set, if any element uses a non-canonical push.
+static bool PushPrefixIsMinimal(const CScript& script, ScriptError* serror)
+{
+    BOOST_REQUIRE(!script.empty());
+    CScript prefix(script.begin(), script.end() - 1);
+    std::vector<valtype> stack;
+    return EvalScript(stack, prefix, SCRIPT_VERIFY_MINIMALDATA, BaseSignatureChecker(),
+                      SIGVERSION_BASE, serror);
+}
+
+// The reason ParseUapOutputScript insists on canonical pushes: a covenant's
+// scriptPubKey is *executed* when the position is spent, and standard relay
+// policy applies SCRIPT_VERIFY_MINIMALDATA to that execution. If consensus
+// accepted an encoding MINIMALDATA rejects, a position could be created that
+// the chain honours but the network will not relay a spend of -- stuck value.
+// So: every consensus-valid UAP output must be MINIMALDATA-clean.
+BOOST_AUTO_TEST_CASE(uap_valid_vectors_are_minimaldata_clean)
+{
+    UniValue tests = read_json(ReadUapVectorFile());
+    BOOST_REQUIRE(tests.isArray());
+
+    size_t checked = 0;
+    for (size_t idx = 0; idx < tests.size(); idx++) {
+        const UniValue& test = tests[idx];
+        if (!test["valid"].get_bool())
+            continue;
+        const std::vector<unsigned char> scriptBytes = ParseHex(test["script"].get_str());
+        const CScript candidate(scriptBytes.begin(), scriptBytes.end());
+        const std::string where = "vector " + std::to_string(idx) + " (" + test["comment"].get_str() + ")";
+
+        ScriptError err = SCRIPT_ERR_OK;
+        BOOST_CHECK_MESSAGE(PushPrefixIsMinimal(candidate, &err),
+            where << ": consensus accepts this output, but executing it trips MINIMALDATA ("
+                  << ScriptErrorString(err) << "), so no standard transaction could spend it");
+        checked++;
+    }
+    BOOST_CHECK_EQUAL(checked, 17U);
+
+    // Guard: the probe must be capable of failing. A multiplier of 1 written
+    // as an explicit one-byte push is exactly the encoding consensus used to
+    // accept and MINIMALDATA has always rejected.
+    const std::vector<unsigned char> nonMinimalBytes = ParseHex(
+        "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200101ba");
+    const CScript nonMinimal(nonMinimalBytes.begin(), nonMinimalBytes.end());
+    ScriptError err = SCRIPT_ERR_OK;
+    BOOST_CHECK(!PushPrefixIsMinimal(nonMinimal, &err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_MINIMALDATA);
+    // ...and consensus must now reject that same script, which is the fix.
+    BOOST_CHECK(!ProbeParsesAsUapOutput(nonMinimal));
+}
+
+// A multiplier in 1..16 is the case the canonical-encoding rule exists for.
+// Before the fix, the only encoding consensus accepted (a data push) was the
+// one MINIMALDATA rejected, and vice versa, so such a position was
+// untradeable. Both halves must now agree on OP_1..OP_16.
+BOOST_AUTO_TEST_CASE(small_multipliers_are_usable_end_to_end)
+{
+    CKey minter, recipient;
+    minter.MakeNewKey(true);
+    recipient.MakeNewKey(true);
+
+    for (int m = 1; m <= 16; m++) {
+        const std::string where = "multiplier " + std::to_string(m);
+
+        // OP_1..OP_16 is what MINIMALDATA demands...
+        CScript covenant = TransferScript(recipient.GetPubKey(), (int64_t)m);
+        ScriptError err = SCRIPT_ERR_OK;
+        BOOST_CHECK_MESSAGE(PushPrefixIsMinimal(covenant, &err),
+            where << ": OP_" << m << " covenant trips MINIMALDATA (" << ScriptErrorString(err) << ")");
+
+        // ...and consensus now recognizes it as a UAP output.
+        BOOST_CHECK_MESSAGE(ProbeParsesAsUapOutput(covenant),
+            where << ": consensus does not recognize an OP_" << m << " covenant");
+
+        // A mint at this multiplier really does spend into that covenant.
+        CScript mintScript = MintScript(minter.GetPubKey(), (int64_t)m);
+        const CAmount nValueIn = 1000 * COIN;
+        CMutableTransaction spendTx;
+        spendTx.vin.resize(1);
+        spendTx.vout.resize(1);
+        spendTx.vout[0].nValue = nValueIn;
+        spendTx.vout[0].scriptPubKey = covenant;
+        spendTx.vin[0].scriptSig = SignSpend(mintScript, minter, spendTx, 0);
+        BOOST_CHECK_MESSAGE(VerifyScript(spendTx.vin[0].scriptSig, mintScript, NULL, FLAGS,
+                                MutableTransactionSignatureChecker(&spendTx, 0, nValueIn), &err),
+            where << ": mint into an OP_" << m << " covenant failed (" << ScriptErrorString(err) << ")");
+
+        // The explicit data push, which used to be the *only* accepted form,
+        // is now rejected -- there is exactly one encoding per multiplier.
+        CScript nonCanonical;
+        nonCanonical << ToByteVector(recipient.GetPubKey());
+        nonCanonical.push_back(0x01);
+        nonCanonical.push_back((unsigned char)m);
+        nonCanonical.push_back(OP_MINT_TRANSFER);
+        BOOST_CHECK_MESSAGE(!ProbeParsesAsUapOutput(nonCanonical),
+            where << ": consensus still accepts the non-canonical data-push encoding");
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

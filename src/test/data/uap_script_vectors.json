@@ -1,0 +1,263 @@
+[
+  {
+    "comment": "valid mint, 33-byte pubkey, multiplier 0 (OP_0), 16-byte salt",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20001030313233343536373839616263646566b5",
+    "valid": true,
+    "is_mint": true,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 0
+  },
+  {
+    "comment": "valid mint, 33-byte pubkey, multiplier 1000, 16-byte salt",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2002e8031030313233343536373839616263646566b5",
+    "valid": true,
+    "is_mint": true,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 1000
+  },
+  {
+    "comment": "valid mint, 33-byte pubkey, multiplier INT32_MAX, 16-byte salt",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2004ffffff7f1030313233343536373839616263646566b5",
+    "valid": true,
+    "is_mint": true,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 2147483647
+  },
+  {
+    "comment": "valid transfer, 33-byte pubkey, multiplier 0 (OP_0)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2000ba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 0
+  },
+  {
+    "comment": "valid transfer, 33-byte pubkey, multiplier 42",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20012aba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 42
+  },
+  {
+    "comment": "valid transfer, 33-byte pubkey, multiplier INT32_MAX",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2004ffffff7fba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 2147483647
+  },
+  {
+    "comment": "valid mint, 33-byte pubkey (prefix 0x03), multiplier 0, 16-byte salt",
+    "script": "21030102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20001030313233343536373839616263646566b5",
+    "valid": true,
+    "is_mint": true,
+    "pubkey": "030102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 0
+  },
+  {
+    "comment": "valid transfer, 33-byte pubkey (prefix 0x03), multiplier 42",
+    "script": "21030102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20012aba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "030102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 42
+  },
+  {
+    "comment": "valid mint, 65-byte pubkey, multiplier 0, 16-byte salt",
+    "script": "41040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40001030313233343536373839616263646566b5",
+    "valid": true,
+    "is_mint": true,
+    "pubkey": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+    "multiplier": 0
+  },
+  {
+    "comment": "valid mint, 65-byte pubkey, multiplier 1000, 16-byte salt",
+    "script": "41040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4002e8031030313233343536373839616263646566b5",
+    "valid": true,
+    "is_mint": true,
+    "pubkey": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+    "multiplier": 1000
+  },
+  {
+    "comment": "valid transfer, 65-byte pubkey, multiplier 0",
+    "script": "41040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4000ba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+    "multiplier": 0
+  },
+  {
+    "comment": "valid transfer, 65-byte pubkey, multiplier 42",
+    "script": "41040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40012aba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+    "multiplier": 42
+  },
+  {
+    "comment": "valid transfer, 65-byte pubkey, multiplier INT32_MAX",
+    "script": "41040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4004ffffff7fba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+    "multiplier": 2147483647
+  },
+  {
+    "comment": "valid mint, multiplier 1 as OP_1 (its canonical encoding), 17-byte salt (salt > 16 is allowed)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2051113031323334353637383930313233343536b5",
+    "valid": true,
+    "is_mint": true,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 1
+  },
+  {
+    "comment": "valid transfer, multiplier 10 as OP_10",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f205aba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 10
+  },
+  {
+    "comment": "valid transfer, multiplier 16 as OP_16 (top of the small-int range)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2060ba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 16
+  },
+  {
+    "comment": "valid transfer, multiplier 17 as a 1-byte data push (just above the small-int range)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200111ba",
+    "valid": true,
+    "is_mint": false,
+    "pubkey": "020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "multiplier": 17
+  },
+  {
+    "comment": "invalid: multiplier > INT32_MAX (INT32_MAX+1 = 2147483648)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2004000000801030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: negative multiplier (-100)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2001e41030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: pubkey 32 bytes (too short)",
+    "script": "20020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f511030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: pubkey 34 bytes (too long)",
+    "script": "22020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021511030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: pubkey 64 bytes (too short for uncompressed)",
+    "script": "40040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f511030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: pubkey 66 bytes (too long for uncompressed)",
+    "script": "42040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041511030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: empty pubkey",
+    "script": "00511030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: salt 15 bytes (too short, needs 16)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20510f303132333435363738393031323334b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: mint without salt (only pubkey, multiplier, OP_MINT)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2051b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: transfer with salt push before multiplier",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20103031323334353637383961626364656651ba",
+    "valid": false
+  },
+  {
+    "comment": "invalid: trailing bytes after OP_MINT",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20511030313233343536373839616263646566b5aa",
+    "valid": false
+  },
+  {
+    "comment": "invalid: trailing bytes after OP_MINT_TRANSFER",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2051ba01",
+    "valid": false
+  },
+  {
+    "comment": "invalid: empty script",
+    "script": "",
+    "valid": false
+  },
+  {
+    "comment": "invalid: only OP_MINT",
+    "script": "b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: P2PKH-style script",
+    "script": "76a914000000000000000000000000000000000000000088ac",
+    "valid": false
+  },
+  {
+    "comment": "invalid: non-push opcode where pubkey push required (OP_DUP)",
+    "script": "76511030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: non-push opcode where multiplier push required (OP_ADD)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20931030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: multiplier 1 as an explicit 1-byte data push; canonical encoding is OP_1",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200101113031323334353637383930313233343536b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: transfer multiplier 16 as an explicit 1-byte data push; canonical encoding is OP_16",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200110ba",
+    "valid": false
+  },
+  {
+    "comment": "invalid: multiplier 0 as a 1-byte push of 0x00; canonical encoding is OP_0",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200100ba",
+    "valid": false
+  },
+  {
+    "comment": "invalid: multiplier 1000 with a non-minimal CScriptNum encoding (trailing 0x00)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2003e80300ba",
+    "valid": false
+  },
+  {
+    "comment": "invalid: multiplier as OP_1NEGATE (a small-int opcode, and out of range anyway)",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f204fba",
+    "valid": false
+  },
+  {
+    "comment": "invalid: pubkey pushed with OP_PUSHDATA1; canonical encoding is a direct 0x21 push",
+    "script": "4c21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20511030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: 16-byte salt pushed with OP_PUSHDATA1; canonical encoding is a direct 0x10 push",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20514c1030313233343536373839616263646566b5",
+    "valid": false
+  },
+  {
+    "comment": "invalid: multiplier pushed with OP_PUSHDATA1; canonical encoding is a direct 0x02 push",
+    "script": "21020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f204c02e803ba",
+    "valid": false
+  }
+]
