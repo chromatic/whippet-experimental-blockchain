@@ -71,6 +71,17 @@ The OP_MINT script consists of four elements:
 - `multiplier`: Integer defining token granularity (e.g., 100, 1000)
 - `salt`: Unique byte string ≥ 16 bytes to identify this token
 
+**Encoding:** every element must use its *canonical* (shortest) push — `OP_0`
+for a zero multiplier, `OP_1`..`OP_16` for 1..16, and a minimal data push for
+anything longer. Any script builder gives you this for free (Python's
+`CScript([...])`, C++'s `CScript::operator<<`, `uap.js`'s `buildMintScript`);
+it only matters if you assemble the bytes by hand. The rule exists because a
+covenant's script is *executed* when the position is spent, and
+`SCRIPT_VERIFY_MINIMALDATA` demands that same canonical encoding at that
+point. Consensus therefore accepts only encodings that are also relayable:
+there is exactly one way to write a given position, and no way to create one
+that cannot later be moved.
+
 **Example using Whippet RPC:**
 
 ```bash

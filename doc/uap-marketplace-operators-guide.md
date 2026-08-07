@@ -33,8 +33,8 @@ env vars, volume ownership gotchas, connecting to a node on the same host
 vs. a separate container). Short version:
 
 ```sh
-cd contrib/uap-indexer
-docker build -t uap-indexer .
+cd contrib
+docker build -f uap-indexer/Dockerfile -t uap-indexer .
 docker volume create uap-indexer-data
 docker run -d --name uap-indexer -p 8961:8961 \
   -e UAP_RPC_HOST=your-node-host -e UAP_RPC_PORT=33665 \
