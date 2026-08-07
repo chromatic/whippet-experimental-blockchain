@@ -1,0 +1,309 @@
+name: contrib
+
+# ci.yml's paths-ignore excludes 'contrib/**' entirely, since its only job is
+# the C++ depends matrix -- nothing under contrib/ is C++, and running that
+# matrix on every JS/Go change here would be pure cost with no signal. This
+# workflow is the other half: it fires only on the paths ci.yml skips, plus
+# the four upstream C++ test-vector fixtures that contrib/uap-js reads
+# directly (sighash-vectors.test.js, uap.test.js and addr.test.js load them),
+# so a fixture update that silently breaks the JS reimplementation gets
+# caught. Those fixtures live under src/, so they also trigger ci.yml -- both
+# the C++ tests and the JS cross-check need to re-run when a vector changes.
+on:
+  push:
+    paths:
+      - 'contrib/**'
+      - 'src/test/data/sighash.json'
+      - 'src/test/data/uap_script_vectors.json'
+      - 'src/test/data/sighash_uap.json'
+      - 'src/test/data/base58_encode_decode.json'
+      - '.github/workflows/contrib.yml'
+  pull_request:
+    paths:
+      - 'contrib/**'
+      - 'src/test/data/sighash.json'
+      - 'src/test/data/uap_script_vectors.json'
+      - 'src/test/data/sighash_uap.json'
+      - 'src/test/data/base58_encode_decode.json'
+      - '.github/workflows/contrib.yml'
+
+jobs:
+  uap-indexer:
+    name: uap-indexer (Go)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: contrib/uap-indexer
+    steps:
+      # A plain, non-sparse checkout is required: uap-indexer's go.mod has
+      # 'replace github.com/whippet/whippet/contrib/whippetrpc => ../whippetrpc',
+      # so the sibling contrib/whippetrpc module needs to land on disk next
+      # to contrib/uap-indexer for the module graph to resolve at all.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache-dependency-path: contrib/uap-indexer/go.sum
+
+      # web.go embeds its frontend with '//go:embed web/*', and web/ is
+      # generated (gitignored, not checked in) -- go vet, go build, and go
+      # test all fail on a clean checkout until this has copied the assets
+      # in from ../uap-web and ../uap-js. This has to run before every Go
+      # command below.
+      - name: Build embedded frontend assets
+        run: make web
+
+      # gofmt -l lists the files whose formatting differs from gofmt's own
+      # output -- and exits 0 whether or not that list is empty. The check
+      # therefore has to be the emptiness of the list; `run: gofmt -l .` on
+      # its own is a step that passes unconditionally and catches nothing.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would reformat these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+      # -diff prints the go.mod/go.sum changes 'go mod tidy' would make and
+      # exits non-zero if there are any, without writing them -- exactly the
+      # check CI wants, no separate 'tidy && git diff --exit-code' dance.
+      - name: go mod tidy check
+        run: go mod tidy -diff
+
+  whippetrpc:
+    name: whippetrpc (Go)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: contrib/whippetrpc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          # whippetrpc is stdlib-only: its go.mod declares no dependencies, so
+          # there is no go.sum to hash. Pointing the cache at a file that does
+          # not exist makes setup-go emit "Some specified paths were not
+          # resolved, unable to cache dependencies" on every run. There is
+          # nothing to cache here, so say so.
+          cache: false
+
+      # See the uap-indexer job for why this is a script and not `gofmt -l .`.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would reformat these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+      - name: go mod tidy check
+        run: go mod tidy -diff
+
+  faucet:
+    name: faucet (Go, CGO)
+    runs-on: ubuntu-24.04
+    # faucet depends on mattn/go-sqlite3, which is a cgo binding over the
+    # real SQLite C library (unlike uap-indexer's pure-Go modernc.org/sqlite),
+    # so CGO has to stay enabled for it to build at all.
+    env:
+      CGO_ENABLED: "1"
+    defaults:
+      run:
+        working-directory: contrib/faucet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache-dependency-path: contrib/faucet/go.sum
+
+      # See the uap-indexer job for why this is a script and not `gofmt -l .`.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would reformat these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      # This only compiles and runs faucet_test.go's own test cases -- it
+      # never invokes the built faucet binary, which sends real
+      # cryptocurrency and must never run in CI.
+      - name: go test
+        run: go test ./...
+
+      - name: go mod tidy check
+        run: go mod tidy -diff
+
+  uap-js:
+    name: uap-js (npm)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: contrib/uap-js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: contrib/uap-js/package-lock.json
+
+      - run: npm ci
+
+      # 'npm test' runs only the unit suites (sha256/ripemd160/addr/uap/
+      # sighash-vectors/secp-equivalence/signing). 'npm run test:integration'
+      # is deliberately never invoked here: it drives a real node.
+      - run: npm test
+
+  uap-web:
+    name: uap-web (npm)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: contrib/uap-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: contrib/uap-web/package-lock.json
+
+      - run: npm ci
+
+      # Same split as uap-js: 'npm test' is the wallet/dom/api/mint/market
+      # unit suites; 'npm run test:integration' (mint.integration.test.js,
+      # market.integration.test.js) starts a real daemon and must not run
+      # here.
+      - run: npm test
+
+  frontend-imports:
+    name: frontend import check
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: contrib/uap-indexer
+    steps:
+      - uses: actions/checkout@v4
+      # Only Node is needed here -- 'make check-web' pulls in the 'web'
+      # target (plain cp/mkdir, no Go involved) and then runs
+      # check-web-imports.mjs under node to confirm every module import
+      # specifier under web/ resolves against what got copied there. This
+      # is what catches uap-web growing a new cross-directory or bare
+      # import that the Makefile's copy step doesn't know to carry along.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: make check-web
+        run: make check-web
+
+  size:
+    name: binary size
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: contrib/uap-indexer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          # Without an explicit cache-dependency-path, setup-go looks for
+          # go.sum at the workspace ROOT -- not this job's working-directory --
+          # finds nothing, and warns on every run. This job builds once to
+          # measure a size; the cache is not worth a standing annotation.
+          cache-dependency-path: contrib/uap-indexer/go.sum
+
+      # upx IS preinstalled on ubuntu-24.04 (it is in the image's
+      # common_packages), so this is normally a no-op. It stays as a guard for
+      # runner-image changes and self-hosted runners: both Ubuntu package names
+      # are tried because the binary has moved between them across releases,
+      # and if neither is available the size gate below degrades to reporting
+      # the uncompressed build rather than failing the job outright.
+      - name: Install upx
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y upx-ucl || sudo apt-get install -y upx || true
+
+      # Deliberately calling the Makefile's public targets ('build', 'size')
+      # rather than re-running upx by hand here: what file(s) 'dist' leaves
+      # on disk (a separate *.upx copy vs. compressing $(BINARY) in place)
+      # is an implementation detail of the Makefile, and duplicating the
+      # upx invocation in this workflow would just be a second place for
+      # that detail to go stale.
+      - name: Build and check compressed size
+        run: |
+          if command -v upx >/dev/null 2>&1; then
+            make size
+          else
+            echo "::warning::upx unavailable; building uncompressed only and skipping the 6 MB compressed-size gate"
+            make build
+          fi
+
+      # Surface both numbers in the job summary regardless of whether the
+      # size gate above passed, failed, or was skipped -- always() so a
+      # failure still shows what the actual sizes were, not just "job red".
+      - name: Report sizes
+        if: always()
+        run: |
+          BINARY=uap-indexer
+          RAW_SIZE=$(stat -c%s "$BINARY" 2>/dev/null || true)
+          # 'dist' produces a separate $BINARY.upx copy; fall back to
+          # treating $BINARY itself as the compressed artifact in case a
+          # future Makefile change goes back to compressing in place.
+          if [ -f "$BINARY.upx" ]; then
+            COMPRESSED_FILE="$BINARY.upx"
+          else
+            COMPRESSED_FILE="$BINARY"
+          fi
+          COMPRESSED_SIZE=""
+          if [ -f "$COMPRESSED_FILE" ] && command -v upx >/dev/null 2>&1; then
+            COMPRESSED_SIZE=$(stat -c%s "$COMPRESSED_FILE" 2>/dev/null || true)
+          fi
+
+          {
+            echo "### uap-indexer binary size"
+            echo
+            echo "| artifact | bytes | MB |"
+            echo "|---|---|---|"
+            if [ -n "$RAW_SIZE" ]; then
+              RAW_MB=$(awk -v b="$RAW_SIZE" 'BEGIN{printf "%.2f", b/1048576}')
+              echo "| uncompressed (\`$BINARY\`) | $RAW_SIZE | $RAW_MB |"
+            fi
+            if [ -n "$COMPRESSED_SIZE" ]; then
+              COMPRESSED_MB=$(awk -v b="$COMPRESSED_SIZE" 'BEGIN{printf "%.2f", b/1048576}')
+              echo "| compressed (\`$COMPRESSED_FILE\`) | $COMPRESSED_SIZE | $COMPRESSED_MB |"
+            else
+              echo "| compressed | _skipped (upx unavailable)_ | |"
+            fi
+            echo
+            echo "Limit for the compressed artifact: 6291456 bytes (6 MB)."
+          } >> "$GITHUB_STEP_SUMMARY"

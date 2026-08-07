@@ -1,0 +1,38 @@
+name: "contrib CodeQL config"
+
+# noble-secp256k1.js is a vendored third-party bundle, not code this repo
+# authors: it is generated verbatim from the @noble/secp256k1 package by
+# contrib/uap-js/vendor-secp.mjs and re-vendored wholesale on upgrade. Any
+# alert raised inside it is unactionable here -- the fix would be upstream,
+# and editing the file locally is exactly what re-vendoring would discard --
+# so scanning it produces noise that buries the alerts that ARE actionable.
+#
+# Note this excludes the vendored bundle only, not secp.js, which is the
+# hand-written entry point wrapping it and is very much in scope.
+#
+# Both keys below apply to the JavaScript analysis only. Per GitHub's docs,
+# paths/paths-ignore take effect for interpreted languages, or for compiled
+# languages analyzed WITHOUT building -- Go with build-mode: manual is
+# neither, so these are inert for analyze-go. That is harmless (both ignored
+# paths are JavaScript), but it is worth knowing before adding a Go path here
+# and assuming it took.
+#
+# 'paths: contrib' keeps this workflow's name honest. Every .js file in the
+# repo currently lives under contrib/, so it changes nothing today; it is here
+# so that a future top-level script does not silently get analyzed by, and
+# reported against, a workflow called "CodeQL (contrib)".
+paths:
+  - contrib
+
+paths-ignore:
+  - contrib/uap-js/noble-secp256k1.js
+  - "**/node_modules"
+
+queries:
+  # security-and-quality is the broadest built-in suite: a superset of
+  # security-extended, which is itself a superset of the default (code-scanning)
+  # suite. This is a wallet and an internet-facing indexer, so the extra
+  # query coverage is worth the extra alert volume; if it proves too noisy
+  # in practice, step down to security-extended rather than to the default
+  # suite, which is considerably thinner.
+  - uses: security-and-quality

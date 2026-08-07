@@ -1,0 +1,115 @@
+name: CodeQL (contrib)
+
+# codeql-analysis.yml analyzes 'cpp' only, and its paths-ignore drops
+# 'contrib/**' outright. That leaves everything under contrib/ with no static
+# analysis at all -- including a network-facing Go indexer and a JavaScript
+# wallet that derives private keys and signs transactions. This workflow is
+# the other half, mirroring the ci.yml/contrib.yml split already used here.
+#
+# It is a separate file rather than two more entries in codeql-analysis.yml's
+# language matrix on purpose: that workflow builds the entire C++ depends tree
+# before it can initialize, which Go and JavaScript have no use for. Bolting
+# them onto that matrix would pay a multi-hour dependency build to analyze
+# code that needs no dependency build whatsoever.
+on:
+  push:
+    paths:
+      - 'contrib/**'
+      - '.github/workflows/codeql-contrib.yml'
+      - '.github/codeql/contrib-config.yml'
+  pull_request:
+    paths:
+      - 'contrib/**'
+      - '.github/workflows/codeql-contrib.yml'
+      - '.github/codeql/contrib-config.yml'
+  schedule:
+    # Weekly, so newly published queries reach this code without waiting for
+    # someone to happen to touch contrib/. Security alerts on a wallet should
+    # not be gated on unrelated development activity.
+    - cron: '17 4 * * 1'
+
+jobs:
+  analyze-go:
+    name: Analyze Go
+    runs-on: ubuntu-24.04
+    # Set explicitly rather than relying on the default. faucet depends on
+    # mattn/go-sqlite3, which ships a `//go:build !cgo` stub driver: with CGO
+    # off it still BUILDS clean, so CodeQL would analyze the stub, find
+    # nothing, and report the faucet green. That is the silent-coverage-gap
+    # failure this workflow exists to avoid, and it would be invisible.
+    # ubuntu-24.04 has gcc preinstalled so this is the current default anyway;
+    # pinning it means a runner-image change cannot quietly hollow out the scan.
+    env:
+      CGO_ENABLED: "1"
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      # Non-sparse checkout: uap-indexer's go.mod carries
+      # 'replace github.com/whippet/whippet/contrib/whippetrpc => ../whippetrpc',
+      # so the sibling module has to exist on disk for the module graph to
+      # resolve -- see the same note in contrib.yml.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache-dependency-path: contrib/uap-indexer/go.sum
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          # Manual, not autobuild. There are three independent Go modules
+          # under contrib/ (uap-indexer, whippetrpc, faucet) and autobuild
+          # finds one root; anything it misses is silently not analyzed,
+          # which for a security scan is worse than a hard failure.
+          build-mode: manual
+          config-file: ./.github/codeql/contrib-config.yml
+
+      - name: Build all Go modules
+        run: |
+          set -euo pipefail
+          # web.go embeds its frontend with '//go:embed web/*' and web/ is
+          # generated, not checked in, so 'go build' in uap-indexer fails on
+          # a clean checkout until this has run. Same ordering constraint as
+          # contrib.yml's uap-indexer job.
+          make -C contrib/uap-indexer web
+          for module in uap-indexer whippetrpc faucet; do
+            echo "::group::go build ./... ($module)"
+            (cd "contrib/$module" && go build ./...)
+            echo "::endgroup::"
+          done
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:go"
+
+  analyze-javascript:
+    name: Analyze JavaScript
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # There is no build step anywhere in this frontend -- it is plain
+          # ES modules served as-is, with no bundler and no transpiler -- so
+          # there is nothing for CodeQL to trace.
+          build-mode: none
+          config-file: ./.github/codeql/contrib-config.yml
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript"

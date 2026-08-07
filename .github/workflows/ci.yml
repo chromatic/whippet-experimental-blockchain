@@ -2,12 +2,34 @@ name: Continuous Integration
 
 on:
   push:
+    # Kept identical to the pull_request list below. These two had drifted:
+    # pull_request skipped 'contrib/**' but push did not, so every push
+    # touching only contrib/ -- Go and JavaScript, not one line of C++ --
+    # still paid for the full cross-compiled depends matrix on every
+    # platform. contrib/ has its own workflows (contrib.yml and
+    # codeql-contrib.yml) that fire on exactly the paths ignored here.
+    #
+    # The ignore is per-subdirectory rather than a blanket 'contrib/**':
+    # Makefile.am really does depend on parts of contrib/ (BIN_CHECKS pulls in
+    # devtools/symbol-check.py and devtools/security-check.py; the OSX deploy
+    # targets pull in macdeploy/). Ignoring all of contrib/ would mean an edit
+    # to those ran no C++ CI whatsoever, while firing seven Go/JS jobs that
+    # have nothing to do with them. Only the self-contained Go and JS trees
+    # belong here.
     paths-ignore:
+      - 'doc/**'
+      - 'contrib/uap-*/**'
+      - 'contrib/faucet/**'
+      - 'contrib/whippetrpc/**'
+      - 'contrib/whippetmint/**'
       - '**/*.md'
   pull_request:
     paths-ignore:
       - 'doc/**'
-      - 'contrib/**'
+      - 'contrib/uap-*/**'
+      - 'contrib/faucet/**'
+      - 'contrib/whippetrpc/**'
+      - 'contrib/whippetmint/**'
       - '**/*.md'
 
 jobs:
