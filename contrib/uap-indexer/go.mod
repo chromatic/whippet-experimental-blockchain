@@ -2,7 +2,12 @@ module github.com/whippet/whippet/contrib/uap-indexer
 
 go 1.25.0
 
-require github.com/whippet/whippet/contrib/whippetrpc v0.0.0
+require (
+	github.com/btcsuite/btcd/btcec/v2 v2.5.0
+	github.com/whippet/whippet/contrib/whippetrpc v0.0.0
+)
+
+require github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

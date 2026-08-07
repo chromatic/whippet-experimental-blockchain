@@ -19,7 +19,27 @@ type Order struct {
 	ScriptSig     string `json:"script_sig"`     // hex; the maker's signed push (DER sig + hashtype byte)
 	PaymentScript string `json:"payment_script"` // hex
 	PaymentValue  int64  `json:"payment_value"`  // satoshis
-	CreatedAt     int64  `json:"created_at"`     // unix seconds
+	CreatedAt     int64  `json:"created_at"`     // unix seconds, for display
+
+	// CancelNonce is a relay-assigned value, unique to this publish, that
+	// a cancellation for this order must sign over (see cancel_auth.go).
+	// It exists because CreatedAt's one-second resolution is not fine
+	// enough: signing is deterministic, so a maker who cancels and then
+	// republishes an *identical* order (same terms, same script_sig)
+	// within the same wall-clock second would otherwise get back a
+	// message identical to the one a captured cancel signature already
+	// authorized. CancelNonce always changes across a publish/republish/
+	// mirror-adopt regardless of clock resolution -- see nextCancelNonce.
+	//
+	// Encoded as a JSON string (the `,string` tag), not a bare number:
+	// nextCancelNonce seeds from UnixNano, which by 2026 already exceeds
+	// 2^53 and so is not exactly representable as a JS/JSON double. A
+	// client that round-tripped it through Number would sign a rounded
+	// value that silently mismatches what the relay has on file, and
+	// every cancel would fail verification. contrib/uap-js's
+	// signCancelOrder and contrib/uap-web's api.js both treat this field
+	// as a string for exactly this reason -- never coerce it to Number.
+	CancelNonce int64 `json:"cancel_nonce,string"`
 }
 
 const (
@@ -143,6 +163,7 @@ func (idx *Index) publishOrder(o *Order, fromMirror bool) error {
 
 	o.PubKey = pos.PubKey
 	o.CreatedAt = time.Now().Unix()
+	o.CancelNonce = idx.nextCancelNonce()
 	if err := t.putOrder(o); err != nil {
 		return err
 	}
@@ -152,6 +173,26 @@ func (idx *Index) publishOrder(o *Order, fromMirror bool) error {
 		}
 	}
 	return t.commit()
+}
+
+// nextCancelNonce returns a value strictly greater than every value it has
+// returned before in this process, even if called twice within the same
+// wall-clock nanosecond or across a clock adjustment that moves time
+// backward. It is seeded from the wall clock (so, in the ordinary case
+// where the clock only moves forward, successive nonces still reflect
+// roughly when they were issued) but never repeats or moves backward
+// regardless of what the clock does, which is the only property the
+// cancel-signature scheme in cancel_auth.go actually needs from it.
+//
+// Callers must hold idx.mu -- publishOrder already does for the whole of
+// its critical section, which is the only caller.
+func (idx *Index) nextCancelNonce() int64 {
+	n := time.Now().UnixNano()
+	if n <= idx.lastCancelNonce {
+		n = idx.lastCancelNonce + 1
+	}
+	idx.lastCancelNonce = n
+	return n
 }
 
 // ListOrders returns all open orders (i.e. whose underlying position is
@@ -165,13 +206,15 @@ func (idx *Index) GetOrder(txid string, vout uint32) (Order, bool, error) {
 	return idx.store.Order(positionKey(txid, vout))
 }
 
-// CancelOrder removes a published order. As a cheap (non-cryptographic)
-// identity check against casual griefing, the caller must reproduce the
-// exact scriptSig that was originally published -- not real
-// authentication, just enough friction that only someone who already had
-// the order's signed contents can remove it. The maker can always
-// unilaterally invalidate their own order for real by spending the
-// position elsewhere; this is purely a relay-hygiene convenience.
+// CancelOrder removes a published order. The caller must supply a valid
+// ECDSA signature, by the position's own pubkey (Order.PubKey, set
+// server-side from the position itself, never taken from the client), over
+// cancelMessage(txid, vout, <the order's current script_sig>, <the order's
+// current cancel_nonce>) -- see cancel_auth.go for the full authorization
+// scheme: what exactly is signed, replay handling, cross-relay scope, and
+// the absence of any clock dependence. The maker can always unilaterally
+// invalidate their own order for real by spending the position elsewhere;
+// this is a relay-hygiene action, not a consensus one.
 //
 // The withdrawal is recorded as a tombstone so that mirroring cannot undo
 // it. That is the limit of what a cancel can promise: peers still hold the
@@ -187,7 +230,7 @@ func (idx *Index) GetOrder(txid string, vout uint32) (Order, bool, error) {
 // by outpoint, so repeated publish/cancel cycles on one position leave one
 // row, and its size is bounded by the number of distinct positions ever
 // cancelled -- necessarily smaller than the positions table itself.
-func (idx *Index) CancelOrder(txid string, vout uint32, scriptSigHex string) error {
+func (idx *Index) CancelOrder(txid string, vout uint32, cancelSigHex string) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	if idx.storeErr != nil {
@@ -202,8 +245,8 @@ func (idx *Index) CancelOrder(txid string, vout uint32, scriptSigHex string) err
 	if !ok {
 		return fmt.Errorf("no such order")
 	}
-	if o.ScriptSig != scriptSigHex {
-		return fmt.Errorf("script_sig does not match the published order")
+	if err := verifyCancelSignature(o.PubKey, txid, vout, o.ScriptSig, o.CancelNonce, cancelSigHex); err != nil {
+		return fmt.Errorf("cancel signature does not authorize this order: %w", err)
 	}
 
 	t, err := idx.store.begin()

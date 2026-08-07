@@ -85,6 +85,17 @@ type Index struct {
 	// Resetting it on load would make the reorg walk believe it could roll
 	// back into heights whose logs were dropped before the restart.
 	PrunedBelow int64
+
+	// lastCancelNonce is the most recently issued Order.CancelNonce (see
+	// orders.go's publishOrder and cancel_auth.go). It exists only to tell
+	// one publish of an order apart from the next, for the lifetime of
+	// this process, so a cancel signature captured for one publish cannot
+	// authorize cancelling a later, identically-signed republish of the
+	// same order. It is not persisted: nonces are never compared across a
+	// restart, only for exact equality against whatever the currently
+	// stored order carries, so resetting to zero on load costs nothing.
+	// Guarded by mu like every other write here.
+	lastCancelNonce int64
 }
 
 // satMul multiplies, pinning to MaxInt64 on overflow rather than wrapping.

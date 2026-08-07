@@ -95,8 +95,9 @@ func TestMirrorOnceHandlesPeerErrorsGracefully(t *testing.T) {
 // user withdrew.
 func TestCancelledOrderIsNotResurrectedByAMirrorPull(t *testing.T) {
 	idx := NewIndex()
+	priv, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 
 	scriptSig := signedPush(t)
@@ -107,7 +108,8 @@ func TestCancelledOrderIsNotResurrectedByAMirrorPull(t *testing.T) {
 	if err := idx.PublishOrder(&order); err != nil {
 		t.Fatalf("PublishOrder: %v", err)
 	}
-	if err := idx.CancelOrder("known", 0, scriptSig); err != nil {
+	cancelSig := signCancel(t, priv, "known", 0, scriptSig, order.CancelNonce)
+	if err := idx.CancelOrder("known", 0, cancelSig); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 
@@ -132,8 +134,9 @@ func TestCancelledOrderIsNotResurrectedByAMirrorPull(t *testing.T) {
 // door for the exact person it is meant to serve.
 func TestCancelDoesNotBlockTheMakerRepublishing(t *testing.T) {
 	idx := NewIndex()
+	priv, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 
 	scriptSig := signedPush(t)
@@ -143,10 +146,12 @@ func TestCancelDoesNotBlockTheMakerRepublishing(t *testing.T) {
 			ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 100,
 		}
 	}
-	if err := idx.PublishOrder(mk()); err != nil {
+	firstOrder := mk()
+	if err := idx.PublishOrder(firstOrder); err != nil {
 		t.Fatalf("PublishOrder: %v", err)
 	}
-	if err := idx.CancelOrder("known", 0, scriptSig); err != nil {
+	cancelSig := signCancel(t, priv, "known", 0, scriptSig, firstOrder.CancelNonce)
+	if err := idx.CancelOrder("known", 0, cancelSig); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	if err := idx.PublishOrder(mk()); err != nil {
@@ -191,18 +196,21 @@ func TestCancelDoesNotBlockTheMakerRepublishing(t *testing.T) {
 // froze the position out of the mirror set for good.
 func TestTombstoneOnlyBlocksTheFragmentThatWasWithdrawn(t *testing.T) {
 	idx := NewIndex()
+	priv, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 
 	withdrawn := signedPush(t)
-	if err := idx.PublishOrder(&Order{
+	withdrawnOrder := &Order{
 		TxID: "known", Vout: 0, Multiplier: 1000,
 		ScriptSig: withdrawn, PaymentScript: "00", PaymentValue: 100,
-	}); err != nil {
+	}
+	if err := idx.PublishOrder(withdrawnOrder); err != nil {
 		t.Fatalf("PublishOrder: %v", err)
 	}
-	if err := idx.CancelOrder("known", 0, withdrawn); err != nil {
+	cancelSig := signCancel(t, priv, "known", 0, withdrawn, withdrawnOrder.CancelNonce)
+	if err := idx.CancelOrder("known", 0, cancelSig); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 
@@ -242,17 +250,20 @@ func TestTombstonesSurviveARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	priv, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	scriptSig := signedPush(t)
-	if err := idx.PublishOrder(&Order{
+	published := &Order{
 		TxID: "known", Vout: 0, Multiplier: 1000,
 		ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 100,
-	}); err != nil {
+	}
+	if err := idx.PublishOrder(published); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.CancelOrder("known", 0, scriptSig); err != nil {
+	cancelSig := signCancel(t, priv, "known", 0, scriptSig, published.CancelNonce)
+	if err := idx.CancelOrder("known", 0, cancelSig); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -283,18 +294,21 @@ func TestTombstonesSurviveARestart(t *testing.T) {
 // costs nothing but a rate-limited request -- grows the database forever.
 func TestRepeatedCancelsLeaveOneTombstone(t *testing.T) {
 	idx := NewIndex()
+	priv, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	scriptSig := signedPush(t)
 	for i := 0; i < 5; i++ {
-		if err := idx.PublishOrder(&Order{
+		o := &Order{
 			TxID: "known", Vout: 0, Multiplier: 1000,
 			ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 100,
-		}); err != nil {
+		}
+		if err := idx.PublishOrder(o); err != nil {
 			t.Fatalf("publish %d: %v", i, err)
 		}
-		if err := idx.CancelOrder("known", 0, scriptSig); err != nil {
+		cancelSig := signCancel(t, priv, "known", 0, scriptSig, o.CancelNonce)
+		if err := idx.CancelOrder("known", 0, cancelSig); err != nil {
 			t.Fatalf("cancel %d: %v", i, err)
 		}
 	}
@@ -431,8 +445,9 @@ func TestMirrorCapsTheResponseBodyItWillRead(t *testing.T) {
 // the relay had ever accepted.
 func TestTombstonesSurviveADeepReorgRebuild(t *testing.T) {
 	idx := NewIndex()
+	priv, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	scriptSig := signedPush(t)
 	order := Order{
@@ -442,7 +457,8 @@ func TestTombstonesSurviveADeepReorgRebuild(t *testing.T) {
 	if err := idx.PublishOrder(&order); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.CancelOrder("known", 0, scriptSig); err != nil {
+	cancelSig := signCancel(t, priv, "known", 0, scriptSig, order.CancelNonce)
+	if err := idx.CancelOrder("known", 0, cancelSig); err != nil {
 		t.Fatal(err)
 	}
 
@@ -453,7 +469,7 @@ func TestTombstonesSurviveADeepReorgRebuild(t *testing.T) {
 
 	// The rebuild re-indexes the chain, so the position comes back.
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	o := order
 	if err := idx.AdoptMirroredOrder(&o); err == nil {

@@ -6,7 +6,34 @@ import (
 	"math"
 	"sort"
 	"testing"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 )
+
+// testMakerKey returns a fresh secp256k1 keypair for tests that exercise
+// CancelOrder, which since the fix for the order-cancellation
+// authorization bug (see cancel_auth.go) verifies a real ECDSA signature
+// against the position's pubkey. fakePubKey (script_test.go) is not a
+// point on the curve and cannot be used here.
+func testMakerKey(t testing.TB) (*btcec.PrivateKey, string) {
+	t.Helper()
+	priv, err := btcec.NewPrivateKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+	return priv, hex.EncodeToString(priv.PubKey().SerializeCompressed())
+}
+
+// signCancel produces a valid cancel signature (see cancel_auth.go) for
+// withdrawing the order (txid, vout) whose current on-file script_sig and
+// cancel_nonce are as given, signed by priv.
+func signCancel(t testing.TB, priv *btcec.PrivateKey, txid string, vout uint32, scriptSigHex string, cancelNonce int64) string {
+	t.Helper()
+	digest := hash256(cancelMessage(txid, vout, scriptSigHex, cancelNonce))
+	sig := ecdsa.Sign(priv, digest)
+	return hex.EncodeToString(sig.Serialize())
+}
 
 // Test-side accessors for state that used to be reachable as Go maps on
 // the Index and now lives in the database. They exist so assertions can

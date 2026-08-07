@@ -4,7 +4,7 @@
 import { Wallet } from './wallet.js';
 import { WHIPPET_KEY_PATH } from './bip32.js';
 import { planSell, buildSellOrder } from './sell.js';
-import { myOrders, planCancel, describeCancelFailure } from './cancel.js';
+import { myOrders, planCancel, describeCancelFailure, cancelSignInput } from './cancel.js';
 import * as dom from './dom.js';
 import { API, pollForConfirmation, staleInfo } from './api.js';
 import { planMint, buildMintTx } from './mint.js';
@@ -2036,7 +2036,14 @@ async function confirmCancel() {
   render();
 
   try {
-    await apiClient.cancelOrder(order.txid, order.vout, order.script_sig);
+    // Cancelling is authorised by a signature from the position's own key,
+    // not by echoing the order back -- script_sig is public, so it never
+    // was a credential. See cancel_auth.go.
+    const cancelSig = uap.signCancelOrder(secp256k1, {
+      ...cancelSignInput(order),
+      privKey: wallet.privKey,
+    });
+    await apiClient.cancelOrder(order.txid, order.vout, cancelSig);
     currentScreen = 'my-orders';
     myOrdersState.selectedOrder = null;
     myOrdersState.cancelling = false;

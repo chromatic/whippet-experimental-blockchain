@@ -1,31 +1,42 @@
 // Cancelling a standing sell order: the maker's side of
-// DELETE /orders/{txid}/{vout}?script_sig=<hex> (see CancelOrder in
+// DELETE /orders/{txid}/{vout}?sig=<hex> (see CancelOrder in
 // contrib/uap-indexer/orders.go and api.js's cancelOrder).
 //
-// There is nothing to sign here. Cancelling doesn't create a new signed
-// statement -- it withdraws one that was already published. The relay's
-// only check is that the caller reproduces the exact scriptSig on file for
-// that outpoint, and that scriptSig is sitting right there in the order
-// object `GET /orders` already handed back, so this module never needs the
-// wallet's private key.
+// Cancelling now creates a new signed statement: a real ECDSA signature by
+// the position's own key, over a message that binds the exact order
+// (outpoint + script_sig) and a relay-assigned nonce that changes on every
+// publish (see contrib/uap-indexer/cancel_auth.go for the full scheme, and
+// contrib/uap-js's signCancelOrder for the function that produces it).
 //
-// IMPORTANT: that also means the relay's check is not real authentication.
-// Every open order's script_sig is public -- it comes back in the body of
-// `GET /orders`, to anyone -- so anyone who has looked at the order book can
-// reproduce it and cancel someone else's order. The maker's real recourse
-// against an unwanted fill is unilateral: spend the position elsewhere.
+// This replaces an earlier, broken contract: the relay used to accept a
+// cancellation whose only "proof" was reproducing the order's own
+// script_sig -- a value that comes back in the body of every `GET /orders`
+// response, to anyone. Anyone who had looked at the order book could
+// reproduce it and cancel someone else's order, repeatedly, with the
+// maker getting no signal. Signing a cancellation properly closes that:
+// only whoever holds the position's private key can produce a valid one.
+//
+// This module stays free of the actual signing call (no uap-js import
+// here) so it can be unit-tested without an EC library in the loop; it
+// only shapes the inputs. app.js -- which already holds the wallet's
+// private key and already imports uap-js/secp.js -- is what calls
+// uap.signCancelOrder(secp256k1, { ...cancelSignInput(order), privKey })
+// and passes the result to API#cancelOrder.
+//
 // Filtering to `myOrders` below is a UI convenience so a wallet only shows
-// (and offers a cancel button for) orders it believes are its own; it adds
-// no protection the server doesn't already have, and the server has very
-// little. See the marketplace security report for the full writeup.
+// (and offers a cancel button for) orders it believes are its own; with a
+// real cancel signature required, it is no longer load-bearing for
+// security the way it once had to be -- the relay itself now refuses a
+// cancellation from anyone but the position's own key.
 
 /**
  * Filter a list of open orders down to the ones this wallet published.
  *
  * `order.pubkey` is set server-side from the position's own pubkey (see
  * PublishOrder in orders.go), not taken from the client, so matching on it
- * is a reasonable "is this mine" signal for display purposes -- though see
- * the module comment above for why it is not an access-control boundary.
+ * is a reliable "is this mine" signal -- and, unlike before, only orders
+ * this wallet's key can actually produce a valid cancel signature for
+ * anyway.
  *
  * @param {Array} orders - result of API#listOrders
  * @param {string} ownPubKeyHex - the wallet's own compressed pubkey, hex
@@ -38,8 +49,9 @@ export function myOrders(orders, ownPubKeyHex) {
 }
 
 /**
- * Check that an order carries what a cancel request needs, before making
- * the request. Mirrors planSell's "refuse before acting" shape in sell.js.
+ * Check that an order carries what a cancel signature needs to be
+ * computed over, before making the request. Mirrors planSell's "refuse
+ * before acting" shape in sell.js.
  *
  * @param {Object} order - an order object, as returned by listOrders/getOrder
  * @returns {{ok: boolean, errors: string[]}}
@@ -60,8 +72,43 @@ export function planCancel(order) {
   if (typeof order.script_sig !== 'string' || order.script_sig.length === 0) {
     errors.push('Order is missing its signature; cannot request cancellation.');
   }
+  // cancel_nonce must be a string, not a number: it is a nanosecond-scale
+  // value that a JSON number cannot carry past 2^53 without losing
+  // precision (see orders.go's `cancel_nonce,string` tag and
+  // cancelMessage's doc comment in uap-js/uap.js). API#listOrders and
+  // API#getOrder already enforce this on the response, so an order that
+  // reached here with the wrong type indicates a caller bypassing that --
+  // still worth refusing rather than silently signing something the relay
+  // can never match.
+  if (typeof order.cancel_nonce !== 'string' || order.cancel_nonce.length === 0) {
+    errors.push('Order is missing the data needed to authorize a cancellation.');
+  }
 
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Pluck the fields a cancel signature must be computed over out of an
+ * order, in exactly the shape contrib/uap-js's signCancelOrder expects as
+ * its opts (minus privKey, which only the caller holding the wallet's key
+ * should ever touch):
+ *
+ *   uap.signCancelOrder(secp256k1, { ...cancelSignInput(order), privKey })
+ *
+ * Call planCancel(order) first and check `ok` -- this does not re-validate
+ * shape, only extracts it, matching the trust-cancel.js-with-parsing /
+ * app.js-with-secrets split described in the module comment above.
+ *
+ * @param {Object} order - an order object, as returned by listOrders/getOrder
+ * @returns {{txid: string, vout: number, scriptSig: string, cancelNonce: string}}
+ */
+export function cancelSignInput(order) {
+  return {
+    txid: order.txid,
+    vout: order.vout,
+    scriptSig: order.script_sig,
+    cancelNonce: order.cancel_nonce,
+  };
 }
 
 /**
@@ -88,8 +135,14 @@ export function describeCancelFailure(message) {
     return 'This order is no longer open. It may already have been filled, ' +
       'cancelled elsewhere, or the underlying position has been spent.';
   }
-  if (m.includes('does not match the published order')) {
-    return 'The relay could not verify this cancellation against the order it has on file.';
+  if (m.includes('cancel signature does not authorize this order')) {
+    // Covers a wrong key, a signature captured for a different order, and
+    // a replayed/stale signature (the order was cancelled and republished
+    // since the signature was made, so its cancel_nonce moved on) --
+    // CancelOrder does not distinguish these itself, and neither does
+    // this message.
+    return 'This cancellation could not be verified against the order on file. ' +
+      'If the order was recently republished, try again with a fresh signature.';
   }
   return `Could not cancel this order: ${m}`;
 }

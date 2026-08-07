@@ -306,7 +306,7 @@ func TestDeleteOrdersAlsoRateLimited(t *testing.T) {
 	server := newAPIServer(idx, writeRL, readRL, false, nil)
 
 	makeDeleteReq := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodDelete, "/orders/abc123/0?script_sig=deadbeef", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/orders/abc123/0?sig=deadbeef", nil)
 		req.RemoteAddr = "1.2.3.4:5555"
 		w := httptest.NewRecorder()
 		server.ServeHTTP(w, req)
@@ -323,6 +323,98 @@ func TestDeleteOrdersAlsoRateLimited(t *testing.T) {
 	w2 := makeDeleteReq()
 	if w2.Code != http.StatusTooManyRequests {
 		t.Errorf("second DELETE should be rate-limited, got %d", w2.Code)
+	}
+}
+
+// TestDeleteOrdersMissingSigReturns400 verifies that DELETE
+// /orders/{txid}/{vout} without a sig query parameter is rejected before
+// ever reaching CancelOrder.
+func TestDeleteOrdersMissingSigReturns400(t *testing.T) {
+	idx := NewIndex()
+	writeRL := NewRateLimiter(30, 10)
+	readRL := NewRateLimiter(30, 10)
+	server := newAPIServer(idx, writeRL, readRL, false, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/orders/abc123/0", nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for a DELETE with no sig parameter, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "sig") {
+		t.Errorf("expected the error to mention the missing sig parameter, got: %s", w.Body.String())
+	}
+}
+
+// TestDeleteOrdersEndToEndOverHTTP exercises the full authorization
+// scheme through the actual HTTP handler, not just CancelOrder directly:
+// publish an order via POST /orders, then cancel it via DELETE with a
+// real cancel signature computed from the response's own script_sig and
+// cancel_nonce, the same way a browser wallet (contrib/uap-web/cancel.js)
+// would. This is the sharpest regression test against the original bug --
+// it also proves that echoing the order's public script_sig as the DELETE
+// query parameter (the old, vulnerable contract) is now rejected outright.
+func TestDeleteOrdersEndToEndOverHTTP(t *testing.T) {
+	idx := NewIndex()
+	priv, pubKeyHex := testMakerKey(t)
+	seedPosition(t, idx, &Position{
+		TxID: "e2e", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
+	})
+	writeRL := NewRateLimiter(1000, 1000)
+	readRL := NewRateLimiter(1000, 1000)
+	server := newAPIServer(idx, writeRL, readRL, false, nil)
+
+	scriptSig := signedPush(t)
+	orderBody, err := json.Marshal(Order{
+		TxID: "e2e", Vout: 0, Multiplier: 1000,
+		ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 100,
+	})
+	if err != nil {
+		t.Fatalf("marshal order: %v", err)
+	}
+	postReq := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewReader(orderBody))
+	postReq.RemoteAddr = "1.2.3.4:5555"
+	postReq.Header.Set("Content-Type", "application/json")
+	postW := httptest.NewRecorder()
+	server.ServeHTTP(postW, postReq)
+	if postW.Code != http.StatusCreated {
+		t.Fatalf("POST /orders: expected 201, got %d: %s", postW.Code, postW.Body.String())
+	}
+	var published Order
+	if err := json.Unmarshal(postW.Body.Bytes(), &published); err != nil {
+		t.Fatalf("decoding publish response: %v", err)
+	}
+
+	// The old vulnerability: reproducing the order's own (public)
+	// script_sig as the authorization must now fail.
+	oldStyleReq := httptest.NewRequest(http.MethodDelete,
+		fmt.Sprintf("/orders/e2e/0?sig=%s", scriptSig), nil)
+	oldStyleReq.RemoteAddr = "1.2.3.4:5555"
+	oldStyleW := httptest.NewRecorder()
+	server.ServeHTTP(oldStyleW, oldStyleReq)
+	if oldStyleW.Code == http.StatusNoContent {
+		t.Fatal("cancelling by echoing the order's public script_sig succeeded -- the original vulnerability is back")
+	}
+
+	// A real cancel signature, computed the way cancel.js/api.js will,
+	// succeeds.
+	cancelSig := signCancel(t, priv, "e2e", 0, published.ScriptSig, published.CancelNonce)
+	delReq := httptest.NewRequest(http.MethodDelete,
+		fmt.Sprintf("/orders/e2e/0?sig=%s", cancelSig), nil)
+	delReq.RemoteAddr = "1.2.3.4:5555"
+	delW := httptest.NewRecorder()
+	server.ServeHTTP(delW, delReq)
+	if delW.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /orders with a valid cancel signature: expected 204, got %d: %s", delW.Code, delW.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/orders/e2e/0", nil)
+	getW := httptest.NewRecorder()
+	server.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusNotFound {
+		t.Errorf("expected the order to be gone after a successful cancel, got HTTP %d", getW.Code)
 	}
 }
 

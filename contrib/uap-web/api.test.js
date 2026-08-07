@@ -472,7 +472,7 @@ test('getFeeRate validates response is a number', async () => {
 // CANCELORDER
 // =============================================================================
 
-test('cancelOrder makes a DELETE request to /orders/{txid}/{vout} with script_sig as a query param', async () => {
+test('cancelOrder makes a DELETE request to /orders/{txid}/{vout} with sig as a query param', async () => {
   const calls = [];
   const fetchFake = async (url, options) => {
     calls.push({ url, options });
@@ -485,7 +485,8 @@ test('cancelOrder makes a DELETE request to /orders/{txid}/{vout} with script_si
   assertEqual(calls.length, 1, 'one fetch call');
   assertEqual(calls[0].options.method, 'DELETE', 'DELETE method');
   assert(calls[0].url.includes(`/orders/${'a'.repeat(64)}/3`), 'URL contains /orders/{txid}/{vout}');
-  assert(calls[0].url.includes('script_sig=deadbeef83'), 'URL carries script_sig as a query param');
+  assert(calls[0].url.includes('sig=deadbeef83'), 'URL carries the cancel signature as the sig query param');
+  assert(!calls[0].url.includes('script_sig='), 'the old script_sig contract must be gone, not just renamed');
 });
 
 test('cancelOrder resolves without trying to parse a body on 204 No Content', async () => {
@@ -513,15 +514,20 @@ test('cancelOrder surfaces "no such order" from the relay', async () => {
   );
 });
 
-// The relay's only "auth" for a cancel: the caller must reproduce the exact
-// scriptSig on file for that outpoint (see CancelOrder in orders.go).
-test('cancelOrder surfaces a script_sig mismatch from the relay', async () => {
-  const fetchFake = FakeFetch.returning(400, { error: 'script_sig does not match the published order' });
+// The relay's real auth for a cancel: a valid ECDSA signature by the
+// position's own key over cancel_auth.go's cancelMessage (see CancelOrder
+// in orders.go). This covers a wrong key, a signature for a different
+// order, or a stale/replayed one -- CancelOrder does not distinguish them
+// in its error text, and neither does the client.
+test('cancelOrder surfaces an unauthorized cancel signature from the relay', async () => {
+  const fetchFake = FakeFetch.returning(400, {
+    error: 'cancel signature does not authorize this order: signature does not authorize cancelling this order',
+  });
   const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: fetchFake });
 
   await assertThrows(
     () => client.cancelOrder('a'.repeat(64), 0, 'wrongsig'),
-    'does not match'
+    'does not authorize'
   );
 });
 

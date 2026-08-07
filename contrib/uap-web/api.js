@@ -348,6 +348,14 @@ export class API {
       if (typeof entry.created_at !== 'number') {
         throw new Error(`listOrders: entry ${i} has non-number created_at`);
       }
+      // cancel_nonce is a nanosecond-scale value the relay carries as a
+      // JSON *string* (see orders.go's `cancel_nonce,string` tag), not a
+      // number: by 2026 it already exceeds Number.MAX_SAFE_INTEGER, so a
+      // JSON number here would silently lose precision and every cancel
+      // signature computed from it would fail to verify. See cancel.js.
+      if (typeof entry.cancel_nonce !== 'string') {
+        throw new Error(`listOrders: entry ${i} has non-string cancel_nonce`);
+      }
     }
 
     return result;
@@ -388,6 +396,10 @@ export class API {
     }
     if (typeof result.created_at !== 'number') {
       throw new Error('getOrder: response missing number created_at field');
+    }
+    // See the note in listOrders: cancel_nonce must stay a string.
+    if (typeof result.cancel_nonce !== 'string') {
+      throw new Error('getOrder: response missing string cancel_nonce field');
     }
 
     return result;
@@ -455,6 +467,10 @@ export class API {
     if (typeof result.created_at !== 'number') {
       throw new Error('publishOrder: response missing number created_at field');
     }
+    // See the note in listOrders: cancel_nonce must stay a string.
+    if (typeof result.cancel_nonce !== 'string') {
+      throw new Error('publishOrder: response missing string cancel_nonce field');
+    }
 
     return result;
   }
@@ -462,29 +478,35 @@ export class API {
   /**
    * Withdraw a published order.
    *
-   * DELETE /orders/{txid}/{vout}?script_sig=<hex> (see CancelOrder in
-   * contrib/uap-indexer/orders.go). The relay's only check is that
-   * scriptSigHex reproduces exactly what it has on file for that outpoint --
-   * that is not real authentication (the scriptSig is public: it comes back
-   * in every listOrders()/getOrder() response), just enough friction to stop
-   * casual griefing. See cancel.js for the fuller writeup.
+   * DELETE /orders/{txid}/{vout}?sig=<hex> (see CancelOrder in
+   * contrib/uap-indexer/orders.go). cancelSigHex must be a real ECDSA
+   * signature by the position's own key, over the exact message
+   * cancel_auth.go's cancelMessage constructs from (txid, vout, the
+   * order's current script_sig, the order's current cancel_nonce) --
+   * see contrib/uap-js's signCancelOrder, which cancel.js's planCancel /
+   * this method's caller in app.js uses to produce it. This replaced an
+   * earlier (broken) contract where the caller reproduced the order's own
+   * script_sig: that value is public -- it comes back in every
+   * listOrders()/getOrder() response -- so it was never a real credential.
+   * See cancel.js for the fuller writeup.
    *
    * Success is a bare 204 No Content -- there is no body to validate, unlike
    * every other method here. Failure is a 400 whose `error` field is one of
    * a few fixed strings from CancelOrder: "no such order" (already filled,
-   * already cancelled, or the position was spent) or "script_sig does not
-   * match the published order" (wrong/stale scriptSig). Both are surfaced
-   * via the thrown message rather than distinguished here; cancel.js's
+   * already cancelled, or the position was spent) or a message beginning
+   * "cancel signature does not authorize this order" (wrong key, wrong
+   * order, or a replayed/stale signature). Both are surfaced via the
+   * thrown message rather than distinguished here; cancel.js's
    * describeCancelFailure turns them into user-facing text.
    *
    * @param {string} txid - Transaction ID of the position the order sells
    * @param {number} vout - Output index of the position
-   * @param {string} scriptSigHex - the exact script_sig the order was published with
+   * @param {string} cancelSigHex - hex-encoded DER cancel signature, from signCancelOrder
    * @returns {Promise<void>}
    */
-  async cancelOrder(txid, vout, scriptSigHex) {
+  async cancelOrder(txid, vout, cancelSigHex) {
     const params = new URLSearchParams();
-    params.append('script_sig', scriptSigHex);
+    params.append('sig', cancelSigHex);
 
     const url = `${this.baseUrl}/orders/${txid}/${vout}?${params.toString()}`;
     const response = await this.fetchImpl(url, { method: 'DELETE' });

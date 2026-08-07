@@ -693,6 +693,71 @@ function fillOrder(order, opts) {
   return tx;
 }
 
+// CANCEL_DOMAIN and cancelMessage together are the exact scheme
+// contrib/uap-indexer/cancel_auth.go implements server-side; the two must
+// stay byte-for-byte identical or every cancel signature will fail to
+// verify there. See that file for the full reasoning (what's bound, replay
+// handling, cross-relay scope, clock dependence).
+const CANCEL_DOMAIN = 'whippet-uap-cancel-order-v1';
+
+/**
+ * The exact byte string a maker signs to authorize withdrawing order
+ * (txid, vout) whose current script_sig and cancel_nonce (both taken from
+ * the order as the relay reports it, not recomputed locally) are as given.
+ *
+ * cancelNonce must be passed as the string the relay sent, not a Number:
+ * it is a nanosecond timestamp and by 2026 already exceeds
+ * Number.MAX_SAFE_INTEGER, so round-tripping it through a JS Number
+ * silently rounds it -- which would make every cancel signature mismatch
+ * what the relay reconstructs and verification would always fail. This is
+ * exactly why Order.CancelNonce is JSON-encoded as a string
+ * (`cancel_nonce,string` in orders.go) rather than a bare number.
+ */
+function cancelMessage(txid, vout, scriptSigHex, cancelNonce) {
+  if (typeof cancelNonce !== 'string') {
+    throw new Error('cancelMessage: cancelNonce must be the exact string the relay sent, never a Number');
+  }
+  const s = `${CANCEL_DOMAIN}\n${txid}\n${vout}\n${scriptSigHex}\n${cancelNonce}`;
+  return new TextEncoder().encode(s);
+}
+
+/**
+ * Sign a cancellation for a standing sell order (see signMakerOrder):
+ * authorizes contrib/uap-indexer's DELETE /orders/{txid}/{vout}.
+ *
+ * This replaces the original (broken) cancellation contract, which
+ * "authorized" a withdrawal by echoing the order's own script_sig back --
+ * a value GET /orders publishes to every visitor, so it was never a real
+ * credential; anyone who had viewed the order book could cancel anyone's
+ * order. A cancellation is now a real ECDSA signature by the position's
+ * own key (the same key that made the order), over a message that binds
+ * the exact order -- outpoint and script_sig -- and a relay-assigned
+ * nonce that changes on every publish, so a captured cancel signature
+ * cannot be replayed against a different order or a later republish of
+ * this same one. See contrib/uap-indexer/cancel_auth.go for the full
+ * scheme and its reasoning.
+ *
+ * @param secp EC library, see signSpend.
+ * @param opts {
+ *   txid, vout: the position's outpoint (order.txid / order.vout),
+ *   scriptSig: the order's script_sig, as the exact hex string the relay
+ *     has on file (order.script_sig from a GET/POST /orders response --
+ *     not recomputed locally),
+ *   cancelNonce: the order's cancel_nonce, as the exact string the relay
+ *     sent (order.cancel_nonce -- see cancelMessage's note on why this
+ *     must stay a string),
+ *   privKey: the maker's private key (must match the position's pubkey),
+ * }
+ * @returns {string} hex-encoded DER signature; pass as the `sig` query
+ *   parameter to DELETE /orders/{txid}/{vout}.
+ */
+function signCancelOrder(secp, opts) {
+  const message = cancelMessage(opts.txid, opts.vout, opts.scriptSig, opts.cancelNonce);
+  const hash = hash256(message);
+  const der = secp.signSync(hash, opts.privKey, { canonical: true, der: true });
+  return bytesToHex(der);
+}
+
 export {
   OP_MINT,
   OP_MINT_TRANSFER,
@@ -721,4 +786,6 @@ export {
   buildTransferTx,
   signMakerOrder,
   fillOrder,
+  cancelMessage,
+  signCancelOrder,
 };

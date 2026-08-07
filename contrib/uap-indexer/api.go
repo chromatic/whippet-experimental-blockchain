@@ -229,7 +229,13 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 	mux.HandleFunc("/api/orders", ordersHandler)
 
 	// GET /orders/{txid}/{vout} -- fetch a single open order.
-	// DELETE /orders/{txid}/{vout}?script_sig=<hex> -- withdraw it (see CancelOrder).
+	// DELETE /orders/{txid}/{vout}?sig=<hex> -- withdraw it (see CancelOrder).
+	// sig is a DER-encoded ECDSA signature by the order's own pubkey over
+	// cancelMessage(txid, vout, script_sig, created_at) -- see
+	// cancel_auth.go. It is deliberately not the order's script_sig: that
+	// was the vulnerability this replaces (script_sig is public, published
+	// in every GET /orders response, so anyone who viewed the order book
+	// could reproduce it and cancel any order).
 	singleOrderHandler := func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/api/orders/") {
@@ -267,12 +273,12 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 			if !checkRateLimit(writeRL, trustProxy, w, r) {
 				return
 			}
-			scriptSig := r.URL.Query().Get("script_sig")
-			if scriptSig == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing script_sig query parameter"})
+			cancelSig := r.URL.Query().Get("sig")
+			if cancelSig == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing sig query parameter"})
 				return
 			}
-			if err := idx.CancelOrder(parts[0], uint32(vout), scriptSig); err != nil {
+			if err := idx.CancelOrder(parts[0], uint32(vout), cancelSig); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}

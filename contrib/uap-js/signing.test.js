@@ -50,7 +50,7 @@ import { createHmac } from 'node:crypto';
 import * as secpLib from './secp.js';
 import * as UAP from './uap.js';
 import { hex, fromHex, fromUtf8 } from './test-helpers.js';
-import { sha256, hmacSha256 } from './sha256.js';
+import { sha256, hmacSha256, hash256 } from './sha256.js';
 
 // ---------------------------------------------------------------------------
 // assertion counting
@@ -906,6 +906,92 @@ for (let i = 0; i < 6; i++) {
   check(
     normalisationsObserved > 5,
     `expected the low-S normalisation to fire often; it fired ${normalisationsObserved}/40 times`
+  );
+}
+
+// ===========================================================================
+// 6. signCancelOrder / cancelMessage -- the cancellation-authorization fix.
+//
+// Cancelling an order used to be "authorized" by echoing back the order's
+// own script_sig, which GET /orders publishes to every visitor -- not a
+// real credential. A cancellation is now a real ECDSA signature, checked
+// the same way signSpend is checked above: DER structure, low-S,
+// determinism, and independent verification against the reference
+// implementation, plus (since what's actually novel here is the message,
+// not the signing primitive) that the message really binds every field it
+// claims to -- changing any one of txid/vout/scriptSig/cancelNonce must
+// change both the message and the hash that gets signed. See
+// contrib/uap-indexer/cancel_auth.go for the scheme this must match
+// byte-for-byte.
+// ===========================================================================
+{
+  let cancelSigsChecked = 0;
+  for (let i = 0; i < 12; i++) {
+    const priv = privFor(1000 + i);
+    const pub = getPub(priv, true);
+    const pubPoint = decompressOrParse(pub);
+    const txid = 'a'.repeat(63) + (i % 16).toString(16);
+    const vout = i;
+    const scriptSig = hex(Uint8Array.from([0x30, 0x06, 0x02, 0x01, i + 1, 0x02, 0x01, i + 2, 0x83]));
+    // A nanosecond-scale value, deliberately past Number.MAX_SAFE_INTEGER,
+    // carried only as a string -- exactly the shape orders.go's
+    // `cancel_nonce,string` field sends.
+    const cancelNonce = String(1700000000000000000n + BigInt(i));
+
+    const sigHex = UAP.signCancelOrder(secp, { txid, vout, scriptSig, cancelNonce, privKey: priv });
+    const der = fromHex(sigHex);
+    const parsed = parseDerStrict(der, `signCancelOrder#${i}`);
+
+    check(parsed.s >= 1n && parsed.s <= N_HALF, `signCancelOrder#${i}: s must be in [1, n/2]`);
+    check(parsed.r >= 1n && parsed.r < N, `signCancelOrder#${i}: r must be in [1, n)`);
+
+    const msgHash = hash256(UAP.cancelMessage(txid, vout, scriptSig, cancelNonce));
+    const ref = refSign(msgHash, priv);
+    const refLowS = ref.s > N_HALF ? N - ref.s : ref.s;
+    eq(hex(bigTo32(parsed.r)), hex(bigTo32(ref.r)), `signCancelOrder#${i}: r matches reference RFC 6979 ECDSA`);
+    eq(hex(bigTo32(parsed.s)), hex(bigTo32(refLowS)), `signCancelOrder#${i}: s matches reference (low-S)`);
+
+    check(refVerify(pubPoint, msgHash, parsed.r, parsed.s), `signCancelOrder#${i}: signature must verify`);
+    check(
+      !refVerify(pubPoint, msgHash, parsed.r, mod(parsed.s + 1n, N)),
+      `signCancelOrder#${i}: a tampered s must NOT verify`
+    );
+
+    // Binding: perturbing any one bound field must change the message, and
+    // therefore the hash actually signed -- otherwise a signature captured
+    // for one order/state could verify against another.
+    const base = UAP.cancelMessage(txid, vout, scriptSig, cancelNonce);
+    const variants = {
+      txid: UAP.cancelMessage('b'.repeat(64), vout, scriptSig, cancelNonce),
+      vout: UAP.cancelMessage(txid, vout + 1, scriptSig, cancelNonce),
+      scriptSig: UAP.cancelMessage(txid, vout, scriptSig.slice(0, -2) + 'ff', cancelNonce),
+      cancelNonce: UAP.cancelMessage(txid, vout, scriptSig, String(BigInt(cancelNonce) + 1n)),
+    };
+    for (const [field, variant] of Object.entries(variants)) {
+      check(hex(variant) !== hex(base), `signCancelOrder#${i}: perturbing ${field} must change the message`);
+      check(
+        hex(hash256(variant)) !== hex(hash256(base)),
+        `signCancelOrder#${i}: perturbing ${field} must change the signed hash`
+      );
+    }
+
+    // Determinism through the library entry point.
+    const again = UAP.signCancelOrder(secp, { txid, vout, scriptSig, cancelNonce, privKey: priv });
+    eq(again, sigHex, `signCancelOrder#${i}: must be deterministic`);
+
+    cancelSigsChecked++;
+  }
+  check(cancelSigsChecked === 12, 'expected 12 signCancelOrder signatures to be checked');
+
+  // A Number cancelNonce must be rejected outright rather than silently
+  // stringified -- silently accepting one is exactly the interop bug the
+  // `,string` JSON tag on the Go side exists to prevent (a nanosecond
+  // UnixNano value loses precision as a JS double once it exceeds 2^53,
+  // which happened well before this code was written).
+  assert.throws(
+    () => UAP.cancelMessage('a'.repeat(64), 0, 'aa', 12345),
+    /cancelNonce must be/,
+    'cancelMessage must reject a numeric cancelNonce rather than silently coercing it'
   );
 }
 

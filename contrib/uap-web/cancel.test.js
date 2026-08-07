@@ -1,4 +1,4 @@
-import { myOrders, planCancel, describeCancelFailure } from './cancel.js';
+import { myOrders, planCancel, describeCancelFailure, cancelSignInput } from './cancel.js';
 import { test, assert, assertEqual, run } from './test-harness.js';
 
 const OWN_PUBKEY = 'ab'.repeat(33);
@@ -13,6 +13,9 @@ const ORDER_A = {
   payment_script: '76a914' + '11'.repeat(20) + '88ac',
   payment_value: 250000000,
   created_at: 1700000000,
+  // A nanosecond-scale value, carried as a string -- see the note in
+  // cancel.js's planCancel and orders.go's `cancel_nonce,string` tag.
+  cancel_nonce: '1700000000123456789',
 };
 
 const ORDER_B_OTHER = {
@@ -74,6 +77,41 @@ test('an order missing its script_sig is refused', () => {
   assert(p.errors.some((e) => e.includes('signature')), 'error should mention the missing signature');
 });
 
+test('an order missing its cancel_nonce is refused', () => {
+  const p = planCancel({ ...ORDER_A, cancel_nonce: '' });
+  assertEqual(p.ok, false, 'empty cancel_nonce must be refused');
+});
+
+test('an order with a numeric cancel_nonce is refused, not silently accepted', () => {
+  // A number here means something upstream (a hand-rolled response, a
+  // future regression in api.js's validation) skipped the ,string
+  // contract cancel_nonce depends on. Signing it anyway would silently
+  // produce a signature the relay can never match once the number has
+  // been through JSON round-tripping -- refusing here is louder and
+  // cheaper than debugging that.
+  const p = planCancel({ ...ORDER_A, cancel_nonce: 1700000000123456789 });
+  assertEqual(p.ok, false, 'a numeric cancel_nonce must be refused');
+});
+
+// =============================================================================
+// cancelSignInput: shaping an order into signCancelOrder's opts
+// =============================================================================
+
+test('cancelSignInput extracts exactly the fields signCancelOrder needs, under matching names', () => {
+  const input = cancelSignInput(ORDER_A);
+  assertEqual(input.txid, ORDER_A.txid, 'txid passes through');
+  assertEqual(input.vout, ORDER_A.vout, 'vout passes through');
+  assertEqual(input.scriptSig, ORDER_A.script_sig, 'script_sig becomes scriptSig');
+  assertEqual(input.cancelNonce, ORDER_A.cancel_nonce, 'cancel_nonce becomes cancelNonce');
+  assertEqual(typeof input.cancelNonce, 'string', 'cancelNonce must stay a string, never coerced to Number');
+});
+
+test('cancelSignInput does not leak unrelated order fields into the signing input', () => {
+  const input = cancelSignInput(ORDER_A);
+  assertEqual(Object.keys(input).sort().join(','), 'cancelNonce,scriptSig,txid,vout',
+    'only the four fields a cancel signature binds should be present');
+});
+
 // =============================================================================
 // describeCancelFailure: turn the relay's error text into something
 // specific rather than a generic failure (see CancelOrder in
@@ -85,9 +123,10 @@ test('a "no such order" failure is described as no-longer-open, not a generic er
   assert(/no longer open/i.test(msg), `expected a "no longer open" style message, got: ${msg}`);
 });
 
-test('a script_sig mismatch is described distinctly from "no such order"', () => {
-  const msg = describeCancelFailure('HTTP 400: script_sig does not match the published order');
-  assert(!/no longer open/i.test(msg), 'a mismatch must not be reported as "no longer open"');
+test('an unauthorized cancel signature is described distinctly from "no such order"', () => {
+  const msg = describeCancelFailure(
+    'HTTP 400: cancel signature does not authorize this order: signature does not authorize cancelling this order');
+  assert(!/no longer open/i.test(msg), 'an auth failure must not be reported as "no longer open"');
   assert(msg.length > 0, 'a message is produced');
 });
 

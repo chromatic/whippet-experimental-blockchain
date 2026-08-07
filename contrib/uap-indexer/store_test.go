@@ -272,7 +272,11 @@ func TestStoreOrdersSurviveRestart(t *testing.T) {
 		t.Errorf("order changed across restart:\n got %+v\nwant %+v", got, *order)
 	}
 
-	if err := loaded.CancelOrder("tx1", 0, order.ScriptSig); err != nil {
+	// storeChain assigns tx1's position the key from fakePrivKey(0x03) (h=1,
+	// prefix 0x02+h%3); CancelOrder now verifies a real signature against
+	// it (see cancel_auth.go), not the order's own public script_sig.
+	cancelSig := signCancel(t, fakePrivKey(0x03), "tx1", 0, order.ScriptSig, order.CancelNonce)
+	if err := loaded.CancelOrder("tx1", 0, cancelSig); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	again, _ := reopen(t, store2, path)

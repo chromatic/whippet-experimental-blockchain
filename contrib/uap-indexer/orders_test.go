@@ -74,8 +74,11 @@ func TestOrderLifecycle(t *testing.T) {
 	idx := NewIndex()
 
 	// Seed a position directly (bypassing ApplyBlock -- we're testing the
-	// order logic, not block indexing).
-	pos := &Position{TxID: "abc123", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 5000000000, IsMint: false, Height: 10}
+	// order logic, not block indexing). A real key is needed here (not
+	// fakePubKey) because this test also exercises CancelOrder, which
+	// verifies a real signature against the position's pubkey.
+	priv, pubKeyHex := testMakerKey(t)
+	pos := &Position{TxID: "abc123", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 5000000000, IsMint: false, Height: 10}
 	seedPosition(t, idx, pos)
 
 	scriptSig := signedPush(t)
@@ -125,12 +128,13 @@ func TestOrderLifecycle(t *testing.T) {
 		t.Error("expected PublishOrder to reject a multiplier mismatch")
 	}
 
-	// Cancelling with the wrong scriptSig must fail.
+	// Cancelling with an invalid signature must fail.
 	if err := idx.CancelOrder(pos.TxID, pos.Vout, "00"); err == nil {
-		t.Error("expected CancelOrder to reject a non-matching script_sig")
+		t.Error("expected CancelOrder to reject a malformed cancel signature")
 	}
-	// Cancelling with the right one succeeds.
-	if err := idx.CancelOrder(pos.TxID, pos.Vout, scriptSig); err != nil {
+	// Cancelling with a valid signature by the position's own key succeeds.
+	cancelSig := signCancel(t, priv, pos.TxID, pos.Vout, scriptSig, order.CancelNonce)
+	if err := idx.CancelOrder(pos.TxID, pos.Vout, cancelSig); err != nil {
 		t.Errorf("expected CancelOrder to succeed, got: %v", err)
 	}
 	if _, ok := mustGetOrder(t, idx, pos.TxID, pos.Vout); ok {
@@ -219,14 +223,15 @@ func TestOrderForAPositionLostToAReorgIsNotServed(t *testing.T) {
 // --- cancellation edge cases ---
 
 // A failed cancel must leave no trace. Writing the tombstone before
-// checking the scriptSig, or writing it on the failure path, would hand
-// anyone who can guess an outpoint a way to permanently block that order
-// from ever being mirrored in again -- a denial of service that needs no
-// signature and survives restarts.
-func TestCancelWithWrongScriptSigChangesNothing(t *testing.T) {
+// checking the cancel signature, or writing it on the failure path, would
+// hand anyone who can guess an outpoint a way to permanently block that
+// order from ever being mirrored in again -- a denial of service that
+// needs no signature and survives restarts.
+func TestCancelWithGarbageSignatureChangesNothing(t *testing.T) {
 	idx := NewIndex()
+	_, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	real := signedPush(t)
 	if err := idx.PublishOrder(&Order{
@@ -237,7 +242,7 @@ func TestCancelWithWrongScriptSigChangesNothing(t *testing.T) {
 	}
 
 	if err := idx.CancelOrder("known", 0, "48"+real[2:]); err == nil {
-		t.Error("expected a cancel with the wrong script_sig to be rejected")
+		t.Error("expected a cancel with a garbage signature to be rejected")
 	}
 
 	if _, ok := mustGetOrder(t, idx, "known", 0); !ok {
@@ -249,6 +254,131 @@ func TestCancelWithWrongScriptSigChangesNothing(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("a rejected cancel wrote %d tombstone(s); it must leave no trace", n)
+	}
+}
+
+// The core of the authorization fix: a well-formed signature that simply
+// was not made by the position's own key must be rejected, even though it
+// verifies fine against *some* key. Before this fix, the only "credential"
+// checked was the order's own script_sig -- and that value is public
+// (returned by GET /orders to any visitor), so anyone could reproduce it
+// and cancel someone else's order. This pins down that the replacement
+// scheme actually binds cancellation to the maker's key, not to public
+// data.
+func TestCancelSignedByWrongKeyIsRejected(t *testing.T) {
+	idx := NewIndex()
+	_, ownerPubKeyHex := testMakerKey(t)
+	attackerPriv, _ := testMakerKey(t)
+	seedPosition(t, idx, &Position{
+		TxID: "known", Vout: 0, PubKey: ownerPubKeyHex, Multiplier: 1000, Value: 500000000,
+	})
+	order := &Order{
+		TxID: "known", Vout: 0, Multiplier: 1000,
+		ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 100,
+	}
+	if err := idx.PublishOrder(order); err != nil {
+		t.Fatalf("PublishOrder: %v", err)
+	}
+
+	// A signature that is perfectly valid, but made by a different key
+	// than the one that owns the position.
+	forged := signCancel(t, attackerPriv, "known", 0, order.ScriptSig, order.CancelNonce)
+	if err := idx.CancelOrder("known", 0, forged); err == nil {
+		t.Fatal("expected a cancel signed by the wrong key to be rejected")
+	}
+	if _, ok := mustGetOrder(t, idx, "known", 0); !ok {
+		t.Error("an order was cancelled by a signature from the wrong key")
+	}
+}
+
+// A valid signature over a *different* order (different outpoint) must
+// not authorize cancelling this one, even though it was made by the same
+// key. This is what binding the signed message to txid/vout/script_sig
+// buys: possession of one valid cancel signature does not generalize to
+// "this key may cancel anything it owns" without re-signing per order.
+func TestCancelSignedForADifferentOrderIsRejected(t *testing.T) {
+	idx := NewIndex()
+	priv, pubKeyHex := testMakerKey(t)
+	seedPosition(t, idx, &Position{
+		TxID: "orderA", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
+	})
+	seedPosition(t, idx, &Position{
+		TxID: "orderB", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
+	})
+	orderA := &Order{TxID: "orderA", Vout: 0, Multiplier: 1000, ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 100}
+	orderB := &Order{TxID: "orderB", Vout: 0, Multiplier: 1000, ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 200}
+	if err := idx.PublishOrder(orderA); err != nil {
+		t.Fatalf("PublishOrder A: %v", err)
+	}
+	if err := idx.PublishOrder(orderB); err != nil {
+		t.Fatalf("PublishOrder B: %v", err)
+	}
+
+	// A real signature by the right key, but over order A's identity.
+	sigForA := signCancel(t, priv, "orderA", 0, orderA.ScriptSig, orderA.CancelNonce)
+	if err := idx.CancelOrder("orderB", 0, sigForA); err == nil {
+		t.Fatal("expected a cancel signature captured for a different order to be rejected")
+	}
+	if _, ok := mustGetOrder(t, idx, "orderB", 0); !ok {
+		t.Error("order B was cancelled by a signature that authorized order A")
+	}
+	// The legitimate signature for A still works, proving the rejection
+	// above was about identity binding and not some unrelated breakage.
+	if err := idx.CancelOrder("orderA", 0, sigForA); err != nil {
+		t.Errorf("expected the correctly-targeted signature to succeed, got: %v", err)
+	}
+}
+
+// The replay case the design has to address: a maker withdraws an order
+// and then republishes an *identical* one (same outpoint, same terms) on
+// the same position. Because signing is deterministic (RFC 6979), the
+// republished order's script_sig is bit-for-bit identical to the
+// withdrawn one's -- so a cancel signature captured on the wire for the
+// first listing must not still authorize cancelling the second. Binding
+// the signed message to created_at (server-assigned, changes on every
+// publish) is what prevents this; this test would fail if that binding
+// were dropped and only (txid, vout, script_sig) were signed.
+func TestCapturedCancelSignatureDoesNotReplayAfterRepublish(t *testing.T) {
+	idx := NewIndex()
+	priv, pubKeyHex := testMakerKey(t)
+	seedPosition(t, idx, &Position{
+		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
+	})
+	scriptSig := signedPush(t)
+	mk := func() *Order {
+		return &Order{TxID: "known", Vout: 0, Multiplier: 1000, ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 100}
+	}
+
+	first := mk()
+	if err := idx.PublishOrder(first); err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	captured := signCancel(t, priv, "known", 0, scriptSig, first.CancelNonce)
+	if err := idx.CancelOrder("known", 0, captured); err != nil {
+		t.Fatalf("first cancel: %v", err)
+	}
+
+	// The maker relists identically. Confirm the premise: the deterministic
+	// signature really is byte-for-byte the same script_sig, and that
+	// cancel_nonce is nonetheless guaranteed to differ -- including in the
+	// realistic case where both publishes land in the same wall-clock
+	// second, which created_at alone could not have told apart.
+	second := mk()
+	if err := idx.PublishOrder(second); err != nil {
+		t.Fatalf("republish: %v", err)
+	}
+	if second.ScriptSig != scriptSig || second.CancelNonce == first.CancelNonce {
+		t.Fatalf("test setup: expected identical script_sig (got %q) and a fresh cancel_nonce (first=%d second=%d)",
+			second.ScriptSig, first.CancelNonce, second.CancelNonce)
+	}
+
+	// The signature captured for the first cancellation must not cancel
+	// the second listing.
+	if err := idx.CancelOrder("known", 0, captured); err == nil {
+		t.Fatal("a captured cancel signature replayed successfully against a republished order")
+	}
+	if _, ok := mustGetOrder(t, idx, "known", 0); !ok {
+		t.Error("the republished order was cancelled by a replayed signature")
 	}
 }
 

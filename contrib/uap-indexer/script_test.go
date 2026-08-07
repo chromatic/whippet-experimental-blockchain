@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io/ioutil"
 	"testing"
+
+	"github.com/btcsuite/btcd/btcec/v2"
 )
 
 // buildPush encodes a single data push using minimal-push rules matching
@@ -62,13 +65,21 @@ func buildMultiplier(v int64) []byte {
 	return buildPush(buildScriptNum(v))
 }
 
+// fakePrivKey deterministically derives a real secp256k1 keypair from
+// prefix, distinct for every distinct prefix. Tests that only need "some
+// distinct-looking pubkey bytes" for a position use fakePubKey below; ones
+// that also need to authorize a CancelOrder for that position (see
+// cancel_auth.go -- CancelOrder verifies a real signature against the
+// position's pubkey, so a position's key must actually be on the curve
+// and its private half available to sign with) use this directly.
+func fakePrivKey(prefix byte) *btcec.PrivateKey {
+	seed := sha256.Sum256([]byte{'f', 'a', 'k', 'e', 'P', 'r', 'i', 'v', 'K', 'e', 'y', prefix})
+	priv, _ := btcec.PrivKeyFromBytes(seed[:])
+	return priv
+}
+
 func fakePubKey(prefix byte) []byte {
-	pk := make([]byte, 33)
-	pk[0] = prefix
-	for i := 1; i < 33; i++ {
-		pk[i] = byte(i)
-	}
-	return pk
+	return fakePrivKey(prefix).PubKey().SerializeCompressed()
 }
 
 func mintScriptBytes(pubkey []byte, multiplier int64, salt []byte) []byte {
