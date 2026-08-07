@@ -1,13 +1,8 @@
 import assert from 'assert';
 import nodeCrypto from 'crypto';
 import { sha256, hash256, hmacSha256 } from './sha256.js';
+import { hex, fromUtf8 } from './test-helpers.js';
 
-function hex(bytes) {
-  return Buffer.from(bytes).toString('hex');
-}
-function fromUtf8(s) {
-  return new Uint8Array(Buffer.from(s, 'utf8'));
-}
 function nodeSha256Hex(s) {
   return nodeCrypto.createHash('sha256').update(s).digest('hex');
 }

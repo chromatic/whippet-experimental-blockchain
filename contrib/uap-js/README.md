@@ -12,11 +12,32 @@ and sign a spend of one.
 - `sha256.js` -- a vendored, synchronous SHA-256 + HMAC-SHA256, verified
   against the standard NIST/RFC test vectors (`sha256.test.js`). Exists so
   the library doesn't need WebCrypto's async-only API or a Node-specific
-  path, and so it can supply the synchronous HMAC that `@noble/secp256k1`
-  v1.x's signing needs (see below).
+  path, and so it can supply the synchronous HMAC that
+  `@noble/secp256k1`'s signing needs (see below).
+- `ripemd160.js` -- a vendored RIPEMD-160, verified against the standard
+  vectors (`ripemd160.test.js`). Needed for `hash160`, which WebCrypto
+  does not provide.
+- `addr.js` -- P2PKH plumbing: `hash160`, base58/base58check
+  encode+decode, `pubkeyToAddress`, `addressToScript`, `scriptToAddress`,
+  `buildP2PKHScript`, and Whippet's `VERSIONS` (mainnet/testnet/regtest
+  address bytes). Unit-tested in `addr.test.js`.
 - `uap.js` -- script building (`buildMintScript`, `buildTransferScript`),
-  legacy transaction serialization, `SignatureHash`, and signing
-  (`signSpend`, `buildTransferTx`). Unit-tested in `uap.test.js`.
+  legacy transaction serialization, `signatureHash`, and signing
+  (`signSpend` for UAP positions, `signP2PKHInput` for ordinary inputs,
+  `buildPaymentTx`, `buildTransferTx`, `signMakerOrder`, `fillOrder`).
+  Unit-tested in `uap.test.js`.
+- `noble-secp256k1.js` -- a vendored, verbatim copy of
+  [`@noble/secp256k1`](https://github.com/paulmillr/noble-secp256k1)'s
+  single-file ESM build. Regenerate with `npm run vendor:secp` after
+  changing the pinned devDependency; the file's own header records the
+  exact version and where it was copied from.
+- `secp.js` -- the EC entry point everything imports. It re-exports the
+  vendored library and adds back the DER signature encoding the 2.x line
+  dropped, under v1's `signSync(hash, priv, opts)` name and semantics.
+  Import this, never the bare `@noble/secp256k1` and never
+  `noble-secp256k1.js` directly.
+- `integration.test.js` -- the same library driven against a real
+  `whippetd` regtest node (see Testing below).
 - `demo.html` -- a self-contained browser page: generate a keypair, build
   a mint script, and sign a transfer, entirely client-side.
 
@@ -32,27 +53,45 @@ sendrawtransaction` yourself.
 
 ## Elliptic-curve signing
 
-`uap.js` doesn't bundle an EC library -- you supply one, so you can choose
-and audit/pin whatever you trust. The expected interface matches
-[`@noble/secp256k1`](https://github.com/paulmillr/noble-secp256k1) v1.x:
+`uap.js` doesn't bundle an EC library -- you pass one in, so you can
+choose and audit/pin whatever you trust. It needs
+`getPublicKey(privKey, compressed)` and `signSync(msgHash, privKey, opts)`
+returning a DER-encoded, low-S signature. `secp.js` in this directory is
+that module, and is what the rest of the repo uses:
 
 ```js
-import * as secp from '@noble/secp256k1'; // or from a CDN, see demo.html
+import * as secp from './secp.js';
 import * as UAP from './uap.js';
 
 UAP.configureSecp(secp); // wires up the synchronous HMAC-SHA256 signSync() needs
 ```
 
-`@noble/secp256k1` v1.x's `signSync()` requires the caller to provide an
-HMAC-SHA256 implementation (it doesn't bundle one, to stay
-environment-agnostic across browser/Node/RN). `configureSecp()` wires the
-vendored `hmacSha256` from `sha256.js` in for you, so this "just works"
-without adding another dependency.
+Two things are worth knowing about `secp.js`.
+
+**It's a vendored file, not a package import.** The browser frontend is
+served by `uap-indexer` as plain ES modules under a `script-src 'self'`
+CSP. A browser can't resolve the bare specifier `@noble/secp256k1` without
+an import map, and the CSP forbids an inline one -- so the library is
+checked in as `noble-secp256k1.js` and imported by relative path.
+`@noble/secp256k1` stays a devDependency purely as the source for
+`npm run vendor:secp`; nothing imports it at runtime.
+
+**It re-adds DER.** `@noble/secp256k1` v2 dropped DER encoding entirely:
+`sign()` returns a `Signature` that only emits the 64-byte compact form,
+and it throws outright if v1's `der`/`canonical` options are even present.
+Whippet scriptSigs carry DER, so `secp.js` encodes it, and translates
+`canonical` to v2's `lowS`. `secp-equivalence.test.js` pins the resulting
+bytes against a fixture recorded from v1.7.1.
+
+Synchronous RFC6979 signing also requires the caller to provide an
+HMAC-SHA256 (noble bundles none, to stay environment-agnostic across
+browser/Node/RN). `configureSecp()` wires the vendored `hmacSha256` from
+`sha256.js` in for you, so this "just works" without another dependency.
 
 ## Usage
 
 ```js
-import * as secp from '@noble/secp256k1';
+import * as secp from './secp.js';
 import * as UAP from './uap.js';
 UAP.configureSecp(secp);
 
@@ -95,38 +134,76 @@ python3 -m http.server 8000
 # open http://localhost:8000/demo.html
 ```
 
-It loads `@noble/secp256k1` from a CDN (`esm.sh`) for convenience. For
-anything beyond local testing, self-host and pin a specific version/hash
-of that dependency instead of trusting a CDN at runtime.
+It imports the vendored `./secp.js` like the rest of the frontend, so it
+needs no network access and no import map.
 
 ## Testing
 
 ```
-npm test          # or: node sha256.test.js && node uap.test.js
+npm test                # unit tests; no node required
+npm run test:integration # end-to-end against a real regtest node
 ```
 
-These are unit tests of pure functions (hashing, script encoding, tx
-serialization) and don't need a running node.
+`npm test` covers the pure functions -- hashing, address encoding, script
+encoding, transaction serialization, signature hashing -- and needs
+nothing running.
 
-The signing path itself -- `signSpend`/`buildTransferTx` producing
-signatures the actual consensus code accepts -- was verified by hand by
-running a mint -> transfer -> transfer chain against a live `whippetd`
-regtest node using this library plus `@noble/secp256k1`, mirroring
-`qa/rpc-tests/uap_mint_transfer.py`. That script isn't checked in here
-(it's Node-specific glue for a manual check), but the recipe is: fund and
-broadcast a mint via the node's own wallet/RPC with `uap.js`'s
-`buildMintScript` as the output script, then use `buildTransferTx` to
-sign spends of it and confirm `sendrawtransaction` accepts them (and
-rejects a spend signed by the wrong key).
+It also covers the EC library, which for a long time it did not.
+`uap.test.js` signs with a stub that returns fixed bytes, and the sighash
+and address suites never touch a curve at all, so until
+`secp-equivalence.test.js` existed the entire offline suite could pass
+with the signing library swapped for a wrong one. That test replays a
+fixture of public keys, DER signatures and finished scriptSigs recorded
+from `@noble/secp256k1` v1.7.1 and requires the installed library to
+reproduce them byte for byte. RFC6979 ECDSA is deterministic, so there is
+exactly one right answer per (key, message hash) and it does not depend on
+the implementation. **If that test fails after a version bump, the new
+library disagrees with the old one -- investigate it, don't re-record the
+fixture.**
+
+`integration.test.js` starts its own `whippetd` on **regtest** in a
+temporary datadir on a non-default port, and drives the real thing: fund a
+P2PKH spend, mint a position, spend it into a covenant, spend that
+covenant onward, and confirm the node rejects a spend signed by the wrong
+key. It is the check that `signSpend` produces signatures consensus
+actually accepts, rather than ones that merely look well-formed. Point it
+at your binaries if they are not on `PATH`:
+
+```
+WHIPPETD_BIN=/path/to/whippetd WHIPPET_CLI_BIN=/path/to/whippet-cli \
+  npm run test:integration
+```
+
+`uap.test.js` and the Go indexer's `script_test.go` both consume
+`src/test/data/uap_script_vectors.json`, the same fixture the C++
+consensus test reads. That file is the cross-implementation contract: if
+`uap.js` and the node ever disagree about what a UAP script is, one of
+the three suites fails.
 
 ## Caveats
 
-- **Only `SIGHASH_ALL` is implemented.** `signatureHash`/`signSpend`
-  throw for any other hash type.
+- **Multipliers use a canonical encoding, and it is not optional.** A UAP
+  output must push every element in its shortest form -- `OP_0` for a zero
+  multiplier, `OP_1`..`OP_16` for 1..16, a minimal data push above that.
+  `buildMintScript`/`buildTransferScript` do this for you; if you assemble
+  script bytes yourself, get it right. Consensus rejects anything else,
+  because the same script is executed under `SCRIPT_VERIFY_MINIMALDATA`
+  when the position is spent, and a non-canonical position would be one
+  the network refuses to relay a spend of.
 - **This is a mirror of the consensus script format, not the source of
   truth**, same caveat as `uap-indexer`. If `OP_MINT`'s script format or
-  signing rules change in `src/script/interpreter.cpp`, this must be
-  updated to match.
+  signing rules change in `src/script/script.cpp`, this must be updated to
+  match -- and the shared fixture above is what catches it if you forget.
+- **Fees are capped, and the cap throws.** `buildPaymentTx` and
+  `buildTransferTx` refuse to build a transaction paying more than
+  `DEFAULT_TRANSACTION_MAXFEE` (100 coins), mirroring the node constant in
+  `src/validation.h`. A fee rate is easy to get wrong by orders of magnitude
+  and the rate itself gives no sign of it -- only the absolute fee does, and
+  by then a signed transaction has already handed the money to a miner. Pass
+  `maxFee` to authorise a larger one. Note the limit of this guard: at a
+  100-coin cap, a rate wrong by 1000x still slips under it for a small
+  transaction. It catches the coins-for-satoshis class of error, not every
+  unit mistake.
 - **Key handling is your responsibility.** This library signs wherever
   it's called; it does not manage key storage, backup, or recovery. Don't
   build a "paste your private key into this website" product without
