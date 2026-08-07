@@ -45,12 +45,14 @@ export function planSell({ position, priceSats, ownAddress }) {
     errors.push('Enter a price in whole satoshis.');
   } else if (priceSats <= 0) {
     errors.push('The asking price must be greater than zero.');
-  } else if (priceSats < uap.DEFAULT_DUST_LIMIT) {
-    // A payment output below the dust limit makes the completed swap
-    // non-standard, so no node would relay the fill. The order would sit
-    // in the book looking valid and could never be taken.
+  } else if (priceSats < uap.DEFAULT_HARD_DUST_LIMIT) {
+    // A payment output below the *hard* dust limit makes the completed
+    // swap non-standard, so no node would relay the fill (see
+    // IsStandardTx in src/policy/policy.cpp, which checks nHardDustLimit --
+    // the soft nDustLimit only affects fee bumping, not relay). The order
+    // would sit in the book looking valid and could never be taken.
     errors.push(
-      `The asking price is below the dust limit (${uap.DEFAULT_DUST_LIMIT} satoshis); ` +
+      `The asking price is below the dust limit (${uap.DEFAULT_HARD_DUST_LIMIT} satoshis); ` +
       'no node would relay a transaction paying it.'
     );
   }

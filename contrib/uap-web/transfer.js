@@ -50,6 +50,8 @@ import * as secp from '../uap-js/secp.js';
 
 const COIN = uap.COIN;
 const DEFAULT_DUST_LIMIT = uap.DEFAULT_DUST_LIMIT;
+// See market.js: outputs are gated by the hard limit, not the soft one.
+const HARD_DUST_LIMIT = uap.DEFAULT_HARD_DUST_LIMIT;
 const RECOMMENDED_MIN_TX_FEE = uap.RECOMMENDED_MIN_TX_FEE;
 const MAX_MULTIPLIER = 2147483647;
 
@@ -592,17 +594,17 @@ export function planTransfer({
       });
     } else {
       remainderSats = positionValue - amountSats;
-      if (amountSats < DEFAULT_DUST_LIMIT) {
+      if (amountSats < HARD_DUST_LIMIT) {
         errors.push({
           field: 'amountSats',
-          message: `Amount ${amountSats} satoshis is below the dust limit of ${DEFAULT_DUST_LIMIT} satoshis`
+          message: `Amount ${amountSats} satoshis is below the dust limit of ${HARD_DUST_LIMIT} satoshis`
         });
       }
-      if (remainderSats > 0 && remainderSats < DEFAULT_DUST_LIMIT) {
+      if (remainderSats > 0 && remainderSats < HARD_DUST_LIMIT) {
         errors.push({
           field: 'amountSats',
           message: `Sending this much would leave a dust remainder of ${remainderSats} satoshis in your position. ` +
-            `Send at most ${positionValue - DEFAULT_DUST_LIMIT} satoshis, or send the whole position.`
+            `Send at most ${positionValue - HARD_DUST_LIMIT} satoshis, or send the whole position.`
         });
       }
     }

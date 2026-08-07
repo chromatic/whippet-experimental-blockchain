@@ -29,7 +29,12 @@ import { test, assert, assertEqual, assertThrows, run } from './test-harness.js'
 uap.configureSecp(secp256k1);
 
 const COIN = uap.COIN;
-const DUST = uap.DEFAULT_DUST_LIMIT;
+// The relay-standardness floor is the HARD dust limit -- IsStandardTx in
+// src/policy/policy.cpp checks nHardDustLimit. The softer DEFAULT_DUST_LIMIT
+// only drives fee bumping, and pinning these tests to it made the UI reject
+// transfers the network would have accepted.
+const DUST = uap.DEFAULT_HARD_DUST_LIMIT;
+const SOFT_DUST = uap.DEFAULT_DUST_LIMIT;
 
 const MY_PRIVKEY = new Uint8Array(32).fill(0x11);
 const MY_PUBKEY = secp256k1.getPublicKey(MY_PRIVKEY, true);
@@ -384,6 +389,17 @@ test('a non-integer amount is rejected rather than silently truncated', () => {
 test('an amount below the dust limit is rejected', () => {
   assertRejects(validInput({ amountSats: DUST - 1 }), 'amountSats',
     'a dust covenant output would not relay');
+});
+
+test('an amount between the hard and soft dust limits is accepted', () => {
+  // The bug this replaces: these values relay fine, but the UI refused them.
+  const result = planTransfer(validInput({ amountSats: SOFT_DUST - 1 }));
+  assertEqual(result.ok, true, JSON.stringify(result.errors));
+});
+
+test('an amount exactly at the hard dust limit is accepted', () => {
+  const result = planTransfer(validInput({ amountSats: DUST }));
+  assertEqual(result.ok, true, JSON.stringify(result.errors));
 });
 
 test('an amount that would leave a dust remainder is rejected', () => {

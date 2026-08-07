@@ -50,6 +50,55 @@ test('a price below the dust limit is refused', () => {
   assert(p.errors.some((e) => e.includes('dust')), 'error should name the dust limit');
 });
 
+test('a price just below the true (hard) dust limit is refused', () => {
+  // The node's relay-blocking threshold is DEFAULT_HARD_DUST_LIMIT
+  // (nHardDustLimit in src/policy/policy.cpp), not the softer
+  // DEFAULT_DUST_LIMIT used elsewhere for change outputs and fee bumping.
+  // A price of 1 satoshi passes this check regardless of which constant
+  // is used, so it does not pin the boundary -- this does.
+  const p = planSell({
+    position: POSITION,
+    priceSats: uap.DEFAULT_HARD_DUST_LIMIT - 1,
+    ownAddress: ADDRESS,
+  });
+  assertEqual(p.ok, false, 'a price one satoshi below the hard dust limit must be refused');
+  assert(p.errors.some((e) => e.includes('dust')), 'error should name the dust limit');
+});
+
+test('a price exactly at the true (hard) dust limit is accepted', () => {
+  const p = planSell({
+    position: POSITION,
+    priceSats: uap.DEFAULT_HARD_DUST_LIMIT,
+    ownAddress: ADDRESS,
+  });
+  assertEqual(p.ok, true, p.errors.join(' '));
+});
+
+test('a price just above the true (hard) dust limit is accepted', () => {
+  const p = planSell({
+    position: POSITION,
+    priceSats: uap.DEFAULT_HARD_DUST_LIMIT + 1,
+    ownAddress: ADDRESS,
+  });
+  assertEqual(p.ok, true, p.errors.join(' '));
+});
+
+test('a legitimate ask between the hard and soft dust limits is accepted', () => {
+  // This is the actual bug: prices in [100000, 999999) were wrongly
+  // refused because the check used DEFAULT_DUST_LIMIT (1000000) instead
+  // of DEFAULT_HARD_DUST_LIMIT (100000).
+  assert(
+    uap.DEFAULT_HARD_DUST_LIMIT < uap.DEFAULT_DUST_LIMIT,
+    'sanity: hard limit is the smaller of the two'
+  );
+  const p = planSell({
+    position: POSITION,
+    priceSats: uap.DEFAULT_DUST_LIMIT - 1,
+    ownAddress: ADDRESS,
+  });
+  assertEqual(p.ok, true, p.errors.join(' '));
+});
+
 test('a bad payout address is refused', () => {
   const p = planSell({ position: POSITION, priceSats: 250000000, ownAddress: 'not-an-address' });
   assertEqual(p.ok, false, 'garbage address must be refused');

@@ -151,6 +151,34 @@ test('planFill rejects if payment output would be dust', () => {
   assert(result.errors && result.errors.length > 0, 'should report errors');
 });
 
+// The relay floor is the HARD dust limit (IsStandardTx -> nHardDustLimit in
+// src/policy/policy.cpp). Pinning the taker side to the softer limit meant a
+// perfectly relayable order could be published by a maker and then refused by
+// every taker's own UI.
+test('planFill accepts a payment between the hard and soft dust limits', () => {
+  const order = { ...TEST_ORDER, payment_value: uap.DEFAULT_DUST_LIMIT - 1 };
+  const result = planFill({
+    order,
+    position: TEST_POSITION,
+    takerUtxos: TAKER_UTXOS,
+    takerPubkey: TAKER_PUBKEY,
+    feeRate: 1000
+  });
+  assert(result.ok, 'should accept: ' + JSON.stringify(result.errors));
+});
+
+test('planFill still rejects a payment below the hard dust limit', () => {
+  const order = { ...TEST_ORDER, payment_value: uap.DEFAULT_HARD_DUST_LIMIT - 1 };
+  const result = planFill({
+    order,
+    position: TEST_POSITION,
+    takerUtxos: TAKER_UTXOS,
+    takerPubkey: TAKER_PUBKEY,
+    feeRate: 1000
+  });
+  assert(!result.ok, 'a genuinely dust payment must still be refused');
+});
+
 test('planFill reports all failures at once', () => {
   const badOrder = {
     ...TEST_ORDER,

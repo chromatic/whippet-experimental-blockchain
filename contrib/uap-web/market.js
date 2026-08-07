@@ -6,6 +6,11 @@ import * as addr from '../uap-js/addr.js';
 
 const COIN = uap.COIN;
 const DEFAULT_DUST_LIMIT = uap.DEFAULT_DUST_LIMIT;
+// Relay standardness uses the HARD limit (IsStandardTx -> nHardDustLimit in
+// src/policy/policy.cpp); the soft limit above only drives fee bumping and
+// change-folding policy. Any value that becomes a real output is gated by
+// this one.
+const HARD_DUST_LIMIT = uap.DEFAULT_HARD_DUST_LIMIT;
 const RECOMMENDED_MIN_TX_FEE = uap.RECOMMENDED_MIN_TX_FEE;
 
 /**
@@ -101,8 +106,8 @@ export function planFill({
   }
 
   // ========== PAYMENT DUST CHECK ==========
-  if (order.payment_value < DEFAULT_DUST_LIMIT) {
-    errors.push(`Payment value ${order.payment_value} sats is below dust limit ${DEFAULT_DUST_LIMIT} sats`);
+  if (order.payment_value < HARD_DUST_LIMIT) {
+    errors.push(`Payment value ${order.payment_value} sats is below dust limit ${HARD_DUST_LIMIT} sats`);
   }
 
   // ========== CHANGE VALIDATION ==========
