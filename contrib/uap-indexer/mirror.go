@@ -64,8 +64,8 @@ func mirrorOnce(client *http.Client, idx *Index, peerBase string) {
 
 	added := 0
 	for i := range orders {
-		o := orders[i] // fresh copy; PublishOrder mutates its argument
-		if err := idx.PublishOrder(&o); err != nil {
+		o := orders[i] // fresh copy; the publish path mutates its argument
+		if err := idx.AdoptMirroredOrder(&o); err != nil {
 			// Expected in the common case (already known locally, or not
 			// yet visible in our own chain view) as much as for genuine
 			// problems -- not worth failing loudly over.

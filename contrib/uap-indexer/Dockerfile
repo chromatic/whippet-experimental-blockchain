@@ -3,12 +3,52 @@
 # no libc, nothing an attacker could use beyond the binary itself. This
 # is the whole point of running a small, dependency-free Go service: the
 # container can be just as small and dependency-free.
+#
+# The build context is contrib/, not this directory. Two things this
+# package depends on live outside uap-indexer/ and have to be visible to
+# the build:
+#   - go.mod's `replace github.com/whippet/whippet/contrib/whippetrpc =>
+#     ../whippetrpc` needs a whippetrpc/ sibling directory, which a
+#     context scoped to uap-indexer/ can never provide (COPY cannot reach
+#     outside the build context).
+#   - //go:embed web/* (web.go) needs web/, which `make web` generates by
+#     copying files out of ../uap-web and ../uap-js -- also outside this
+#     directory.
+# contrib/ is the lowest common ancestor of all four, so build from there:
+#
+#   docker build -f uap-indexer/Dockerfile contrib/
+#
+# (run from the repository's contrib/ directory, or adjust the trailing
+# path accordingly). Building with `docker build .` from inside
+# uap-indexer/ will fail for the reasons above.
 
-FROM golang:1.22-alpine AS build
+FROM golang:1.25-alpine AS build
+
+# `make web` (invoked below) only copies files -- no node needed for that,
+# only for `make check-web`, which this build does not run -- but the copy
+# step itself is driven by this package's Makefile, so `make` has to be on
+# the image. Alpine's base image doesn't include it.
+RUN apk add --no-cache make
 
 WORKDIR /src
-COPY go.mod ./
-COPY *.go ./
+
+# Bring in the whole contrib/ subtree the build needs: uap-indexer itself,
+# whippetrpc (resolved via the go.mod replace directive above), and the
+# uap-web/uap-js frontend sources that `make web` copies from. Layout is
+# preserved as siblings under /src, matching the source tree, so the
+# relative paths in go.mod's replace directive and in the Makefile's `web`
+# target (../uap-web, ../uap-js) resolve exactly as they do outside Docker.
+COPY uap-indexer/ ./uap-indexer/
+COPY whippetrpc/ ./whippetrpc/
+COPY uap-web/ ./uap-web/
+COPY uap-js/ ./uap-js/
+
+WORKDIR /src/uap-indexer
+
+# Stage the frontend into web/ before compiling, since //go:embed web/*
+# needs at least one file there and fails otherwise.
+RUN make web
+
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/uap-indexer .
 
 # An empty directory owned by the non-root UID/GID we'll run as, purely so
@@ -51,7 +91,7 @@ EXPOSE 8961
 # 127.0.0.1) so the default actually works with `docker run -p`, not just
 # --network host.
 ENV UAP_LISTEN=0.0.0.0:8961
-ENV UAP_STATEFILE=/data/uap-index.json
+ENV UAP_STATEFILE=/data/uap-index.sqlite
 
 ENTRYPOINT ["/uap-indexer"]
 CMD []

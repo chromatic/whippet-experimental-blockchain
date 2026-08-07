@@ -1,0 +1,165 @@
+[Unit]
+Description=UAP indexer and marketplace relay
+Documentation=https://github.com/whippet/whippet/blob/master/contrib/uap-indexer/README.md
+# Only a soft ordering: the indexer polls, so a node that is not up yet (or
+# goes away later) is an ordinary transient error it logs and retries. Making
+# this a hard Requires= would take the indexer down with the node, which is
+# strictly worse -- the API keeps serving already-indexed state perfectly well
+# while the node is restarting.
+After=network-online.target whippetd.service
+Wants=network-online.target
+
+# Never give up restarting (see Restart= below). A node that is down for an
+# hour is a normal operational event, and a service systemd has quietly stopped
+# retrying is worse than one that keeps trying; RestartSec= keeps a genuine
+# crash loop from becoming a busy loop. This is a [Unit] key, not a [Service]
+# one, despite governing Restart=.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+
+# A dedicated, unprivileged, non-login account. Create it before first start:
+#
+#   useradd --system --home-dir /var/lib/uap-indexer \
+#           --shell /usr/sbin/nologin uap-indexer
+#
+# DynamicUser= is deliberately NOT used, despite fitting a stateless-looking
+# single binary, for two reasons:
+#   1. The usual way to reach whippetd is its .cookie file, which the node
+#      writes mode 0600 as its own user. Granting access means adding this
+#      service's user to the node's group -- which requires a stable, named
+#      user that exists at `useradd` time, not a UID systemd invents at every
+#      start.
+#   2. The SQLite database is persistent state with real rebuild cost (a full
+#      chain rescan). StateDirectory= does keep it across a UID change, but the
+#      failure mode if anything about that arrangement is ever misconfigured is
+#      a silent resync from -startheight, and that is not worth the trade for
+#      one long-running service on a host that already has a user for it.
+User=uap-indexer
+Group=uap-indexer
+
+# Credentials come from here, never from the command line: everything in argv
+# is world-readable via /proc/<pid>/cmdline, so -rpcpassword=... on ExecStart
+# would leak the node's RPC password to every local user. The environment of a
+# process is readable only by its own user and root.
+#
+# The leading '-' makes the file optional, so a deployment using cookie auth
+# (or a public node needing no credentials) starts without one.
+#
+#   install -o root -g uap-indexer -m 0640 \
+#           uap-indexer.env.example /etc/default/uap-indexer
+EnvironmentFile=-/etc/default/uap-indexer
+
+# /var/lib/uap-indexer, created with the right ownership on first start and
+# preserved across restarts. Using StateDirectory= rather than a bare path is
+# what makes ProtectSystem=strict below workable: systemd mounts it writable
+# for this unit automatically, so no explicit ReadWritePaths= is needed. If the
+# database is moved elsewhere (via UAP_STATEFILE), that path must be added to
+# ReadWritePaths= or writes will fail with EROFS.
+StateDirectory=uap-indexer
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/uap-indexer
+
+# Listen on loopback only and let nginx terminate TLS and face the internet.
+# See deploy/nginx-uap-indexer.conf; -trustproxy MUST agree with what that
+# nginx block sets, or the client IP the rate limiter keys on becomes
+# attacker-controlled. Everything security-relevant is stated explicitly here
+# rather than left to a default, so reading the unit tells you the posture.
+#
+# Non-credential settings are passed as flags; credentials are not. Both the
+# host/port and the state file also have UAP_* environment equivalents (see the
+# example env file) -- an explicit flag always wins over the environment.
+ExecStart=/usr/local/bin/uap-indexer \
+    -listen=127.0.0.1:8961 \
+    -statefile=/var/lib/uap-indexer/uap-index.sqlite \
+    -trustproxy
+
+Restart=on-failure
+RestartSec=5s
+
+# SIGTERM triggers a clean HTTP shutdown; every block is already committed, so
+# there is nothing to flush and the exit is quick.
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+
+# --- Hardening -----------------------------------------------------------
+#
+# This is an internet-facing service (via nginx) parsing untrusted input, so
+# the point of the list below is to bound what a code-execution bug could
+# reach. What it needs is genuinely small: one directory, one loopback socket,
+# outbound TCP to the node and any -mirror peers.
+
+# No path to gaining privileges, even via a setuid binary.
+NoNewPrivileges=yes
+
+# It needs no capabilities at all: it binds a high port, writes one directory,
+# and makes outbound connections.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Whole filesystem read-only except StateDirectory above; /home unreadable.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# No device access is needed beyond /dev/null, /dev/urandom and friends, which
+# PrivateDevices= still provides.
+PrivateDevices=yes
+
+# Other users' processes are invisible, and /proc's system-wide knobs are not
+# readable. ProcSubset=pid also hides /proc/kcore, /proc/kallsyms and so on.
+ProtectProc=invisible
+ProcSubset=pid
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# AF_INET/AF_INET6 for the listener, the node's RPC and mirror peers. AF_UNIX
+# because that is how the process's stdout/stderr reach the journal. AF_NETLINK
+# because Go's pure-Go resolver consults the routing table (RFC 6724 address
+# sorting) when a hostname -- e.g. a -mirror peer, or -rpchost given by name --
+# resolves to more than one address. Everything else, notably AF_PACKET, is
+# unreachable.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# Go does not JIT, so nothing here ever needs a writable-and-executable
+# mapping.
+#
+# ONE EXCEPTION, and it is not theoretical: the UPX-compressed artifact that
+# `make dist` produces decompresses itself into memory at startup and needs
+# exactly that. Deploy the plain `make build` binary, or drop this line -- the
+# packed binary will fail to start otherwise, and the error does not say why.
+MemoryDenyWriteExecute=yes
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# EPERM rather than the default SIGSYS: a blocked call surfaces as an ordinary
+# Go error the service can log, instead of a bare "killed" with no detail.
+SystemCallErrorNumber=EPERM
+
+# Files it creates (the database, its WAL) are private to its own user.
+UMask=0077
+
+# Deliberately left out:
+#   PrivateUsers=  -- breaks the group-based access to whippetd's .cookie file
+#                     described above, since the node's group does not map into
+#                     the unit's user namespace.
+#   IPAddressDeny=/IPAddressAllow= -- these would pin down egress nicely, but
+#                     the correct allow-list depends entirely on where the node
+#                     and any -mirror peers live. Worth adding per-deployment;
+#                     wrong to ship a guess that silently blocks the node.
+#   ProtectSystem=full is weaker than strict and covered by it.
+#   RemoveIPC=, PrivateMounts= -- no IPC objects and no mounts are involved.
+
+[Install]
+WantedBy=multi-user.target

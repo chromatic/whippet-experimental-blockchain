@@ -1,0 +1,23 @@
+# Ignore file for uap-indexer/Dockerfile specifically (BuildKit prefers
+# "<dockerfile>.dockerignore" over the context-root ".dockerignore" when
+# both exist). The build context for this Dockerfile is contrib/, not
+# uap-indexer/ -- see the invocation documented at the top of the
+# Dockerfile -- so paths here are relative to contrib/.
+#
+# None of this is required for the build to succeed; it just keeps dev
+# tooling, test files, and node_modules (irrelevant to a Go binary) out of
+# what gets uploaded to the Docker daemon as build context and out of any
+# intermediate layer.
+**/node_modules
+**/*_test.go
+**/*.test.js
+**/*.integration.test.js
+
+uap-indexer/Dockerfile
+uap-indexer/Dockerfile.dockerignore
+uap-indexer/.dockerignore
+uap-indexer/README.md
+uap-indexer/web/
+uap-indexer/uap-indexer
+uap-indexer/uap-indexer-stripped
+uap-indexer/uap-indexer.upx

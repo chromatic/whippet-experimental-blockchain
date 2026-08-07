@@ -1,18 +1,28 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"strings"
-	"time"
+
+	"github.com/whippet/whippet/contrib/whippetrpc"
 )
 
-// RPCClient is a minimal JSON-RPC client for whippetd, using only the
-// standard library so this stays a single dependency-free binary.
+// NodeRejection is an error the node itself returned: the RPC call reached
+// whippetd, and whippetd said no. It is distinct from a transport failure,
+// which means the call never got an answer at all.
+//
+// The distinction matters at the HTTP layer. Telling a user their perfectly
+// valid transaction was rejected, when in fact the node was unreachable,
+// sends them off debugging a transaction that was never seen. Callers use
+// errors.As to tell the two apart -- never a substring match on the message,
+// which silently misclassifies as soon as wording changes.
+type NodeRejection = whippetrpc.NodeRejection
+
+// RPCClient is the indexer's view of whippetd. The transport lives in
+// contrib/whippetrpc, shared with contrib/faucet; only the methods the
+// indexer calls are here.
+//
+// The connection details stay as plain fields rather than a wrapped client so
+// that a test can point one at an httptest server with a struct literal.
 type RPCClient struct {
 	url        string
 	user, pass string
@@ -20,82 +30,44 @@ type RPCClient struct {
 }
 
 func NewRPCClient(host string, port int, user, pass, cookieFile string) (*RPCClient, error) {
-	if cookieFile != "" {
-		data, err := os.ReadFile(cookieFile)
-		if err != nil {
-			return nil, fmt.Errorf("reading rpc cookie file: %w", err)
-		}
-		parts := strings.SplitN(strings.TrimSpace(string(data)), ":", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("malformed rpc cookie file %s", cookieFile)
-		}
-		user, pass = parts[0], parts[1]
+	c, err := whippetrpc.New(whippetrpc.Config{
+		Host:       host,
+		Port:       port,
+		User:       user,
+		Pass:       pass,
+		CookieFile: cookieFile,
+		ID:         rpcID,
+		DebugEnv:   rpcDebugEnv,
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &RPCClient{
-		url:  fmt.Sprintf("http://%s:%d/", host, port),
-		user: user,
-		pass: pass,
-		http: &http.Client{Timeout: 30 * time.Second},
+		url:  c.URL(),
+		user: c.User(),
+		pass: c.Pass(),
+		http: c.HTTPClient(),
 	}, nil
 }
 
-type rpcRequest struct {
-	JSONRPC string        `json:"jsonrpc"`
-	ID      string        `json:"id"`
-	Method  string        `json:"method"`
-	Params  []interface{} `json:"params"`
-}
-
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type rpcResponse struct {
-	Result json.RawMessage `json:"result"`
-	Error  *rpcError       `json:"error"`
-}
+const (
+	rpcID       = "uap-indexer"
+	rpcDebugEnv = "UAP_RPC_DEBUG"
+)
 
 func (c *RPCClient) call(method string, params []interface{}, out interface{}) error {
-	body, err := json.Marshal(rpcRequest{JSONRPC: "1.0", ID: "uap-indexer", Method: method, Params: params})
+	rpc, err := whippetrpc.New(whippetrpc.Config{
+		URL:      c.url,
+		User:     c.user,
+		Pass:     c.pass,
+		ID:       rpcID,
+		DebugEnv: rpcDebugEnv,
+		HTTP:     c.http,
+	})
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.user != "" {
-		req.SetBasicAuth(c.user, c.pass)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("rpc request %s: %w", method, err)
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if os.Getenv("UAP_RPC_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "DEBUG request: %s\nDEBUG response: %s\n", body, data)
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusInternalServerError {
-		return fmt.Errorf("rpc %s: unexpected HTTP status %d: %s", method, resp.StatusCode, string(data))
-	}
-	var rr rpcResponse
-	if err := json.Unmarshal(data, &rr); err != nil {
-		return fmt.Errorf("rpc %s: decoding response: %w", method, err)
-	}
-	if rr.Error != nil {
-		return fmt.Errorf("rpc %s: %s (code %d)", method, rr.Error.Message, rr.Error.Code)
-	}
-	if out != nil {
-		return json.Unmarshal(rr.Result, out)
-	}
-	return nil
+	return rpc.Call(method, params, out)
 }
 
 func (c *RPCClient) GetBlockCount() (int64, error) {
@@ -120,8 +92,10 @@ type RPCVin struct {
 
 // RPCVout is one transaction output.
 type RPCVout struct {
-	Value        float64 `json:"value"`
-	N            uint32  `json:"n"`
+	// Value is satoshis, decoded exactly -- see amount.go for why this
+	// must not be a float64.
+	Value        Amount `json:"value"`
+	N            uint32 `json:"n"`
 	ScriptPubKey struct {
 		Hex string `json:"hex"`
 	} `json:"scriptPubKey"`
@@ -146,4 +120,29 @@ func (c *RPCClient) GetBlockVerbose(hash string) (*RPCBlock, error) {
 	var block RPCBlock
 	err := c.call("getblock", []interface{}{hash, 2}, &block)
 	return &block, err
+}
+
+// SendRawTransaction broadcasts a raw transaction to the network.
+// Returns the txid on success, or an error (which may be a node rejection).
+func (c *RPCClient) SendRawTransaction(hex string) (string, error) {
+	var txid string
+	err := c.call("sendrawtransaction", []interface{}{hex}, &txid)
+	return txid, err
+}
+
+// EstimateSmartFee returns an estimated fee rate in satoshis per kB for
+// confirmation within the given number of blocks, or an error.
+// Returns 0 if the node cannot estimate (e.g., not enough mempool history).
+func (c *RPCClient) EstimateSmartFee(blocks int) (int64, error) {
+	type esf struct {
+		FeRate Amount   `json:"feerate"`
+		Errors []string `json:"errors"`
+	}
+	var resp esf
+	err := c.call("estimatesmartfee", []interface{}{blocks}, &resp)
+	if err != nil {
+		return 0, err
+	}
+	// FeRate arrives as coins per kB and is decoded straight to satoshis.
+	return int64(resp.FeRate), nil
 }

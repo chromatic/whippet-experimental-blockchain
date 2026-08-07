@@ -13,10 +13,11 @@ const (
 
 // ParsedUAP is the decoded form of a UAP mint or transfer output script.
 // This is a best-effort mirror of ParseUapOutputScript in
-// src/script/interpreter.cpp -- it exists purely for observational
-// indexing and is not consensus-authoritative. If the on-chain opcode
-// logic changes, this must be updated to match or the index will silently
-// drift from what the chain actually enforces.
+// src/script/script.cpp -- it exists purely for observational indexing and
+// is not consensus-authoritative. If the on-chain opcode logic changes,
+// this must be updated to match or the index will silently drift from what
+// the chain actually enforces. src/test/data/uap_script_vectors.json is the
+// shared fixture that holds the two in agreement.
 type ParsedUAP struct {
 	PubKey     []byte
 	Multiplier int64
@@ -24,11 +25,52 @@ type ParsedUAP struct {
 }
 
 // scriptPush is one decoded element of a script: either pushed data, or a
-// non-push opcode (Data is nil, Opcode holds the raw byte).
+// non-push opcode (Data is nil). Opcode always holds the raw leading byte,
+// which is what makes the minimal-encoding check below possible.
 type scriptPush struct {
 	IsPush bool
 	Opcode byte
 	Data   []byte
+}
+
+// isMinimalPush reports whether p uses the canonical (shortest) encoding for
+// the data it pushes -- the BIP62 rule the node enforces as
+// SCRIPT_VERIFY_MINIMALDATA, mirroring CheckMinimalPush in src/script/script.cpp.
+// ParseUapOutputScript requires it of every element of a UAP output, so
+// anything else is not a UAP output as far as consensus is concerned.
+func isMinimalPush(p scriptPush) bool {
+	switch n := len(p.Data); {
+	case n == 0:
+		return p.Opcode == 0x00 // OP_0
+	case n == 1 && p.Data[0] >= 1 && p.Data[0] <= 16:
+		return p.Opcode == 0x50+p.Data[0] // OP_1 .. OP_16
+	case n == 1 && p.Data[0] == 0x81:
+		return p.Opcode == 0x4f // OP_1NEGATE
+	case n <= 75:
+		return int(p.Opcode) == n
+	case n <= 255:
+		return p.Opcode == 0x4c // OP_PUSHDATA1
+	case n <= 65535:
+		return p.Opcode == 0x4d // OP_PUSHDATA2
+	default:
+		return true
+	}
+}
+
+// isMinimalScriptNum reports whether data is the shortest byte string
+// encoding its value -- CScriptNum's own minimality rule, which is separate
+// from isMinimalPush (0x0100 is a minimal 2-byte *push* of a non-minimal
+// *number*).
+func isMinimalScriptNum(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	// The most significant byte carries only the sign bit, so it is
+	// redundant unless the byte below it has its own high bit set.
+	if data[len(data)-1]&0x7f == 0 {
+		return len(data) > 1 && data[len(data)-2]&0x80 != 0
+	}
+	return true
 }
 
 // readPushes decodes every element of a script. Returns an error if the
@@ -44,7 +86,7 @@ func readPushes(script []byte) ([]scriptPush, error) {
 			if i+int(b) > len(script) {
 				return nil, fmt.Errorf("truncated push at offset %d", i-1)
 			}
-			out = append(out, scriptPush{IsPush: true, Data: script[i : i+int(b)]})
+			out = append(out, scriptPush{IsPush: true, Opcode: b, Data: script[i : i+int(b)]})
 			i += int(b)
 		case b == 0x4c: // OP_PUSHDATA1
 			if i+1 > len(script) {
@@ -55,7 +97,7 @@ func readPushes(script []byte) ([]scriptPush, error) {
 			if i+n > len(script) {
 				return nil, fmt.Errorf("truncated PUSHDATA1 payload")
 			}
-			out = append(out, scriptPush{IsPush: true, Data: script[i : i+n]})
+			out = append(out, scriptPush{IsPush: true, Opcode: b, Data: script[i : i+n]})
 			i += n
 		case b == 0x4d: // OP_PUSHDATA2
 			if i+2 > len(script) {
@@ -66,7 +108,7 @@ func readPushes(script []byte) ([]scriptPush, error) {
 			if i+n > len(script) {
 				return nil, fmt.Errorf("truncated PUSHDATA2 payload")
 			}
-			out = append(out, scriptPush{IsPush: true, Data: script[i : i+n]})
+			out = append(out, scriptPush{IsPush: true, Opcode: b, Data: script[i : i+n]})
 			i += n
 		case b == 0x4e: // OP_PUSHDATA4
 			if i+4 > len(script) {
@@ -77,12 +119,15 @@ func readPushes(script []byte) ([]scriptPush, error) {
 			if i+n > len(script) {
 				return nil, fmt.Errorf("truncated PUSHDATA4 payload")
 			}
-			out = append(out, scriptPush{IsPush: true, Data: script[i : i+n]})
+			out = append(out, scriptPush{IsPush: true, Opcode: b, Data: script[i : i+n]})
 			i += n
-		case b == 0x00: // OP_0: minimal encoding of the number 0
-			out = append(out, scriptPush{IsPush: true, Data: []byte{}})
-		case b >= 0x51 && b <= 0x60: // OP_1..OP_16: minimal small-int push
-			out = append(out, scriptPush{IsPush: true, Data: []byte{b - 0x50}})
+		case b == 0x00: // OP_0: an empty data push, and <= OP_PUSHDATA4
+			out = append(out, scriptPush{IsPush: true, Opcode: b, Data: []byte{}})
+		// NOTE: OP_1..OP_16 (0x51..0x60) and OP_1NEGATE (0x4f) deliberately
+		// fall through to the non-push case below. They push a value only
+		// when *executed*, so they are not data pushes; the multiplier field
+		// is the one place a UAP script may use them, and ParseUAPScript
+		// handles that itself.
 		default:
 			out = append(out, scriptPush{IsPush: false, Opcode: b})
 		}
@@ -145,22 +190,36 @@ func ParseUAPScript(scriptHex string) (*ParsedUAP, error) {
 	}
 
 	pk := pushes[0]
-	if !pk.IsPush || (len(pk.Data) != 33 && len(pk.Data) != 65) {
+	if !pk.IsPush || !isMinimalPush(pk) || (len(pk.Data) != 33 && len(pk.Data) != 65) {
 		return nil, nil
 	}
 
+	// The multiplier is canonically encoded: OP_0 for zero, OP_1..OP_16 for
+	// 1..16, and a minimal data push of a minimal CScriptNum above that.
+	// This is the same encoding SCRIPT_VERIFY_MINIMALDATA demands of these
+	// bytes when the covenant is executed at spend time, which is why
+	// consensus accepts nothing else -- a position encoded any other way
+	// would be one the network refuses to relay a spend of.
+	var multiplier int64
 	mult := pushes[1]
-	if !mult.IsPush {
+	switch {
+	case !mult.IsPush && mult.Opcode >= 0x51 && mult.Opcode <= 0x60: // OP_1 .. OP_16
+		multiplier = int64(mult.Opcode - 0x50)
+	case mult.IsPush && isMinimalPush(mult) && isMinimalScriptNum(mult.Data):
+		multiplier, err = scriptNumToInt64(mult.Data)
+		if err != nil {
+			return nil, nil
+		}
+	default:
 		return nil, nil
 	}
-	multiplier, err := scriptNumToInt64(mult.Data)
-	if err != nil || multiplier < 0 {
+	if multiplier < 0 || multiplier > 2147483647 {
 		return nil, nil
 	}
 
 	if isMint {
 		salt := pushes[2]
-		if !salt.IsPush || len(salt.Data) < 16 {
+		if !salt.IsPush || !isMinimalPush(salt) || len(salt.Data) < 16 {
 			return nil, nil
 		}
 		if pushes[3].IsPush || pushes[3].Opcode != opMint {
@@ -176,4 +235,26 @@ func ParseUAPScript(scriptHex string) (*ParsedUAP, error) {
 	copy(pubkey, pk.Data)
 
 	return &ParsedUAP{PubKey: pubkey, Multiplier: multiplier, IsMint: isMint}, nil
+}
+
+// ParseP2PKHScript returns the 20-byte hash160 from a standard
+// pay-to-pubkey-hash scriptPubKey, or nil if the script is not P2PKH.
+// A P2PKH scriptPubKey is exactly 25 bytes:
+// OP_DUP OP_HASH160 <0x14> <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
+// = 76 a9 14 <20 bytes> 88 ac
+func ParseP2PKHScript(scriptHex string) []byte {
+	raw, err := hex.DecodeString(scriptHex)
+	if err != nil {
+		return nil
+	}
+	if len(raw) != 25 {
+		return nil
+	}
+	// Check the opcodes: OP_DUP OP_HASH160 <0x14> <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
+	if raw[0] != 0x76 || raw[1] != 0xa9 || raw[2] != 0x14 || raw[23] != 0x88 || raw[24] != 0xac {
+		return nil
+	}
+	hash160 := make([]byte, 20)
+	copy(hash160, raw[3:23])
+	return hash160
 }

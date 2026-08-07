@@ -1,4 +1,14 @@
+# Superseded: the Dockerfile's build context is now contrib/ (see the
+# invocation documented at the top of contrib/uap-indexer/Dockerfile), so
+# this file -- scoped to uap-indexer/ -- is no longer on the ignore-file
+# lookup path. The effective ignore file is
+# contrib/uap-indexer/Dockerfile.dockerignore, which BuildKit picks up
+# automatically because it's named after the Dockerfile. Kept here only so
+# a stray `docker build .` from inside this directory (which will fail for
+# other reasons -- see the Dockerfile) doesn't also upload test files as
+# context.
 *_test.go
 Dockerfile
+Dockerfile.dockerignore
 .dockerignore
 README.md
