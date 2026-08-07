@@ -3,6 +3,7 @@
 
 import { Wallet } from './wallet.js';
 import { WHIPPET_KEY_PATH } from './bip32.js';
+import { planSell, buildSellOrder } from './sell.js';
 import * as dom from './dom.js';
 import { API, pollForConfirmation, staleInfo } from './api.js';
 import { planMint, buildMintTx } from './mint.js';
@@ -22,6 +23,7 @@ const app = document.getElementById('app');
 const storage = new Map();
 let wallet = null;
 let currentScreen = 'init';
+const sellState = { position: null, priceSats: null, plan: null, error: null };
 
 // The most recent broadcast's status, or null if nothing has been
 // broadcast this session. { txid, state: 'pending'|'confirmed'|'timeout' }.
@@ -136,6 +138,12 @@ function render() {
     renderMarketFill();
   } else if (currentScreen === 'send') {
     renderSend();
+  } else if (currentScreen === 'sell') {
+    renderSell();
+  } else if (currentScreen === 'sell-review') {
+    renderSellReview();
+  } else if (currentScreen === 'migrate') {
+    renderMigrate();
   } else if (currentScreen === 'send-review') {
     renderSendReview();
   }
@@ -322,6 +330,10 @@ async function renderWallet() {
     { class: 'btn btn-primary', onClick: goToMarket },
     'Order Book'
   );
+  const sellBtn = dom.el('button',
+    { class: 'btn btn-primary', onClick: startSell },
+    'Sell a Position'
+  );
   const lockBtn = dom.el('button',
     { class: 'btn btn-secondary', onClick: lockWallet },
     'Lock Wallet'
@@ -335,9 +347,21 @@ async function renderWallet() {
     mintBtn,
     sendBtn,
     marketBtn,
+    sellBtn,
     lockBtn,
     signOutBtn
   );
+
+  // A wallet on the pre-fix derivation still works, but its recovery words
+  // do not mean what the app told the user they meant. Say so where it
+  // cannot be missed, rather than leaving the flag for nobody to read.
+  const legacyNotice = wallet.usesLegacyDerivation
+    ? dom.el('div', { class: 'warning banner' },
+        dom.el('span', {}, 'Your recovery words cannot restore this wallet in other software. '),
+        dom.el('button',
+          { class: 'btn btn-sm', onClick: () => { currentScreen = 'migrate'; render(); } },
+          'What this means'))
+    : null;
 
   // Balance section starts as a skeleton and is filled in once the UTXO
   // fetch resolves (see loadBalanceSection below). Building it as a
@@ -358,6 +382,7 @@ async function renderWallet() {
   const card = dom.el('div', { class: 'card' },
     dom.el('h2', {}, 'Wallet'),
     statusBadge,
+    ...(legacyNotice ? [legacyNotice] : []),
     dom.el('div', { class: 'wallet-info' }, infoRow),
     balanceSection,
     dom.el('div', { class: 'section' },
@@ -1593,3 +1618,183 @@ async function confirmFill(order, position, takerUtxos, feeRate) {
 
 // Initial render
 render();
+
+// =============================================================================
+// SELL: the maker half of the marketplace
+// =============================================================================
+
+async function startSell() {
+  sellState.position = null;
+  sellState.priceSats = null;
+  sellState.plan = null;
+  sellState.error = null;
+  currentScreen = 'sell';
+  render();
+}
+
+async function renderSell() {
+  const card = dom.el('div', { class: 'card' },
+    dom.el('h2', {}, 'Sell a position'),
+    dom.skeleton({ lines: 3 })
+  );
+  app.appendChild(dom.el('div', { class: 'screen screen-sell' }, card));
+
+  const back = () => dom.el('button',
+    { class: 'btn btn-secondary', onClick: () => { currentScreen = 'wallet'; render(); } },
+    'Back');
+
+  let positions;
+  try {
+    const pubKeyHex = uap.bytesToHex(secp256k1.getPublicKey(wallet.privKey, true));
+    positions = await apiClient.getPositions(pubKeyHex, { unspentOnly: true });
+  } catch (e) {
+    dom.clear(card);
+    card.appendChild(dom.el('h2', {}, 'Sell a position'));
+    card.appendChild(dom.el('p', { class: 'error' }, '❌ Could not load your positions: ' + e.message));
+    card.appendChild(dom.el('div', { class: 'button-group' }, back()));
+    return;
+  }
+
+  dom.clear(card);
+  card.appendChild(dom.el('h2', {}, 'Sell a position'));
+
+  if (!positions || positions.length === 0) {
+    card.appendChild(dom.el('p', { class: 'placeholder' }, 'You have no positions to sell.'));
+    card.appendChild(dom.el('div', { class: 'button-group' }, back()));
+    return;
+  }
+
+  const priceInput = dom.el('input', {
+    type: 'number', min: '1', step: '1', class: 'form-control',
+    placeholder: 'Asking price in satoshis',
+  });
+
+  const errorEl = dom.el('p', { class: 'error', style: 'display:none' });
+
+  const list = dom.el('div', { class: 'positions-list' });
+  let selected = null;
+  for (const p of positions) {
+    const row = dom.el('div', { class: 'position-row' },
+      dom.el('div', { class: 'position-desc' },
+        `x${p.multiplier} — ${p.value} sat — ${p.txid.slice(0, 12)}…:${p.vout}`),
+      dom.el('button', {
+        class: 'btn btn-sm',
+        onClick: () => { selected = p; sellState.position = p; errorEl.style.display = 'none'; errorEl.textContent = 'Selected ' + p.txid.slice(0, 12) + '…'; errorEl.className = 'hint'; errorEl.style.display = 'block'; },
+      }, 'Select')
+    );
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+
+  card.appendChild(dom.el('div', { class: 'form-group' },
+    dom.el('label', {}, 'Asking price (satoshis)'),
+    priceInput));
+  card.appendChild(errorEl);
+
+  card.appendChild(dom.el('div', { class: 'button-group' },
+    dom.el('button', {
+      class: 'btn btn-primary',
+      onClick: () => {
+        const priceSats = Number(priceInput.value);
+        const plan = planSell({
+          position: selected,
+          priceSats: Number.isInteger(priceSats) ? priceSats : priceInput.value === '' ? NaN : priceSats,
+          ownAddress: wallet.address,
+        });
+        if (!plan.ok) {
+          errorEl.className = 'error';
+          errorEl.textContent = plan.errors.join(' ');
+          errorEl.style.display = 'block';
+          return;
+        }
+        sellState.priceSats = priceSats;
+        sellState.plan = plan;
+        currentScreen = 'sell-review';
+        render();
+      },
+    }, 'Review'),
+    back()));
+}
+
+async function renderSellReview() {
+  if (!sellState.plan) {
+    currentScreen = 'sell';
+    render();
+    return;
+  }
+  const s = sellState.plan.summary;
+
+  const card = dom.el('div', { class: 'card' },
+    dom.el('h2', {}, 'Review this sale'),
+    dom.el('dl', { class: 'review-list' },
+      dom.el('dt', {}, 'Position'), dom.el('dd', {}, `${s.txid.slice(0, 16)}…:${s.vout}`),
+      dom.el('dt', {}, 'Multiplier'), dom.el('dd', {}, 'x' + s.multiplier),
+      dom.el('dt', {}, 'Token value'), dom.el('dd', {}, s.tokenValue + ' sat'),
+      dom.el('dt', {}, 'Asking price'), dom.el('dd', {}, s.priceSats + ' sat'),
+      dom.el('dt', {}, 'Paid to'), dom.el('dd', {}, s.payTo),
+    ),
+    // The maker is not choosing a counterparty, and should not think they
+    // are. Say exactly what the signature does and does not commit to.
+    dom.el('p', { class: 'warning' },
+      'Publishing this signs an offer that ANYONE may take: whoever pays ' +
+      `${s.priceSats} satoshis to your address gets this position. You are not ` +
+      'choosing who buys it. The offer stands until you cancel it or the ' +
+      'position is spent.'),
+    dom.el('div', { class: 'button-group' },
+      dom.el('button', { class: 'btn btn-primary', onClick: confirmSell }, 'Publish offer'),
+      dom.el('button', { class: 'btn btn-secondary', onClick: () => { currentScreen = 'sell'; render(); } }, 'Edit'))
+  );
+  app.appendChild(dom.el('div', { class: 'screen screen-sell-review' }, card));
+}
+
+async function confirmSell() {
+  try {
+    uap.configureSecp(secp256k1);
+    const pubKey = secp256k1.getPublicKey(wallet.privKey, true);
+    const order = buildSellOrder({
+      secp: secp256k1,
+      position: sellState.position,
+      privKey: wallet.privKey,
+      pubKey,
+      priceSats: sellState.priceSats,
+      ownAddress: wallet.address,
+    });
+    await apiClient.publishOrder(order);
+    currentScreen = 'market';
+    render();
+  } catch (e) {
+    sellState.error = e.message;
+    alert('Could not publish the offer: ' + e.message);
+  }
+}
+
+// =============================================================================
+// MIGRATE: wallets created before the BIP39 derivation fix
+// =============================================================================
+
+async function renderMigrate() {
+  const card = dom.el('div', { class: 'card' },
+    dom.el('h2', {}, 'This wallet uses the old key derivation'),
+    dom.el('p', {},
+      'This wallet was created before a bug was fixed in how its private key ' +
+      'was derived from your recovery words. Your funds are safe and this ' +
+      'wallet keeps working exactly as before.'),
+    dom.el('p', {},
+      'What does not work is the promise those words made. They were labelled ' +
+      'a BIP39 mnemonic, but the key was not derived the way BIP39 and BIP32 ' +
+      'specify, so typing them into another wallet would show you an empty ' +
+      `account rather than your coins. New wallets now derive at ${WHIPPET_KEY_PATH} ` +
+      'and can be recovered anywhere.'),
+    dom.el('p', { class: 'warning' },
+      'To get that guarantee you need a new wallet and a transfer of your ' +
+      'funds to it. That is a real transaction: it costs a fee, it is public, ' +
+      'and your old recovery words will not restore the new wallet. Write the ' +
+      'new words down before moving anything.'),
+    dom.el('div', { class: 'button-group' },
+      dom.el('button', { class: 'btn btn-primary', onClick: () => { currentScreen = 'create'; wallet = null; render(); } },
+        'Create a new wallet'),
+      dom.el('button', { class: 'btn btn-secondary', onClick: () => { currentScreen = 'wallet'; render(); } },
+        'Keep using this one'))
+  );
+  app.appendChild(dom.el('div', { class: 'screen screen-migrate' }, card));
+}
