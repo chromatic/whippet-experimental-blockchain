@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whippet Wallet</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <!-- Two theme-color tags, one per color scheme, so the browser chrome
+       (status bar / task switcher card) matches style.css's own
+       prefers-color-scheme split instead of being stuck on one color
+       regardless of which theme the OS is in. -->
+  <meta name="theme-color" content="#0066cc" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#3399ff" media="(prefers-color-scheme: dark)">
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="app.js"></script>
+  <!-- Not type="module": service worker registration is unconditional glue
+       code, not application logic, and keeping it a plain classic script
+       means one thing less that could interact with module-loading/CSP
+       edge cases. It self-guards on 'serviceWorker' in navigator. -->
+  <script src="sw-register.js"></script>
+</body>
+</html>

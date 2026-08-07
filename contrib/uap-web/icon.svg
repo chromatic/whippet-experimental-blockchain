@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <!-- Single flat-color glyph, no external fonts or images: the CSP is
+       script-src/default-src 'self' with no allowance for outside hosts,
+       and a manifest icon is fetched by the OS chrome, not by a page that
+       could apply a fallback, so it has to be one self-contained file that
+       works at both the small (192) and large (512) sizes the manifest
+       declares -- an SVG scales losslessly to either without shipping two
+       raster files. -->
+  <rect width="192" height="192" rx="32" fill="#1a1a2e"/>
+  <path d="M48 132 L96 52 L144 132 L118 132 L96 94 L74 132 Z" fill="#e94560"/>
+</svg>

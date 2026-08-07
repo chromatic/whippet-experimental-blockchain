@@ -1,0 +1,580 @@
+/* Mobile-first stylesheet for Whippet Wallet */
+
+:root {
+  --color-bg: #ffffff;
+  --color-text: #000000;
+  --color-text-secondary: #666666;
+  --color-border: #e0e0e0;
+  --color-primary: #0066cc;
+  --color-primary-hover: #0052a3;
+  --color-secondary: #f0f0f0;
+  --color-secondary-hover: #e0e0e0;
+  --color-danger: #cc0000;
+  --color-danger-hover: #990000;
+  --color-warning: #ff9800;
+  --color-success: #00cc00;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #1a1a1a;
+    --color-text: #ffffff;
+    --color-text-secondary: #aaaaaa;
+    --color-border: #333333;
+    --color-primary: #3399ff;
+    --color-primary-hover: #2266dd;
+    --color-secondary: #333333;
+    --color-secondary-hover: #444444;
+    --color-danger: #ff4444;
+    --color-danger-hover: #dd0000;
+  }
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+.screen {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.card {
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 500px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  .card {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  }
+}
+
+h1 {
+  font-size: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+
+h2 {
+  font-size: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+h3 {
+  font-size: 1.25rem;
+  margin-bottom: 0.75rem;
+  margin-top: 1rem;
+}
+
+p {
+  margin-bottom: 1rem;
+  color: var(--color-text-secondary);
+}
+
+.warning {
+  background-color: var(--color-warning);
+  color: #000;
+  padding: 0.75rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+}
+
+.hint {
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+  margin-bottom: 1rem;
+}
+
+.placeholder {
+  background-color: var(--color-secondary);
+  border-left: 4px solid var(--color-warning);
+  padding: 1rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.mnemonic-display {
+  background-color: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  word-break: break-word;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+code {
+  background-color: var(--color-secondary);
+  border-radius: 3px;
+  padding: 0.2em 0.4em;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.address {
+  word-break: break-all;
+  display: block;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+textarea {
+  width: 100%;
+  padding: 0.75rem;
+  font-size: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+
+.button-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.btn {
+  min-height: 44px;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+  text-align: center;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn-primary {
+  background-color: var(--color-primary);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background-color: var(--color-primary-hover);
+}
+
+.btn-secondary {
+  background-color: var(--color-secondary);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}
+
+.btn-secondary:hover {
+  background-color: var(--color-secondary-hover);
+}
+
+.btn-danger {
+  background-color: var(--color-danger);
+  color: #ffffff;
+}
+
+.btn-danger:hover {
+  background-color: var(--color-danger-hover);
+}
+
+.btn-copy {
+  background-color: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.btn-copy:hover {
+  background-color: var(--color-secondary-hover);
+}
+
+.section {
+  margin-bottom: 1.5rem;
+}
+
+.wallet-info {
+  background-color: var(--color-secondary);
+  border-radius: 4px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.info-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.info-row label {
+  margin-bottom: 0;
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+}
+
+.info-row .address {
+  word-break: break-all;
+  font-size: 0.85rem;
+  padding: 0.5rem;
+  background-color: var(--color-bg);
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  margin: 0;
+}
+
+.info-row .btn-copy {
+  align-self: flex-start;
+}
+
+/* Skeleton loaders: placeholders shown while a fetch is in flight, sized
+   like the content that will replace them so nothing shifts on arrival. */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.skeleton-line {
+  height: 1rem;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--color-secondary) 25%,
+    var(--color-border) 37%,
+    var(--color-secondary) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+.skeleton-line--short {
+  width: 60%;
+}
+
+.skeleton-line--tall {
+  height: 2.5rem;
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* prefers-reduced-motion asks for exactly this: stop the shimmer. The
+   placeholder shape stays (it's still useful as a loading indicator), it
+   just no longer animates. */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line {
+    animation: none;
+    /* Halfway through the gradient sweep so it reads as a static, roughly
+       even-toned bar rather than getting stuck at one of the animation's
+       high-contrast extremes. */
+    background-position: 50% 50%;
+  }
+}
+
+/* Transaction status badge: the optimistic broadcast state. Pending and
+   timeout must never look like confirmed -- see dom.js txStatus(). */
+.tx-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  border-left: 4px solid transparent;
+}
+
+.tx-status-label {
+  font-weight: 600;
+}
+
+.tx-status-txid {
+  font-size: 0.8rem;
+  word-break: break-all;
+  color: var(--color-text-secondary);
+  background: none;
+  padding: 0;
+}
+
+.tx-status-pending {
+  background-color: var(--color-secondary);
+  border-left-color: var(--color-warning);
+}
+
+.tx-status-confirmed {
+  background-color: var(--color-secondary);
+  border-left-color: var(--color-success);
+}
+
+.tx-status-timeout {
+  background-color: var(--color-secondary);
+  border-left-color: var(--color-danger);
+}
+
+/* Offline / cached-data banner. Deliberately styled like a warning rather
+   than a neutral hint: it sits directly above a balance figure, and the
+   entire reason it exists is that the figure below it may no longer be
+   true. Uses the same custom properties as everything else, so it follows
+   the light/dark theme without needing a second rule. */
+.stale-notice {
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  border-left: 4px solid var(--color-danger);
+  background-color: var(--color-secondary);
+  font-size: 0.9rem;
+}
+
+/* --------------------------------------------------------------------------
+   Send screen: position picker, address field + QR scan, camera overlay.
+   Everything here uses the same custom properties as the rest of the sheet,
+   so light/dark follows automatically -- the same approach .stale-notice
+   takes, and the reason neither needs a second rule per theme.
+   -------------------------------------------------------------------------- */
+
+.positions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.position-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+}
+
+/* The selected position is marked with a border colour AND a left bar, not
+   colour alone: the button inside also carries aria-pressed, but the row
+   itself has to be distinguishable without relying on hue. */
+.position-row--selected {
+  border-color: var(--color-primary);
+  border-left: 4px solid var(--color-primary);
+  background-color: var(--color-secondary);
+}
+
+.position-row .txid {
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.position-row .amount {
+  margin-left: auto;
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+}
+
+.btn-sm {
+  min-height: 36px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.9rem;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-secondary);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+/* Address field with a trailing action button. Wraps to two rows on narrow
+   screens rather than squeezing the input to nothing. */
+.input-with-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.input-with-action input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* 44px minimum target, matching .btn -- this one is meant to be tapped on a
+   phone, which is the only place a camera scan makes sense at all. */
+.btn-scan {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0.75rem 1rem;
+  white-space: nowrap;
+}
+
+.scan-notice {
+  margin-top: 0.5rem;
+  margin-bottom: 0;
+  color: var(--color-text-secondary);
+}
+
+.error,
+.scan-error {
+  color: var(--color-danger);
+  font-size: 0.9rem;
+}
+
+.scan-error {
+  margin-top: 0.5rem;
+  margin-bottom: 0;
+}
+
+/* Camera preview. Full-screen because a QR viewfinder that is smaller than
+   the code being pointed at is useless, and because it must be obvious that
+   the camera is on. */
+.scan-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background-color: rgba(0, 0, 0, 0.85);
+}
+
+.scan-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 500px;
+}
+
+.scan-video {
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 2px solid var(--color-primary);
+  background-color: #000;
+  animation: scan-pulse 2s ease-in-out infinite;
+}
+
+.scan-hint {
+  color: #ffffff;
+  text-align: center;
+  margin-bottom: 0;
+  font-size: 0.9rem;
+}
+
+.scan-cancel {
+  align-self: stretch;
+}
+
+/* A slow border pulse says "the camera is live" without moving anything on
+   screen. */
+@keyframes scan-pulse {
+  0%, 100% { border-color: var(--color-primary); }
+  50% { border-color: var(--color-primary-hover); }
+}
+
+/* Same bargain as the skeleton shimmer: the affordance stays, the motion
+   goes. The border remains fully visible, just static. */
+@media (prefers-reduced-motion: reduce) {
+  .scan-video {
+    animation: none;
+    border-color: var(--color-primary);
+  }
+}
+
+/* Responsive adjustments */
+@media (min-width: 768px) {
+  .card {
+    max-width: 600px;
+  }
+
+  .button-group {
+    flex-direction: row;
+  }
+
+  .button-group .btn {
+    flex: 1;
+  }
+}
+
+/* Print styles */
+@media print {
+  body {
+    background-color: #ffffff;
+  }
+
+  .btn {
+    display: none;
+  }
+}
