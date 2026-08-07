@@ -25,7 +25,7 @@ import (
 // verify a cancel signature against it without carrying any new trust
 // assumption.
 //
-// What exactly is signed
+// # What exactly is signed
 //
 // cancelMessage binds four things: a fixed domain-separation string (so a
 // signature made for this purpose can never be mistaken for one made for
