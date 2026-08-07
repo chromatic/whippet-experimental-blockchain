@@ -458,6 +458,56 @@ export class API {
 
     return result;
   }
+
+  /**
+   * Withdraw a published order.
+   *
+   * DELETE /orders/{txid}/{vout}?script_sig=<hex> (see CancelOrder in
+   * contrib/uap-indexer/orders.go). The relay's only check is that
+   * scriptSigHex reproduces exactly what it has on file for that outpoint --
+   * that is not real authentication (the scriptSig is public: it comes back
+   * in every listOrders()/getOrder() response), just enough friction to stop
+   * casual griefing. See cancel.js for the fuller writeup.
+   *
+   * Success is a bare 204 No Content -- there is no body to validate, unlike
+   * every other method here. Failure is a 400 whose `error` field is one of
+   * a few fixed strings from CancelOrder: "no such order" (already filled,
+   * already cancelled, or the position was spent) or "script_sig does not
+   * match the published order" (wrong/stale scriptSig). Both are surfaced
+   * via the thrown message rather than distinguished here; cancel.js's
+   * describeCancelFailure turns them into user-facing text.
+   *
+   * @param {string} txid - Transaction ID of the position the order sells
+   * @param {number} vout - Output index of the position
+   * @param {string} scriptSigHex - the exact script_sig the order was published with
+   * @returns {Promise<void>}
+   */
+  async cancelOrder(txid, vout, scriptSigHex) {
+    const params = new URLSearchParams();
+    params.append('script_sig', scriptSigHex);
+
+    const url = `${this.baseUrl}/orders/${txid}/${vout}?${params.toString()}`;
+    const response = await this.fetchImpl(url, { method: 'DELETE' });
+
+    // The only success response CancelOrder's handler ever sends is a bare
+    // 204 (see api.go). Returning here, before anything tries to read a
+    // body, matters: a 204 response has none, and calling .json() on it is
+    // exactly the kind of thing that only breaks once in a real browser.
+    if (response.status === 204) {
+      return;
+    }
+
+    let message = `HTTP ${response.status}`;
+    try {
+      const body = await response.json();
+      if (body && body.error) {
+        message = `${message}: ${body.error}`;
+      }
+    } catch (_) {
+      // Body is not JSON
+    }
+    throw new Error(message);
+  }
 }
 
 /**

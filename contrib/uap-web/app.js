@@ -4,6 +4,7 @@
 import { Wallet } from './wallet.js';
 import { WHIPPET_KEY_PATH } from './bip32.js';
 import { planSell, buildSellOrder } from './sell.js';
+import { myOrders, planCancel, describeCancelFailure } from './cancel.js';
 import * as dom from './dom.js';
 import { API, pollForConfirmation, staleInfo } from './api.js';
 import { planMint, buildMintTx } from './mint.js';
@@ -24,6 +25,22 @@ const storage = new Map();
 let wallet = null;
 let currentScreen = 'init';
 const sellState = { position: null, priceSats: null, plan: null, error: null };
+
+// My-orders flow state: viewing and cancelling the wallet's own standing
+// sell orders. `orders` is null until the first fetch resolves (renders a
+// skeleton, not "you have no orders" -- see renderMyOrders), same
+// convention as sendState.positions.
+let myOrdersState = {
+  orders: null,
+  loadError: null,
+  selectedOrder: null,
+  cancelError: null,
+  cancelling: false
+};
+
+function freshMyOrdersState() {
+  return { orders: null, loadError: null, selectedOrder: null, cancelError: null, cancelling: false };
+}
 
 // The most recent broadcast's status, or null if nothing has been
 // broadcast this session. { txid, state: 'pending'|'confirmed'|'timeout' }.
@@ -142,6 +159,10 @@ function render() {
     renderSell();
   } else if (currentScreen === 'sell-review') {
     renderSellReview();
+  } else if (currentScreen === 'my-orders') {
+    renderMyOrders();
+  } else if (currentScreen === 'my-orders-cancel') {
+    renderMyOrdersCancel();
   } else if (currentScreen === 'migrate') {
     renderMigrate();
   } else if (currentScreen === 'send-review') {
@@ -334,6 +355,10 @@ async function renderWallet() {
     { class: 'btn btn-primary', onClick: startSell },
     'Sell a Position'
   );
+  const myOrdersBtn = dom.el('button',
+    { class: 'btn btn-primary', onClick: goToMyOrders },
+    'My Orders'
+  );
   const lockBtn = dom.el('button',
     { class: 'btn btn-secondary', onClick: lockWallet },
     'Lock Wallet'
@@ -348,6 +373,7 @@ async function renderWallet() {
     sendBtn,
     marketBtn,
     sellBtn,
+    myOrdersBtn,
     lockBtn,
     signOutBtn
   );
@@ -1765,6 +1791,160 @@ async function confirmSell() {
   } catch (e) {
     sellState.error = e.message;
     alert('Could not publish the offer: ' + e.message);
+  }
+}
+
+// =============================================================================
+// MY ORDERS: viewing and cancelling this wallet's own standing sell orders
+// (Phase 6 of doc/uap-marketplace-website-plan.md)
+// =============================================================================
+
+function goToMyOrders() {
+  myOrdersState = freshMyOrdersState();
+  currentScreen = 'my-orders';
+  render();
+}
+
+async function renderMyOrders() {
+  const card = dom.el('div', { class: 'card' },
+    dom.el('h2', {}, 'My Orders'),
+    dom.skeleton({ lines: 3 })
+  );
+  app.appendChild(dom.el('div', { class: 'screen screen-my-orders' }, card));
+
+  const back = () => dom.el('button',
+    { class: 'btn btn-secondary', onClick: () => { currentScreen = 'wallet'; render(); } },
+    'Back');
+
+  let mine;
+  try {
+    const ownPubKeyHex = uap.bytesToHex(secp256k1.getPublicKey(wallet.privKey, true));
+    const orders = await apiClient.listOrders();
+    mine = myOrders(orders, ownPubKeyHex);
+    myOrdersState.orders = mine;
+    myOrdersState.loadError = null;
+  } catch (e) {
+    myOrdersState.loadError = e.message;
+    dom.clear(card);
+    card.appendChild(dom.el('h2', {}, 'My Orders'));
+    card.appendChild(dom.el('p', { class: 'error' }, '❌ Could not load your orders: ' + e.message));
+    card.appendChild(dom.el('div', { class: 'button-group' }, back()));
+    return;
+  }
+
+  dom.clear(card);
+  card.appendChild(dom.el('h2', {}, 'My Orders'));
+
+  if (mine.length === 0) {
+    card.appendChild(dom.el('p', { class: 'placeholder' }, 'You have no open orders.'));
+    card.appendChild(dom.el('div', { class: 'button-group' }, back()));
+    return;
+  }
+
+  const list = dom.el('div', { class: 'orders-list' });
+  for (const order of mine) {
+    const desc = describeOrder(order);
+    const row = dom.el('div', { class: 'order-row' },
+      dom.el('div', { class: 'order-desc' }, desc),
+      dom.el('div', { class: 'order-desc' },
+        (order.payment_value / uap.COIN).toFixed(8) + ' coins asked'),
+      dom.el('button',
+        { class: 'btn btn-sm btn-danger', onClick: () => selectOrderToCancel(order) },
+        'Cancel')
+    );
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+  card.appendChild(dom.el('div', { class: 'button-group' }, back()));
+}
+
+function selectOrderToCancel(order) {
+  myOrdersState.selectedOrder = order;
+  myOrdersState.cancelError = null;
+  myOrdersState.cancelling = false;
+  currentScreen = 'my-orders-cancel';
+  render();
+}
+
+async function renderMyOrdersCancel() {
+  const order = myOrdersState.selectedOrder;
+  if (!order) {
+    currentScreen = 'my-orders';
+    render();
+    return;
+  }
+
+  const desc = describeOrder(order);
+  const plan = planCancel(order);
+
+  const errorEl = dom.el('p', { class: 'error', style: myOrdersState.cancelError ? '' : 'display:none' },
+    myOrdersState.cancelError || '');
+
+  const backBtn = dom.el('button',
+    { class: 'btn btn-secondary', onClick: () => { currentScreen = 'my-orders'; render(); } },
+    'Back');
+
+  if (!plan.ok) {
+    // Malformed order data (shouldn't happen for anything the relay itself
+    // returned) -- refuse before ever making the request, same discipline
+    // as planSell.
+    const card = dom.el('div', { class: 'card' },
+      dom.el('h2', {}, 'Cannot cancel this order'),
+      dom.el('div', { class: 'error-list' },
+        ...plan.errors.map((e) => dom.el('div', { class: 'error-field' }, e))),
+      dom.el('div', { class: 'button-group' }, backBtn)
+    );
+    app.appendChild(dom.el('div', { class: 'screen screen-my-orders-cancel' }, card));
+    return;
+  }
+
+  const confirmBtn = dom.el('button', {
+    class: 'btn btn-danger',
+    onClick: confirmCancel,
+    disabled: myOrdersState.cancelling ? 'disabled' : undefined,
+  }, myOrdersState.cancelling ? 'Cancelling…' : 'Confirm Cancel');
+
+  const card = dom.el('div', { class: 'card' },
+    dom.el('h2', {}, 'Cancel this order?'),
+    dom.el('dl', { class: 'review-list' },
+      dom.el('dt', {}, 'Position'), dom.el('dd', {}, `${order.txid.slice(0, 16)}…:${order.vout}`),
+      dom.el('dt', {}, 'Multiplier'), dom.el('dd', {}, 'x' + order.multiplier),
+      dom.el('dt', {}, 'Asking price'), dom.el('dd', {}, `${order.payment_value} sat`),
+      dom.el('dt', {}, 'Description'), dom.el('dd', {}, desc),
+    ),
+    // Withdrawing here only stops *this* relay from continuing to offer it
+    // (see the tombstone note in CancelOrder, contrib/uap-indexer/orders.go).
+    // A peer that already mirrored the order can keep serving it, and the
+    // only fully reliable way to kill an unwanted offer is to spend the
+    // position elsewhere.
+    dom.el('p', { class: 'warning' },
+      'This withdraws the order from this relay. Peers that already copied ' +
+      'it may keep offering it until it is spent or expires on their side.'),
+    errorEl,
+    dom.el('div', { class: 'button-group' }, confirmBtn, backBtn)
+  );
+  app.appendChild(dom.el('div', { class: 'screen screen-my-orders-cancel' }, card));
+}
+
+async function confirmCancel() {
+  const order = myOrdersState.selectedOrder;
+  const plan = planCancel(order);
+  if (!plan.ok) return;
+
+  myOrdersState.cancelling = true;
+  myOrdersState.cancelError = null;
+  render();
+
+  try {
+    await apiClient.cancelOrder(order.txid, order.vout, order.script_sig);
+    currentScreen = 'my-orders';
+    myOrdersState.selectedOrder = null;
+    myOrdersState.cancelling = false;
+    render();
+  } catch (e) {
+    myOrdersState.cancelling = false;
+    myOrdersState.cancelError = describeCancelFailure(e.message);
+    render();
   }
 }
 

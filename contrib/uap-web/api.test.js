@@ -469,6 +469,79 @@ test('getFeeRate validates response is a number', async () => {
 });
 
 // =============================================================================
+// CANCELORDER
+// =============================================================================
+
+test('cancelOrder makes a DELETE request to /orders/{txid}/{vout} with script_sig as a query param', async () => {
+  const calls = [];
+  const fetchFake = async (url, options) => {
+    calls.push({ url, options });
+    return { status: 204, json: async () => { throw new Error('no body on 204'); } };
+  };
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: fetchFake });
+
+  await client.cancelOrder('a'.repeat(64), 3, 'deadbeef83');
+
+  assertEqual(calls.length, 1, 'one fetch call');
+  assertEqual(calls[0].options.method, 'DELETE', 'DELETE method');
+  assert(calls[0].url.includes(`/orders/${'a'.repeat(64)}/3`), 'URL contains /orders/{txid}/{vout}');
+  assert(calls[0].url.includes('script_sig=deadbeef83'), 'URL carries script_sig as a query param');
+});
+
+test('cancelOrder resolves without trying to parse a body on 204 No Content', async () => {
+  const fetchFake = async () => ({
+    status: 204,
+    json: async () => { throw new Error('cancelOrder must not call json() on a 204'); }
+  });
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: fetchFake });
+
+  // Must not throw -- a 204 has no body, and json() on this fake fetch
+  // throws if called at all.
+  await client.cancelOrder('a'.repeat(64), 0, 'deadbeef83');
+});
+
+// CancelOrder in contrib/uap-indexer/orders.go returns this exact message
+// when the order row is gone -- already filled, already cancelled, or the
+// position was spent some other way. The client must not swallow it.
+test('cancelOrder surfaces "no such order" from the relay', async () => {
+  const fetchFake = FakeFetch.returning(400, { error: 'no such order' });
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: fetchFake });
+
+  await assertThrows(
+    () => client.cancelOrder('a'.repeat(64), 0, 'deadbeef83'),
+    'no such order'
+  );
+});
+
+// The relay's only "auth" for a cancel: the caller must reproduce the exact
+// scriptSig on file for that outpoint (see CancelOrder in orders.go).
+test('cancelOrder surfaces a script_sig mismatch from the relay', async () => {
+  const fetchFake = FakeFetch.returning(400, { error: 'script_sig does not match the published order' });
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: fetchFake });
+
+  await assertThrows(
+    () => client.cancelOrder('a'.repeat(64), 0, 'wrongsig'),
+    'does not match'
+  );
+});
+
+test('cancelOrder throws with the status code on a non-JSON failure body', async () => {
+  const fetchFake = FakeFetch.returningMalformed();
+  // returningMalformed() defaults to status 200; force a failure status by
+  // wrapping it so cancelOrder sees a non-2xx with an unparsable body.
+  const failingFetch = async (url, options) => ({
+    status: 500,
+    json: async () => { throw new Error('not json'); }
+  });
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: failingFetch });
+
+  await assertThrows(
+    () => client.cancelOrder('a'.repeat(64), 0, 'deadbeef83'),
+    '500'
+  );
+});
+
+// =============================================================================
 // ERROR HANDLING
 // =============================================================================
 
