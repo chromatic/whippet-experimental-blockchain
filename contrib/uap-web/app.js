@@ -2,6 +2,7 @@
 // DOM-safe using dom.js helpers, exercises wallet.js and api.js
 
 import { Wallet } from './wallet.js';
+import { WHIPPET_KEY_PATH } from './bip32.js';
 import * as dom from './dom.js';
 import { API, pollForConfirmation, staleInfo } from './api.js';
 import { planMint, buildMintTx } from './mint.js';
@@ -167,7 +168,7 @@ function renderInit() {
 
 async function renderCreate() {
   if (!wallet) {
-    wallet = new Wallet({ storage });
+    wallet = await Wallet.create({ storage });
   }
 
   const passphraseInput = dom.el('input', {
@@ -199,7 +200,7 @@ async function renderCreate() {
       dom.el('code', {}, wallet.mnemonic)
     ),
     dom.el('p', { class: 'hint' },
-      'This is a 12-word BIP39 mnemonic. Together with a passphrase, it generates your private key.'
+      `This is a 12-word BIP39 mnemonic. Together with your passphrase it derives your private key at ${WHIPPET_KEY_PATH}. Write the words down: any BIP39 wallet that can derive that path will recover this key.`
     ),
     dom.el('div', { class: 'form-group' },
       dom.el('label', {}, 'Set a passphrase (optional but recommended):'),
@@ -419,8 +420,8 @@ async function loadBalanceSection(section) {
 }
 
 // Event handlers
-function createNewWallet() {
-  wallet = new Wallet({ storage });
+async function createNewWallet() {
+  wallet = await Wallet.create({ storage });
   currentScreen = 'create';
   render();
 }
@@ -458,7 +459,7 @@ async function doRestore() {
   const errorEl = document.getElementById('restore-error');
 
   try {
-    wallet = new Wallet({ storage, mnemonic });
+    wallet = await Wallet.create({ storage, mnemonic });
     await wallet.lock(passphrase);
     currentScreen = 'unlock';
     render();

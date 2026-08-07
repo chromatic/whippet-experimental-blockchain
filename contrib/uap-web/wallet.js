@@ -4,6 +4,7 @@
 
 import { pubkeyToAddress, VERSIONS } from '../uap-js/addr.js';
 import { sha256, hash256, hmacSha256 } from '../uap-js/sha256.js';
+import { mnemonicToPrivateKey, WHIPPET_KEY_PATH } from './bip32.js';
 import { WORDLIST } from './wordlist.js';
 import * as secp256k1 from '../uap-js/secp.js';
 
@@ -113,16 +114,20 @@ function pbkdf2Sync(password, salt, iterations, keyLength) {
   return result;
 }
 
-// BIP39 seed derivation using PBKDF2 with SHA-256 (simplified)
-function mnemonicToSeed(mnemonic, passphrase = '') {
+// LEGACY derivation, kept only so wallets created before the BIP39 fix can
+// still be opened and swept. It is NOT BIP39: PBKDF2 runs over HMAC-SHA256
+// rather than the mandated HMAC-SHA512, and the private key is simply the
+// first 32 bytes of the result instead of a BIP32 child. Never use it for a
+// new wallet -- see bip32.js.
+function legacyMnemonicToSeed(mnemonic, passphrase = '') {
   const password = new TextEncoder().encode(mnemonic);
   const salt = new TextEncoder().encode('mnemonic' + passphrase);
 
   return pbkdf2Sync(password, salt, 2048, 64);
 }
 
-// Derive private key from seed (simple: take first 32 bytes)
-function seedToPrivateKey(seed) {
+// LEGACY: see legacyMnemonicToSeed.
+function legacySeedToPrivateKey(seed) {
   return seed.slice(0, 32);
 }
 
@@ -327,30 +332,50 @@ class Wallet {
       this.network = stored.network || network;
       this._locked = true;
     } else if (mnemonic) {
-      this._initializeFromMnemonic(mnemonic);
+      mnemonicToEntropy(mnemonic); // throws if the phrase or its checksum is bad
+      this._mnemonic = mnemonic;
+      this._needsDerivation = true;
     } else {
-      this._generateNewWallet(mnemonicLength);
+      const entropyLength = mnemonicLength === 24 ? 32 : 16;
+      this._mnemonic = entropyToMnemonic(globalThis.crypto.getRandomValues(new Uint8Array(entropyLength)));
+      this._needsDerivation = true;
     }
   }
 
-  _generateNewWallet(mnemonicLength) {
-    const entropyLength = mnemonicLength === 24 ? 32 : 16;
-    const entropy = globalThis.crypto.getRandomValues(new Uint8Array(entropyLength));
-    this._mnemonic = entropyToMnemonic(entropy);
-    this._deriveFromMnemonic();
+  /**
+   * Build a wallet and derive its key. Use this rather than `new Wallet`:
+   * derivation is async, so the constructor cannot finish the job.
+   */
+  static async create(opts = {}) {
+    const w = new Wallet(opts);
+    await w.init();
+    return w;
   }
 
-  _initializeFromMnemonic(mnemonic) {
-    mnemonicToEntropy(mnemonic); // throws if the phrase or its checksum is bad
-    this._mnemonic = mnemonic;
-    this._deriveFromMnemonic();
+  /** Finish construction. No-op for a wallet restored in the locked state. */
+  async init() {
+    if (this._needsDerivation) {
+      await this._deriveFromMnemonic();
+      this._needsDerivation = false;
+    }
+    return this;
   }
 
   // Derivation only. Deliberately does not touch storage: see the class note.
-  _deriveFromMnemonic() {
-    const seed = mnemonicToSeed(this._mnemonic);
-    this._privKey = seedToPrivateKey(seed);
+  // Async because correct BIP39/BIP32 needs SHA-512, which the platform
+  // provides through crypto.subtle rather than us hand-rolling it.
+  async _deriveFromMnemonic() {
+    this._privKey = await mnemonicToPrivateKey(this._mnemonic);
     this._address = deriveAddressFromPrivKey(this._privKey, this.network);
+    this._derivationPath = WHIPPET_KEY_PATH;
+  }
+
+  // The pre-fix derivation, for opening a wallet created before the change.
+  _deriveLegacyFromMnemonic() {
+    const seed = legacyMnemonicToSeed(this._mnemonic);
+    this._privKey = legacySeedToPrivateKey(seed);
+    this._address = deriveAddressFromPrivKey(this._privKey, this.network);
+    this._derivationPath = 'legacy (pre-BIP39-fix)';
   }
 
   get mnemonic() {
@@ -421,14 +446,27 @@ class Wallet {
     mnemonicToEntropy(mnemonic); // stored ciphertext must decrypt to a real phrase
     this.network = stored.network || this.network;
     this._mnemonic = mnemonic;
-    this._deriveFromMnemonic();
+    await this._deriveFromMnemonic();
+    this.usesLegacyDerivation = false;
 
     // The stored address is unauthenticated (it sits outside the GCM tag), so
     // treat a mismatch as tampering rather than silently adopting either one.
+    //
+    // One mismatch is expected and benign: a wallet created before the BIP39
+    // fix derived a different key from the same words. Re-deriving it the old
+    // way is what keeps those funds reachable -- without this, every such
+    // wallet would report itself corrupt and lock the user out of coins that
+    // are perfectly fine. Anything that matches neither derivation really is
+    // corrupt.
     if (stored.address && stored.address !== this._address) {
-      this._privKey = null;
-      this._mnemonic = null;
-      throw new Error('Stored address does not match the decrypted key; storage may be corrupt');
+      this._deriveLegacyFromMnemonic();
+      if (stored.address === this._address) {
+        this.usesLegacyDerivation = true;
+      } else {
+        this._privKey = null;
+        this._mnemonic = null;
+        throw new Error('Stored address does not match the decrypted key; storage may be corrupt');
+      }
     }
 
     this._locked = false;
