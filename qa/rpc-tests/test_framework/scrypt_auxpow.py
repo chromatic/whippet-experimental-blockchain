@@ -8,12 +8,12 @@
 # solve an auxpow header and to generate auxpow blocks with scrypt.
 # extends and modifies auxpow module by Daniel Kraft.
 
-# This module requires a built and installed version of the ltc_scrypt
-# package, which can be downloaded from:
-# https://pypi.python.org/packages/source/l/ltc_scrypt/ltc_scrypt-1.0.tar.gz
+# Scrypt hashing comes from .scrypt_pow, which uses the ltc_scrypt C
+# extension when it is installed and falls back to hashlib.scrypt (same
+# algorithm, verified against the same known-answer vectors) when it is not.
 
 from .auxpow import *
-import ltc_scrypt
+from .scrypt_pow import getPoWHash
 import binascii
 
 def computeAuxpowWithChainId (block, target, chainid, ok):
@@ -103,4 +103,4 @@ def getScryptPoW(hexData):
 
   data = binascii.unhexlify(hexData)
 
-  return reverseHex(binascii.hexlify(ltc_scrypt.getPoWHash(data)).decode("ascii"))
+  return reverseHex(binascii.hexlify(getPoWHash(data)).decode("ascii"))

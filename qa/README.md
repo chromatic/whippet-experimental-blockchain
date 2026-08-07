@@ -11,20 +11,39 @@ Before running the tests, the following must be installed.
 
 Unix
 ----
-`python3-zmq` and `ltc_scrypt` are required. On Ubuntu or Debian they can be installed via:
+`python3-zmq` is required. On Ubuntu or Debian:
 ```
 sudo apt-get update
-sudo apt-get install -y curl gcc python3-pip python3-setuptools python3-zmq
-./qa/pull-tester/install-deps.sh
+sudo apt-get install -y python3-zmq
 ```
 
 OS X
 ------
 ```
-brew install curl
 pip3 install pyzmq
+```
+
+Scrypt proof-of-work
+--------------------
+The tests hash scrypt proof-of-work through
+`qa/rpc-tests/test_framework/scrypt_pow.py`, which uses the `ltc_scrypt`
+C extension when it is installed and otherwise falls back to
+`hashlib.scrypt` from the standard library. Both produce identical
+results — run that file directly to check them against upstream
+ltc-scrypt's known-answer vectors:
+```
+python3 qa/rpc-tests/test_framework/scrypt_pow.py
+```
+
+Installing the extension is therefore optional. If you want it anyway:
+```
+sudo apt-get install -y curl gcc python3-pip python3-setuptools
 ./qa/pull-tester/install-deps.sh
 ```
+Note that on any PEP 668 distribution — which now includes current
+Debian and Ubuntu — that script's `pip install --user` is refused with
+`error: externally-managed-environment`. Install it into a virtualenv, or
+just rely on the stdlib fallback.
 
 Running tests
 =============
