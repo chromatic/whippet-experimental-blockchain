@@ -182,6 +182,7 @@ dom.setDocument(fakeDocument);
 const uap = await import('../uap-js/uap.js');
 const secp256k1 = await import('../uap-js/secp.js');
 const app = await import('./app.js');
+const addr = await import('../uap-js/addr.js');
 
 const COIN = uap.COIN;
 
@@ -739,6 +740,206 @@ test('the mint review screen requires an explicit confirmation, and offers a way
   assertEqual(confirmed, 1);
   click(buttonsLabelled(card, 'Edit')[0]);
   assertEqual(edited, 1);
+});
+
+// =============================================================================
+// SELL SCREEN
+// =============================================================================
+
+function makeSellState(overrides = {}) {
+  return {
+    positions: [
+      { txid: 'aa'.repeat(32), vout: 0, value: 100 * COIN, multiplier: 100 },
+      { txid: 'cc'.repeat(32), vout: 3, value: 10 * COIN, multiplier: 7 }
+    ],
+    loadError: null,
+    selectedKey: `${'aa'.repeat(32)}:0`,
+    priceSats: '',
+    plan: null,
+    error: null,
+    ...overrides
+  };
+}
+
+test('positions still loading render a skeleton, not "no positions"', () => {
+  const card = app.buildSellCard({ state: makeSellState({ positions: null }) });
+  const skeletons = findAll(card, (n) => (n.getAttribute('class') || '') === 'skeleton');
+  assertEqual(skeletons.length, 1, 'a loading skeleton is required while positions are unknown');
+  assert(!/no positions/i.test(textOfLoose(card)),
+    'must not claim there is nothing to sell while the fetch is still in flight');
+});
+
+test('an empty position list says so plainly', () => {
+  const card = app.buildSellCard({ state: makeSellState({ positions: [] }) });
+  assert(/no positions to sell/i.test(textOfLoose(card)));
+});
+
+test('a load failure is shown as an inline error', () => {
+  const card = app.buildSellCard({ state: makeSellState({ loadError: 'network down' }) });
+  assert(/network down/.test(textOfLoose(card)));
+});
+
+test('the selected position is marked, the others are not', () => {
+  const card = app.buildSellCard({ state: makeSellState() });
+  const selectedRows = findAll(card, (n) => (n.getAttribute('class') || '').includes('position-row--selected'));
+  assertEqual(selectedRows.length, 1, 'exactly one row is marked selected');
+
+  const pressed = findAll(card, (n) => n.getAttribute('aria-pressed') === 'true');
+  assertEqual(pressed.length, 1);
+  assertEqual(textOf(pressed[0]), 'Selected', 'the selected row\'s button reads differently too');
+
+  const notPressed = findAll(card, (n) => n.getAttribute('aria-pressed') === 'false');
+  assertEqual(notPressed.length, 1);
+  assertEqual(textOf(notPressed[0]), 'Select');
+});
+
+test('selecting a position reports the position that was clicked', () => {
+  let picked = null;
+  const card = app.buildSellCard({
+    state: makeSellState(),
+    onSelectPosition: (position) => { picked = position; }
+  });
+  const selectButtons = buttonsLabelled(card, 'Select');
+  click(selectButtons[selectButtons.length - 1]);
+  assert(picked, 'a position must be reported');
+  assertEqual(picked.txid, 'cc'.repeat(32), 'the second row must report the second position');
+});
+
+test('the selection hint and a validation error are two different elements', () => {
+  // Previously one element played both parts, flipping its className between
+  // 'hint' and 'error' at runtime. Selecting a position must show a hint
+  // that a validation error does not clobber, and the two must never be the
+  // same node -- otherwise the wording or class of one can leak into the
+  // other on the next render.
+  const card = app.buildSellCard({ state: makeSellState({ error: 'The asking price must be greater than zero.' }) });
+  const hints = findAll(card, (n) => (n.getAttribute('class') || '') === 'hint');
+  const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
+  assertEqual(hints.length, 1, 'the "Selected …" hint still renders alongside an error');
+  assertEqual(errors.length, 1, 'the validation error renders in its own element');
+  assert(/Selected/.test(textOf(hints[0])), 'hint element must carry the selection wording');
+  assert(/greater than zero/.test(textOf(errors[0])), 'error element must carry the validation wording');
+});
+
+test('with no error, only the hint renders', () => {
+  const card = app.buildSellCard({ state: makeSellState() });
+  const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
+  assertEqual(errors.length, 0, 'no error paragraph unless there is an error');
+});
+
+test('the price field survives a re-render', () => {
+  const card = app.buildSellCard({ state: makeSellState({ priceSats: '250000000' }) });
+  assertEqual(byId(card, 'sell-price').getAttribute('value'), '250000000');
+});
+
+test('Review and Back are wired to their handlers', () => {
+  let reviewed = 0;
+  let backed = 0;
+  const card = app.buildSellCard({
+    state: makeSellState(),
+    onReview: () => { reviewed++; },
+    onBack: () => { backed++; }
+  });
+  click(buttonsLabelled(card, 'Review')[0]);
+  assertEqual(reviewed, 1);
+  click(buttonsLabelled(card, 'Back')[0]);
+  assertEqual(backed, 1);
+});
+
+// =============================================================================
+// SELL REVIEW SCREEN
+// =============================================================================
+
+const SELL_PRIVKEY = new Uint8Array(32).fill(9);
+const SELL_PUBKEY = secp256k1.getPublicKey(SELL_PRIVKEY, true);
+const SELL_ADDRESS = addr.pubkeyToAddress(SELL_PUBKEY, addr.VERSIONS.mainnet.PUBKEY_ADDRESS);
+const REAL_SELL_PLAN = {
+  summary: {
+    txid: 'aa'.repeat(32),
+    vout: 0,
+    multiplier: 100,
+    tokenValue: 100 * COIN,
+    priceSats: 250000000,
+    payTo: SELL_ADDRESS
+  }
+};
+
+const SELL_PLAN = {
+  summary: {
+    txid: 'aa'.repeat(32),
+    vout: 0,
+    multiplier: 100,
+    tokenValue: 100 * COIN,
+    priceSats: 250000000,
+    payTo: 'nSomeAddress'
+  }
+};
+
+// The review card renders whatever error it is handed. These cover the step
+// that decides WHETHER there is an error to hand it -- the actual publish.
+// Without them, confirmSell could swallow a failed publish entirely and the
+// card tests would still pass.
+test('a failed publish is reported, not swallowed', async () => {
+  const result = await app.publishSellOrder({
+    api: { publishOrder: async () => { throw new Error('relay unreachable'); } },
+    secp: secp256k1,
+    plan: REAL_SELL_PLAN,
+    privKey: SELL_PRIVKEY,
+    address: SELL_ADDRESS,
+  });
+  assertEqual(result.ok, false, 'a throwing relay must not report success');
+  assert(/relay unreachable/.test(result.error), `error should carry the reason, got ${result.error}`);
+});
+
+test('a successful publish reports success and sends the order onward', async () => {
+  let sent = null;
+  const result = await app.publishSellOrder({
+    api: { publishOrder: async (o) => { sent = o; return o; } },
+    secp: secp256k1,
+    plan: REAL_SELL_PLAN,
+    privKey: SELL_PRIVKEY,
+    address: SELL_ADDRESS,
+  });
+  assertEqual(result.ok, true, result.error);
+  assert(sent && typeof sent.script_sig === 'string', 'a signed order must reach the relay');
+  assertEqual(sent.payment_value, 250000000, 'the reviewed price is what gets published');
+});
+
+test('the sell review screen states the position, price and who gets paid', () => {
+  const card = app.buildSellReviewCard({ plan: SELL_PLAN });
+  const text = textOfLoose(card);
+  assert(/250000000/.test(text), `asking price must be shown, got: ${text}`);
+  assert(/nSomeAddress/.test(text), `payout address must be shown, got: ${text}`);
+  assert(/anyone may take/i.test(text), 'must say the offer is open to anyone, not a chosen counterparty');
+});
+
+test('the sell review screen requires an explicit confirmation, and offers a way back', () => {
+  let confirmed = 0;
+  let edited = 0;
+  const card = app.buildSellReviewCard({
+    plan: SELL_PLAN,
+    onConfirm: () => { confirmed++; },
+    onEdit: () => { edited++; }
+  });
+  assertEqual(confirmed, 0, 'rendering the review must not publish');
+  click(buttonsLabelled(card, 'Publish')[0]);
+  assertEqual(confirmed, 1);
+  click(buttonsLabelled(card, 'Edit')[0]);
+  assertEqual(edited, 1);
+});
+
+test('a failed publish renders inline, not as an alert', () => {
+  // confirmSell used to report this failure via alert(); the review card
+  // must be able to show it as a normal inline error instead.
+  const card = app.buildSellReviewCard({ plan: SELL_PLAN, error: 'network unreachable' });
+  const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
+  assertEqual(errors.length, 1, 'the publish failure must render as an error element');
+  assert(/network unreachable/.test(textOf(errors[0])));
+});
+
+test('with no error, the review screen shows none', () => {
+  const card = app.buildSellReviewCard({ plan: SELL_PLAN });
+  const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
+  assertEqual(errors.length, 0);
 });
 
 run({ style: 'compact' });

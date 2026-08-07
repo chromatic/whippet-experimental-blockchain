@@ -24,7 +24,13 @@ const app = document.getElementById('app');
 const storage = new Map();
 let wallet = null;
 let currentScreen = 'init';
-const sellState = { position: null, priceSats: null, plan: null, error: null };
+// Sell (maker order) flow state. `positions` is null until the first fetch
+// resolves, same convention as sendState.positions -- see buildSellCard.
+let sellState = freshSellState();
+
+function freshSellState() {
+  return { positions: null, loadError: null, selectedKey: null, priceSats: '', plan: null, error: null };
+}
 
 // My-orders flow state: viewing and cancelling the wallet's own standing
 // sell orders. `orders` is null until the first fetch resolves (renders a
@@ -168,6 +174,19 @@ function render() {
   } else if (currentScreen === 'send-review') {
     renderSendReview();
   }
+}
+
+// Returns a click handler that switches to `screen` and re-renders. The
+// same two-statement closure (`() => { currentScreen = X; render(); }`) was
+// being hand-written at every navigation call site; this just names it once.
+function goTo(screen) {
+  return () => { currentScreen = screen; render(); };
+}
+
+// The "Back" button that ends nearly every screen: same class, same label,
+// same shape, differing only in which screen it returns to.
+function backButton(screen) {
+  return dom.el('button', { class: 'btn btn-secondary', onClick: goTo(screen) }, 'Back');
 }
 
 function renderInit() {
@@ -385,7 +404,7 @@ async function renderWallet() {
     ? dom.el('div', { class: 'warning banner' },
         dom.el('span', {}, 'Your recovery words cannot restore this wallet in other software. '),
         dom.el('button',
-          { class: 'btn btn-sm', onClick: () => { currentScreen = 'migrate'; render(); } },
+          { class: 'btn btn-sm', onClick: goTo('migrate') },
           'What this means'))
     : null;
 
@@ -607,10 +626,7 @@ async function renderMint() {
     { class: 'btn btn-primary', onClick: planMintTx },
     'Review'
   );
-  const backBtn = dom.el('button',
-    { class: 'btn btn-secondary', onClick: () => { currentScreen = 'wallet'; render(); } },
-    'Back'
-  );
+  const backBtn = backButton('wallet');
 
   const errorsList = [];
   if (mintState.planErrors && mintState.planErrors.length > 0) {
@@ -778,7 +794,7 @@ async function renderMintReview() {
     mintState,
     plan: mintState.plan,
     onConfirm: confirmMint,
-    onEdit: () => { currentScreen = 'mint'; render(); }
+    onEdit: goTo('mint')
   });
 
   const screenDiv = dom.el('div', { class: 'screen screen-mint-review' }, card);
@@ -1113,7 +1129,7 @@ async function renderSend() {
     network: wallet ? wallet.network : 'mainnet',
     scanSupported: qrscan.isScanSupported(scanEnvironment()),
     onReview: planSendTx,
-    onBack: () => { currentScreen = 'wallet'; render(); },
+    onBack: goTo('wallet'),
     onScan: startAddressScan,
     onSelectPosition: (position) => {
       sendState.selectedKey = positionKey(position);
@@ -1318,7 +1334,7 @@ async function renderSendReview() {
   const card = buildSendReviewCard({
     plan: { ...sendState.plan, toAddressChecked: sendState.toAddress },
     onConfirm: confirmSend,
-    onEdit: () => { currentScreen = 'send'; render(); }
+    onEdit: goTo('send')
   });
 
   app.appendChild(dom.el('div', { class: 'screen screen-send-review' }, card));
@@ -1419,23 +1435,14 @@ async function renderMarket() {
     }
 
     // Back button
-    const backBtn = dom.el('button',
-      { class: 'btn btn-secondary', onClick: () => { currentScreen = 'wallet'; render(); } },
-      'Back'
-    );
-    card.appendChild(dom.el('div', { class: 'button-group' }, backBtn));
+    card.appendChild(dom.el('div', { class: 'button-group' }, backButton('wallet')));
   } catch (e) {
     dom.clear(card);
     card.appendChild(dom.el('h2', {}, 'Order Book'));
     card.appendChild(dom.el('p', { class: 'error' },
       '❌ Failed to load orders: ' + e.message
     ));
-    card.appendChild(dom.el('div', { class: 'button-group' },
-      dom.el('button',
-        { class: 'btn btn-secondary', onClick: () => { currentScreen = 'wallet'; render(); } },
-        'Back'
-      )
-    ));
+    card.appendChild(dom.el('div', { class: 'button-group' }, backButton('wallet')));
   }
 }
 
@@ -1517,12 +1524,7 @@ async function renderMarketFill() {
       }
       card.appendChild(dom.el('div', { class: 'error-list' }, ...errorsList));
 
-      card.appendChild(dom.el('div', { class: 'button-group' },
-        dom.el('button',
-          { class: 'btn btn-secondary', onClick: () => { currentScreen = 'market'; render(); } },
-          'Back'
-        )
-      ));
+      card.appendChild(dom.el('div', { class: 'button-group' }, backButton('market')));
     } else {
       marketState.fillPlan = planResult.plan;
 
@@ -1564,11 +1566,7 @@ async function renderMarketFill() {
         { class: 'btn btn-primary', onClick: () => confirmFill(order, position, takerUtxos, feeRate) },
         'Confirm & Broadcast'
       );
-      const backBtn = dom.el('button',
-        { class: 'btn btn-secondary', onClick: () => { currentScreen = 'market'; render(); } },
-        'Back'
-      );
-      card.appendChild(dom.el('div', { class: 'button-group' }, confirmBtn, backBtn));
+      card.appendChild(dom.el('div', { class: 'button-group' }, confirmBtn, backButton('market')));
     }
   } catch (e) {
     dom.clear(card);
@@ -1576,12 +1574,7 @@ async function renderMarketFill() {
     card.appendChild(dom.el('p', { class: 'error' },
       'Failed to prepare fill: ' + e.message
     ));
-    card.appendChild(dom.el('div', { class: 'button-group' },
-      dom.el('button',
-        { class: 'btn btn-secondary', onClick: () => { currentScreen = 'market'; render(); } },
-        'Back'
-      )
-    ));
+    card.appendChild(dom.el('div', { class: 'button-group' }, backButton('market')));
   }
 }
 
@@ -1649,108 +1642,178 @@ render();
 // SELL: the maker half of the marketplace
 // =============================================================================
 
-async function startSell() {
-  sellState.position = null;
-  sellState.priceSats = null;
-  sellState.plan = null;
-  sellState.error = null;
+function startSell() {
+  sellState = freshSellState();
   currentScreen = 'sell';
   render();
+  loadSellPositions();
 }
 
-async function renderSell() {
-  const card = dom.el('div', { class: 'card' },
-    dom.el('h2', {}, 'Sell a position'),
-    dom.skeleton({ lines: 3 })
-  );
-  app.appendChild(dom.el('div', { class: 'screen screen-sell' }, card));
-
-  const back = () => dom.el('button',
-    { class: 'btn btn-secondary', onClick: () => { currentScreen = 'wallet'; render(); } },
-    'Back');
-
-  let positions;
+async function loadSellPositions() {
   try {
     const pubKeyHex = uap.bytesToHex(secp256k1.getPublicKey(wallet.privKey, true));
-    positions = await apiClient.getPositions(pubKeyHex, { unspentOnly: true });
+    const positions = await apiClient.getPositions(pubKeyHex, { unspentOnly: true });
+    sellState.positions = positions;
+    sellState.loadError = null;
+    if (!sellState.selectedKey && positions.length > 0) {
+      sellState.selectedKey = positionKey(positions[0]);
+    }
   } catch (e) {
-    dom.clear(card);
-    card.appendChild(dom.el('h2', {}, 'Sell a position'));
-    card.appendChild(dom.el('p', { class: 'error' }, '❌ Could not load your positions: ' + e.message));
-    card.appendChild(dom.el('div', { class: 'button-group' }, back()));
-    return;
+    // An empty list, not null: otherwise the screen would sit on a skeleton
+    // forever just because the fetch failed (same reasoning as loadSendData).
+    sellState.positions = [];
+    sellState.loadError = e.message;
+  }
+  if (currentScreen === 'sell') render();
+}
+
+function selectedSellPosition() {
+  if (!sellState.positions) return null;
+  return sellState.positions.find((p) => positionKey(p) === sellState.selectedKey) || null;
+}
+
+/**
+ * Build the Sell screen's card.
+ *
+ * Pure, like buildSendCard: reads `state` and calls the handlers it is
+ * given, touches no module state. The "Selected …" hint and a validation
+ * error are two different elements with two different classes (`hint` vs
+ * `error`) -- previously a single element played both parts, flipping its
+ * className at runtime, which meant a stale hint and a fresh error could
+ * never be told apart by anything reading the DOM. Position selection is
+ * also given real visual feedback here, the same convention buildSendCard
+ * already uses (`position-row--selected`, aria-pressed, Select/Selected).
+ *
+ * Exported for tests.
+ */
+export function buildSellCard({
+  state,
+  onReview = () => {},
+  onBack = () => {},
+  onSelectPosition = () => {}
+} = {}) {
+  const card = dom.el('div', { class: 'card' }, dom.el('h2', {}, 'Sell a position'));
+
+  if (state.loadError) {
+    card.appendChild(dom.el('p', { class: 'error' }, '❌ Could not load your positions: ' + state.loadError));
   }
 
-  dom.clear(card);
-  card.appendChild(dom.el('h2', {}, 'Sell a position'));
+  if (state.positions === null) {
+    card.appendChild(dom.skeleton({ lines: 3 }));
+    card.appendChild(dom.el('div', { class: 'button-group' },
+      dom.el('button', { class: 'btn btn-secondary', onClick: onBack }, 'Back')));
+    return card;
+  }
 
-  if (!positions || positions.length === 0) {
+  if (state.positions.length === 0) {
     card.appendChild(dom.el('p', { class: 'placeholder' }, 'You have no positions to sell.'));
-    card.appendChild(dom.el('div', { class: 'button-group' }, back()));
-    return;
+    card.appendChild(dom.el('div', { class: 'button-group' },
+      dom.el('button', { class: 'btn btn-secondary', onClick: onBack }, 'Back')));
+    return card;
   }
-
-  const priceInput = dom.el('input', {
-    type: 'number', min: '1', step: '1', class: 'form-control',
-    placeholder: 'Asking price in satoshis',
-  });
-
-  const errorEl = dom.el('p', { class: 'error', style: 'display:none' });
 
   const list = dom.el('div', { class: 'positions-list' });
-  let selected = null;
-  for (const p of positions) {
-    const row = dom.el('div', { class: 'position-row' },
+  let selectedPosition = null;
+  for (const p of state.positions) {
+    const key = positionKey(p);
+    const selected = key === state.selectedKey;
+    if (selected) selectedPosition = p;
+    const row = dom.el('div', { class: selected ? 'position-row position-row--selected' : 'position-row' },
       dom.el('div', { class: 'position-desc' },
         `x${p.multiplier} — ${p.value} sat — ${p.txid.slice(0, 12)}…:${p.vout}`),
       dom.el('button', {
-        class: 'btn btn-sm',
-        onClick: () => { selected = p; sellState.position = p; errorEl.style.display = 'none'; errorEl.textContent = 'Selected ' + p.txid.slice(0, 12) + '…'; errorEl.className = 'hint'; errorEl.style.display = 'block'; },
-      }, 'Select')
+        class: selected ? 'btn btn-sm btn-primary' : 'btn btn-sm',
+        'aria-pressed': selected ? 'true' : 'false',
+        onClick: () => onSelectPosition(p),
+      }, selected ? 'Selected' : 'Select')
     );
     list.appendChild(row);
   }
   card.appendChild(list);
 
+  if (selectedPosition) {
+    card.appendChild(dom.el('p', { class: 'hint' },
+      'Selected ' + selectedPosition.txid.slice(0, 12) + '…:' + selectedPosition.vout));
+  }
+
   card.appendChild(dom.el('div', { class: 'form-group' },
-    dom.el('label', {}, 'Asking price (satoshis)'),
-    priceInput));
-  card.appendChild(errorEl);
+    dom.el('label', { for: 'sell-price' }, 'Asking price (satoshis)'),
+    dom.el('input', {
+      id: 'sell-price', type: 'number', min: '1', step: '1', class: 'form-control',
+      placeholder: 'Asking price in satoshis', value: state.priceSats,
+    })));
+
+  if (state.error) {
+    card.appendChild(dom.el('p', { class: 'error' }, state.error));
+  }
 
   card.appendChild(dom.el('div', { class: 'button-group' },
-    dom.el('button', {
-      class: 'btn btn-primary',
-      onClick: () => {
-        const priceSats = Number(priceInput.value);
-        const plan = planSell({
-          position: selected,
-          priceSats: Number.isInteger(priceSats) ? priceSats : priceInput.value === '' ? NaN : priceSats,
-          ownAddress: wallet.address,
-        });
-        if (!plan.ok) {
-          errorEl.className = 'error';
-          errorEl.textContent = plan.errors.join(' ');
-          errorEl.style.display = 'block';
-          return;
-        }
-        sellState.priceSats = priceSats;
-        sellState.plan = plan;
-        currentScreen = 'sell-review';
-        render();
-      },
-    }, 'Review'),
-    back()));
+    dom.el('button', { class: 'btn btn-primary', onClick: onReview }, 'Review'),
+    dom.el('button', { class: 'btn btn-secondary', onClick: onBack }, 'Back')));
+
+  return card;
 }
 
-async function renderSellReview() {
-  if (!sellState.plan) {
-    currentScreen = 'sell';
+async function renderSell() {
+  const card = buildSellCard({
+    state: sellState,
+    onReview: planSellFlow,
+    onBack: goTo('wallet'),
+    onSelectPosition: (p) => {
+      sellState.selectedKey = positionKey(p);
+      captureSellPriceInput();
+      sellState.error = null;
+      render();
+    }
+  });
+  app.appendChild(dom.el('div', { class: 'screen screen-sell' }, card));
+}
+
+// Read the price field back into state so a re-render (selecting a
+// position) doesn't throw away what has been typed -- same reasoning as
+// captureSendInputs.
+function captureSellPriceInput() {
+  const priceEl = document.getElementById('sell-price');
+  if (priceEl) sellState.priceSats = priceEl.value;
+}
+
+function planSellFlow() {
+  captureSellPriceInput();
+
+  const priceSats = Number(sellState.priceSats);
+  const plan = planSell({
+    position: selectedSellPosition(),
+    priceSats: Number.isInteger(priceSats) ? priceSats : sellState.priceSats === '' ? NaN : priceSats,
+    ownAddress: wallet.address,
+  });
+
+  if (!plan.ok) {
+    sellState.error = plan.errors.join(' ');
     render();
     return;
   }
-  const s = sellState.plan.summary;
 
-  const card = dom.el('div', { class: 'card' },
+  sellState.error = null;
+  sellState.plan = plan;
+  currentScreen = 'sell-review';
+  render();
+}
+
+/**
+ * The sell review step, as a pure function of the state it displays --
+ * same convention as buildMintReviewCard and buildSendReviewCard: the
+ * figures here are the last thing a maker sees before signing an offer
+ * anyone can take, so the builder is exported and dependency-injected
+ * rather than buried in a render function no test can reach.
+ *
+ * `error`, if given, is a failed publish (see confirmSell) rendered inline
+ * -- this used to be the one confirm/edit screen in the app that reported
+ * that failure via alert() instead.
+ */
+export function buildSellReviewCard({ plan, error = null, onConfirm = () => {}, onEdit = () => {} } = {}) {
+  const s = plan.summary;
+
+  return dom.el('div', { class: 'card' },
     dom.el('h2', {}, 'Review this sale'),
     dom.el('dl', { class: 'review-list' },
       dom.el('dt', {}, 'Position'), dom.el('dd', {}, `${s.txid.slice(0, 16)}…:${s.vout}`),
@@ -1766,32 +1829,73 @@ async function renderSellReview() {
       `${s.priceSats} satoshis to your address gets this position. You are not ` +
       'choosing who buys it. The offer stands until you cancel it or the ' +
       'position is spent.'),
+    error ? dom.el('p', { class: 'error' }, error) : null,
     dom.el('div', { class: 'button-group' },
-      dom.el('button', { class: 'btn btn-primary', onClick: confirmSell }, 'Publish offer'),
-      dom.el('button', { class: 'btn btn-secondary', onClick: () => { currentScreen = 'sell'; render(); } }, 'Edit'))
+      dom.el('button', { class: 'btn btn-primary', onClick: onConfirm }, 'Publish offer'),
+      dom.el('button', { class: 'btn btn-secondary', onClick: onEdit }, 'Edit'))
   );
+}
+
+async function renderSellReview() {
+  if (!sellState.plan) {
+    currentScreen = 'sell';
+    render();
+    return;
+  }
+
+  const card = buildSellReviewCard({
+    plan: sellState.plan,
+    error: sellState.error,
+    onConfirm: confirmSell,
+    onEdit: goTo('sell')
+  });
   app.appendChild(dom.el('div', { class: 'screen screen-sell-review' }, card));
 }
 
-async function confirmSell() {
+/**
+ * Sign and publish a sell order. Exported and pure with respect to module
+ * state so the FAILURE path is testable: the screen-level confirmSell below
+ * only decides what to do with the result.
+ *
+ * Returns {ok: true} or {ok: false, error} rather than throwing, because
+ * every caller has to render the message either way.
+ */
+export async function publishSellOrder({ api, secp, plan, privKey, address }) {
   try {
-    uap.configureSecp(secp256k1);
-    const pubKey = secp256k1.getPublicKey(wallet.privKey, true);
+    uap.configureSecp(secp);
+    const s = plan.summary;
     const order = buildSellOrder({
-      secp: secp256k1,
-      position: sellState.position,
-      privKey: wallet.privKey,
-      pubKey,
-      priceSats: sellState.priceSats,
-      ownAddress: wallet.address,
+      secp,
+      position: { txid: s.txid, vout: s.vout, multiplier: s.multiplier },
+      privKey,
+      pubKey: secp.getPublicKey(privKey, true),
+      priceSats: s.priceSats,
+      ownAddress: address,
     });
-    await apiClient.publishOrder(order);
-    currentScreen = 'market';
-    render();
+    await api.publishOrder(order);
+    return { ok: true };
   } catch (e) {
-    sellState.error = e.message;
-    alert('Could not publish the offer: ' + e.message);
+    return { ok: false, error: e.message };
   }
+}
+
+async function confirmSell() {
+  const result = await publishSellOrder({
+    api: apiClient,
+    secp: secp256k1,
+    plan: sellState.plan,
+    privKey: wallet.privKey,
+    address: wallet.address,
+  });
+  if (result.ok) {
+    sellState.error = null;
+    currentScreen = 'market';
+  } else {
+    // Inline, like every other flow's failure -- this used to be an
+    // alert(), the one place in the app that broke that convention.
+    sellState.error = result.error;
+  }
+  render();
 }
 
 // =============================================================================
@@ -1812,9 +1916,7 @@ async function renderMyOrders() {
   );
   app.appendChild(dom.el('div', { class: 'screen screen-my-orders' }, card));
 
-  const back = () => dom.el('button',
-    { class: 'btn btn-secondary', onClick: () => { currentScreen = 'wallet'; render(); } },
-    'Back');
+  const back = () => backButton('wallet');
 
   let mine;
   try {
@@ -1880,9 +1982,7 @@ async function renderMyOrdersCancel() {
   const errorEl = dom.el('p', { class: 'error', style: myOrdersState.cancelError ? '' : 'display:none' },
     myOrdersState.cancelError || '');
 
-  const backBtn = dom.el('button',
-    { class: 'btn btn-secondary', onClick: () => { currentScreen = 'my-orders'; render(); } },
-    'Back');
+  const backBtn = backButton('my-orders');
 
   if (!plan.ok) {
     // Malformed order data (shouldn't happen for anything the relay itself
