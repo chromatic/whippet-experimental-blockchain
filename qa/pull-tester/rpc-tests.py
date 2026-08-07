@@ -186,6 +186,7 @@ testScripts = [
     'uap_transactions.py',
     'uap_mint_transfer_spend.py',
     'uap_canonical_encoding.py',
+    'uap_swap.py',
 ]
 if ENABLE_ZMQ:
     testScripts.append('zmq_test.py')
