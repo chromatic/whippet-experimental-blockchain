@@ -59,15 +59,22 @@ function freshMyOrdersState() {
 // the comment in confirmFill for what happens if confirmation never comes.
 let broadcastStatus = null;
 
-// Mint flow state
-let mintState = {
-  ticker: '',
-  name: '',
-  multiplier: 100,
-  amountSats: 1000 * uap.COIN,
-  plan: null,
-  planErrors: null
-};
+// Mint flow state. `error` carries a broadcast failure back to the review
+// screen; it is cleared by starting a fresh mint, never left to leak into
+// the next one.
+function freshMintState() {
+  return {
+    ticker: '',
+    name: '',
+    multiplier: 100,
+    amountSats: 1000 * uap.COIN,
+    plan: null,
+    planErrors: null,
+    error: null
+  };
+}
+
+let mintState = freshMintState();
 
 // Send (token transfer) flow state.
 //
@@ -581,14 +588,7 @@ function copyAddress() {
 
 // Mint flow handlers
 function goToMint() {
-  mintState = {
-    ticker: '',
-    name: '',
-    multiplier: 100,
-    amountSats: 1000 * uap.COIN,
-    plan: null,
-    planErrors: null
-  };
+  mintState = freshMintState();
   currentScreen = 'mint';
   render();
 }
@@ -723,6 +723,7 @@ async function planMintTx() {
 export function buildMintReviewCard({
   mintState,
   plan,
+  error = null,
   onConfirm = () => {},
   onEdit = () => {}
 } = {}) {
@@ -776,6 +777,7 @@ export function buildMintReviewCard({
         dom.el('code', {}, changeCoins > 0 ? changeCoins.toFixed(8) + ' coins' : '(none)')
       )
     ),
+    error ? dom.el('p', { class: 'error' }, error) : null,
     dom.el('div', { class: 'button-group' },
       confirmBtn,
       editBtn
@@ -793,6 +795,7 @@ async function renderMintReview() {
   const card = buildMintReviewCard({
     mintState,
     plan: mintState.plan,
+    error: mintState.error,
     onConfirm: confirmMint,
     onEdit: goTo('mint')
   });
@@ -801,37 +804,84 @@ async function renderMintReview() {
   app.appendChild(screenDiv);
 }
 
+/**
+ * Build, sign and broadcast a mint.
+ *
+ * Exported and dependency-injected for the same reason publishSellOrder
+ * is: this is the step that decides whether a mint actually happened, and
+ * a card test cannot reach it. It used to be missing entirely -- the old
+ * confirmMint built a transaction, showed its length in an alert, and
+ * dropped it on the floor, so the user was told "Mint prepared" while
+ * nothing had been broadcast and no token existed.
+ *
+ * Returns rather than throws, so the caller can render the failure inline.
+ */
+export async function publishMint({ api, secp, plan, privKey, address, utxos }) {
+  try {
+    uap.configureSecp(secp);
+    const built = await buildMintTx({
+      secp,
+      plan,
+      privKey,
+      pubKey: secp.getPublicKey(privKey, true),
+      utxos,
+      changeAddress: address
+    });
+    // Resolves only on a 2xx: the node took it into its mempool. Not a
+    // confirmation -- see confirmFill for the full reasoning.
+    const txid = await api.broadcast(built.rawHex);
+    return { ok: true, txid, salt: built.salt };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 async function confirmMint() {
   if (!mintState.plan) {
-    alert('No plan available. Please review again.');
+    currentScreen = 'mint';
+    render();
     return;
   }
 
+  // Re-fetch UTXOs: the plan may have been sitting on the review screen
+  // long enough for its inputs to be spent elsewhere.
+  let utxos;
   try {
-    // Get UTXOs again for building the transaction
-    const utxos = await apiClient.getUtxos(wallet.address);
-
-    // Configure secp
-    uap.configureSecp(secp256k1);
-
-    // Build the mint transaction
-    const pubKey = secp256k1.getPublicKey(wallet.privKey, true);
-    const buildResult = await buildMintTx({
-      secp: secp256k1,
-      plan: mintState.plan,
-      privKey: wallet.privKey,
-      pubKey,
-      utxos,
-      changeAddress: wallet.address
-    });
-
-    // For now, show the result
-    alert(`Mint prepared. Script: ${buildResult.mintScript.length} bytes\nSalt: ${Array.from(buildResult.salt).map(b => b.toString(16).padStart(2, '0')).join('')}`);
-    currentScreen = 'wallet';
-    render();
+    utxos = await apiClient.getUtxos(wallet.address);
   } catch (e) {
-    alert(`Error building transaction: ${e.message}`);
+    mintState.error = `Could not load your coins: ${e.message}`;
+    render();
+    return;
   }
+
+  const result = await publishMint({
+    api: apiClient,
+    secp: secp256k1,
+    plan: mintState.plan,
+    privKey: wallet.privKey,
+    address: wallet.address,
+    utxos
+  });
+
+  if (!result.ok) {
+    mintState.error = result.error;
+    render();
+    return;
+  }
+
+  broadcastStatus = { txid: result.txid, state: 'pending' };
+  mintState = freshMintState();
+  currentScreen = 'wallet';
+  render();
+
+  pollForConfirmation({ apiClient, address: wallet.address, txid: result.txid }).then((r) => {
+    if (!broadcastStatus || broadcastStatus.txid !== result.txid) return;
+    broadcastStatus = {
+      txid: result.txid,
+      state: r.status === 'confirmed' ? 'confirmed' : 'timeout'
+    };
+    if (currentScreen === 'wallet') render();
+  });
 }
 
 // =============================================================================

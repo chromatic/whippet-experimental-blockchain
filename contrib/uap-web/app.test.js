@@ -183,6 +183,7 @@ const uap = await import('../uap-js/uap.js');
 const secp256k1 = await import('../uap-js/secp.js');
 const app = await import('./app.js');
 const addr = await import('../uap-js/addr.js');
+const mint = await import('./mint.js');
 
 const COIN = uap.COIN;
 
@@ -940,6 +941,114 @@ test('with no error, the review screen shows none', () => {
   const card = app.buildSellReviewCard({ plan: SELL_PLAN });
   const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
   assertEqual(errors.length, 0);
+});
+
+// =============================================================================
+// MINT PUBLISH
+// =============================================================================
+//
+// confirmMint used to build a signed transaction and then throw it away: it
+// showed an alert saying "Mint prepared" and returned to the wallet screen
+// having broadcast nothing. Every mint test passed throughout, because they
+// all stop at buildMintTx. These cover the step after it.
+
+const MINT_PRIVKEY = new Uint8Array(32).fill(0x11);
+const MINT_PUBKEY = secp256k1.getPublicKey(MINT_PRIVKEY, true);
+const MINT_ADDRESS = addr.pubkeyToAddress(MINT_PUBKEY, addr.VERSIONS.regtest.PUBKEY_ADDRESS);
+const MINT_UTXOS = [
+  { txid: '00'.repeat(32), vout: 0, value: 1010 * COIN, scriptPubKey: addr.buildP2PKHScript(MINT_PUBKEY) }
+];
+const REAL_MINT_PLAN = mint.planMint({
+  ticker: 'TEST',
+  name: 'Test Token',
+  multiplier: 100,
+  amountSats: 1000 * COIN,
+  utxos: MINT_UTXOS,
+  feeRate: 1000,
+  address: MINT_ADDRESS
+}).plan;
+
+test('a confirmed mint reaches the network', async () => {
+  // The regression test for the stub: it is not enough that a transaction
+  // was built, it has to be handed to the node.
+  let broadcast = null;
+  const result = await app.publishMint({
+    api: { broadcast: async (hex) => { broadcast = hex; return 'bb'.repeat(32); } },
+    secp: secp256k1,
+    plan: REAL_MINT_PLAN,
+    privKey: MINT_PRIVKEY,
+    address: MINT_ADDRESS,
+    utxos: MINT_UTXOS
+  });
+  assertEqual(result.ok, true, result.error);
+  assert(broadcast !== null, 'a mint that is confirmed must be broadcast');
+  assert(/^[0-9a-f]+$/.test(broadcast), `raw transaction hex expected, got: ${broadcast}`);
+  assertEqual(result.txid, 'bb'.repeat(32), 'the node-assigned txid must be reported back');
+});
+
+test('the broadcast mint is the transaction that was built', async () => {
+  // Guards against broadcasting some other field of the build result --
+  // the hex handed to the node must be a transaction carrying the mint
+  // output, not, say, the bare mint script.
+  let broadcast = null;
+  await app.publishMint({
+    api: { broadcast: async (hex) => { broadcast = hex; return 'bb'.repeat(32); } },
+    secp: secp256k1,
+    plan: REAL_MINT_PLAN,
+    privKey: MINT_PRIVKEY,
+    address: MINT_ADDRESS,
+    utxos: MINT_UTXOS
+  });
+  const built = await mint.buildMintTx({
+    secp: secp256k1, plan: REAL_MINT_PLAN, privKey: MINT_PRIVKEY,
+    pubKey: MINT_PUBKEY, utxos: MINT_UTXOS, changeAddress: MINT_ADDRESS
+  });
+  // Equality, not `includes`: an `includes` assertion against the mint
+  // script passes vacuously if the bare script is what gets broadcast,
+  // since it contains itself. Signing is deterministic (RFC 6979) and the
+  // salt is fixed by the plan, so the same plan rebuilds byte-identically.
+  assertEqual(broadcast, built.rawHex, 'the built transaction is what must be broadcast');
+  assert(broadcast.length > uap.bytesToHex(built.mintScript).length,
+    'a whole transaction is longer than the mint script alone');
+});
+
+test('a failed mint broadcast is reported, not swallowed', async () => {
+  const result = await app.publishMint({
+    api: { broadcast: async () => { throw new Error('node unreachable'); } },
+    secp: secp256k1,
+    plan: REAL_MINT_PLAN,
+    privKey: MINT_PRIVKEY,
+    address: MINT_ADDRESS,
+    utxos: MINT_UTXOS
+  });
+  assertEqual(result.ok, false, 'a rejected broadcast is not a successful mint');
+  assert(/node unreachable/.test(result.error), `got: ${result.error}`);
+  assertEqual(result.txid, undefined, 'no txid may be reported for a mint that never landed');
+});
+
+test('the salt survives a successful mint', async () => {
+  // The salt is part of the mint output's script, so it is recoverable
+  // from the chain, but it is what makes the mint auditable. It used to
+  // exist only inside a dismissed alert() string.
+  const result = await app.publishMint({
+    api: { broadcast: async () => 'bb'.repeat(32) },
+    secp: secp256k1,
+    plan: REAL_MINT_PLAN,
+    privKey: MINT_PRIVKEY,
+    address: MINT_ADDRESS,
+    utxos: MINT_UTXOS
+  });
+  assert(result.salt instanceof Uint8Array, 'the salt must be returned to the caller');
+  assertEqual(result.salt.length, REAL_MINT_PLAN.salt.length, 'salt length');
+});
+
+test('the mint review screen renders a broadcast failure inline, not as an alert', () => {
+  const card = app.buildMintReviewCard({
+    mintState: makeMintState(), plan: MINT_PLAN, error: 'node unreachable'
+  });
+  const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
+  assertEqual(errors.length, 1, 'the broadcast failure must render as an error element');
+  assert(/node unreachable/.test(textOf(errors[0])));
 });
 
 run({ style: 'compact' });
