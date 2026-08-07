@@ -11,6 +11,9 @@ src/test/test_whippet_fuzzy
 src/qt/test/test_whippet-qt
 src/bench/bench_whippet
 
+# editor and autotools backup files
+*~
+
 # autoreconf
 Makefile.in
 aclocal.m4
