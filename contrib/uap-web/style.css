@@ -486,6 +486,20 @@ textarea {
 .scan-error {
   color: var(--color-danger);
   font-size: 0.9rem;
+  /* Error text routinely carries a txid, an address or a whole raw
+     transaction -- unbroken hex with no spaces to wrap at. Without this it
+     runs straight off the side of the card on a phone, taking the message
+     with it. */
+  overflow-wrap: anywhere;
+}
+
+/* Hiding is done with this class, never with a style attribute: the indexer
+   serves the app under `style-src 'self'` with no 'unsafe-inline', so a
+   style="display:none" is BLOCKED and the element stays visible. Not
+   theoretical -- it was happening to the unlock and restore error boxes
+   until a real browser run surfaced the CSP violation. */
+.hidden {
+  display: none;
 }
 
 .scan-error {

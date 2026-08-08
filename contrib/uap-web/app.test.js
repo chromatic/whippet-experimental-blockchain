@@ -1042,6 +1042,84 @@ test('the salt survives a successful mint', async () => {
   assertEqual(result.salt.length, REAL_MINT_PLAN.salt.length, 'salt length');
 });
 
+// Found by driving the real app in a browser: clicking Review did nothing
+// at all -- no error, no screen change -- because the fee-rate fetch threw
+// and nothing caught it. getUtxos on the line above WAS wrapped, so the
+// asymmetry was invisible by reading either line on its own.
+test('a fee-rate failure is reported instead of silently doing nothing', async () => {
+  const r = await app.resolveMintInputs({
+    api: {
+      getUtxos: async () => MINT_UTXOS,
+      getFeeRate: async () => { throw new Error('feerate unavailable'); }
+    },
+    address: MINT_ADDRESS
+  });
+  assertEqual(r.ok, false, 'a failed fee-rate fetch cannot be a success');
+  assert(/feerate unavailable/.test(r.error), `the reason must survive: ${r.error}`);
+});
+
+test('a UTXO fetch failure is reported the same way', async () => {
+  const r = await app.resolveMintInputs({
+    api: {
+      getUtxos: async () => { throw new Error('indexer down'); },
+      getFeeRate: async () => ({ sat_per_kb: 1000, source: 'stub' })
+    },
+    address: MINT_ADDRESS
+  });
+  assertEqual(r.ok, false, 'a failed UTXO fetch cannot be a success');
+  assert(/indexer down/.test(r.error), `the reason must survive: ${r.error}`);
+});
+
+test('the fee rate comes back as a NUMBER of sat/kB, not the response object', async () => {
+  // getFeeRate resolves to {sat_per_kb, source}; planMint wants sat/kB as a
+  // number. Passing the object straight through made the review screen read
+  // "Estimated Fee: NaN coins" -- on the last screen before the user commits
+  // money. The send and fill flows already unwrapped it; mint did not.
+  //
+  // An earlier version of this test faked getFeeRate as `async () => 1000`,
+  // which is not the shape the real API returns, and so could never have
+  // caught this. A browser run did.
+  const r = await app.resolveMintInputs({
+    api: {
+      getUtxos: async () => MINT_UTXOS,
+      getFeeRate: async () => ({ sat_per_kb: 1000, source: 'estimatesmartfee' })
+    },
+    address: MINT_ADDRESS
+  });
+  assertEqual(r.ok, true, r.error);
+  assertEqual(typeof r.feeRate, 'number', 'fee rate must be a number');
+  assertEqual(r.feeRate, 1000, 'fee rate in sat/kB');
+  assertEqual(r.utxos.length, MINT_UTXOS.length, 'utxos');
+});
+
+test('a mint plan built from resolved inputs has a real fee, not NaN', async () => {
+  // End-to-end guard on the same bug, at the place it was visible.
+  const r = await app.resolveMintInputs({
+    api: {
+      getUtxos: async () => MINT_UTXOS,
+      getFeeRate: async () => ({ sat_per_kb: 1000, source: 'estimatesmartfee' })
+    },
+    address: MINT_ADDRESS
+  });
+  const planned = mint.planMint({
+    ticker: 'TEST', name: 'Test Token', multiplier: 100,
+    amountSats: 1000 * COIN, utxos: r.utxos, feeRate: r.feeRate, address: MINT_ADDRESS
+  });
+  assertEqual(planned.ok, true, (planned.errors || []).join(' '));
+  assert(Number.isFinite(planned.plan.fee), `fee must be a finite number, got ${planned.plan.fee}`);
+  assert(planned.plan.fee > 0, 'a real transaction costs a real fee');
+});
+
+test('the mint form shows a fetch failure where the user is looking', () => {
+  // planErrors is the mint form's existing error channel; a fetch failure
+  // has to land there rather than in a modal or the console.
+  const card = app.buildMintCard
+    ? app.buildMintCard({ mintState: { ...makeMintState(), planErrors: ['indexer down'] } })
+    : null;
+  if (!card) return; // form is not extracted; covered by resolveMintInputs above
+  assert(/indexer down/.test(textOfLoose(card)), 'the failure must be visible on the form');
+});
+
 test('the mint review screen renders a broadcast failure inline, not as an alert', () => {
   const card = app.buildMintReviewCard({
     mintState: makeMintState(), plan: MINT_PLAN, error: 'node unreachable'

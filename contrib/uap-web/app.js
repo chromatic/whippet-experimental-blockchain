@@ -290,7 +290,7 @@ async function renderRestore() {
     'Cancel'
   );
 
-  const errorDiv = dom.el('div', { id: 'restore-error', style: 'display:none; color: red; margin-top: 1rem;' });
+  const errorDiv = dom.el('div', { id: 'restore-error', class: 'error hidden' });
 
   const buttonGroup = dom.el('div', { class: 'button-group' },
     restoreBtn,
@@ -331,7 +331,7 @@ async function renderUnlock() {
     'Cancel'
   );
 
-  const errorDiv = dom.el('div', { id: 'unlock-error', style: 'display:none; color: red; margin-top: 1rem;' });
+  const errorDiv = dom.el('div', { id: 'unlock-error', class: 'error hidden' });
 
   const buttonGroup = dom.el('div', { class: 'button-group' },
     unlockBtn,
@@ -542,7 +542,7 @@ async function doRestore() {
     render();
   } catch (e) {
     errorEl.textContent = e.message;
-    errorEl.style.display = 'block';
+    errorEl.setAttribute('class', 'error');
   }
 }
 
@@ -560,14 +560,14 @@ async function doUnlock() {
     const ok = await wallet.unlock(passphrase);
     if (!ok) {
       errorEl.textContent = 'Wrong passphrase';
-      errorEl.style.display = 'block';
+      errorEl.setAttribute('class', 'error');
     } else {
       currentScreen = 'wallet';
       render();
     }
   } catch (e) {
     errorEl.textContent = e.message;
-    errorEl.style.display = 'block';
+    errorEl.setAttribute('class', 'error');
   }
 }
 
@@ -669,23 +669,53 @@ async function renderMint() {
   app.appendChild(screenDiv);
 }
 
+/**
+ * Fetch the two things a mint plan needs from the network.
+ *
+ * Both calls are failure paths a user will actually hit -- an indexer
+ * restart, a node that has not caught up -- and both must produce a
+ * message rather than a dead button.
+ */
+export async function resolveMintInputs({ api, address }) {
+  let utxos;
+  try {
+    utxos = await api.getUtxos(address);
+  } catch (e) {
+    return { ok: false, error: `Could not load your coins: ${e.message}` };
+  }
+  let feeRate;
+  try {
+    // getFeeRate resolves to {sat_per_kb, source}; planMint wants sat/kB as
+    // a plain number. Passing the object straight through made every mint
+    // review screen read "Estimated Fee: NaN coins". The send and fill
+    // flows already unwrapped it here -- mint was the one that did not.
+    const resp = await api.getFeeRate();
+    feeRate = resp.sat_per_kb;
+  } catch (e) {
+    return { ok: false, error: `Could not load the current fee rate: ${e.message}` };
+  }
+  return { ok: true, utxos, feeRate };
+}
+
 async function planMintTx() {
   mintState.ticker = document.getElementById('mint-ticker').value;
   mintState.name = document.getElementById('mint-name').value;
   mintState.multiplier = parseInt(document.getElementById('mint-multiplier').value) || 0;
   mintState.amountSats = parseFloat(document.getElementById('mint-amount').value) * uap.COIN;
 
-  // Fetch UTXOs for the wallet
-  let utxos = [];
-  try {
-    utxos = await apiClient.getUtxos(wallet.address);
-  } catch (e) {
-    alert(`Failed to fetch UTXOs: ${e.message}`);
+  const inputs = await resolveMintInputs({ api: apiClient, address: wallet.address });
+  if (!inputs.ok) {
+    // Report through the mint form's own error channel, so the message
+    // appears where the user is already looking. This used to be an
+    // alert() for the UTXO fetch and NOTHING AT ALL for the fee rate: a
+    // failed fee-rate call rejected this handler, leaving the user
+    // clicking Review to no visible effect.
+    mintState.planErrors = [inputs.error];
+    render();
     return;
   }
+  const { utxos, feeRate } = inputs;
 
-  // Plan the transaction
-  const feeRate = await apiClient.getFeeRate();
   const planResult = planMint({
     ticker: mintState.ticker,
     name: mintState.name,
@@ -2029,7 +2059,7 @@ async function renderMyOrdersCancel() {
   const desc = describeOrder(order);
   const plan = planCancel(order);
 
-  const errorEl = dom.el('p', { class: 'error', style: myOrdersState.cancelError ? '' : 'display:none' },
+  const errorEl = dom.el('p', { class: myOrdersState.cancelError ? 'error' : 'error hidden' },
     myOrdersState.cancelError || '');
 
   const backBtn = backButton('my-orders');
