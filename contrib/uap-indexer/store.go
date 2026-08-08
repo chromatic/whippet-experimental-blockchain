@@ -757,25 +757,38 @@ func (s *Store) Position(key string) (Position, bool, error) {
 }
 
 func (s *Store) PositionsForPubKey(pubkey string, unspentOnly bool) ([]Position, error) {
+	out, _, err := s.PositionsForPubKeyPage(pubkey, unspentOnly, Unlimited)
+	return out, err
+}
+
+// PositionsForPubKeyPage is PositionsForPubKey over a window. The second
+// result reports whether further rows exist beyond it.
+func (s *Store) PositionsForPubKeyPage(pubkey string, unspentOnly bool, page Page) ([]Position, bool, error) {
 	q := `SELECT txid, vout, pubkey, multiplier, value, is_mint, height, spent,
 		spent_txid, spent_height, origin, metadata FROM positions WHERE pubkey = ?`
 	if unspentOnly {
 		q += ` AND spent = 0`
 	}
+	// Oldest first, outpoint as the tiebreak so the order is total.
+	q += ` ORDER BY height, txid, vout` + page.sqlSuffix()
 	rows, err := s.db.Query(q, pubkey)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	var out []Position
 	for rows.Next() {
 		pos, err := scanPosition(rows)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, *pos)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	out, hasMore := truncate(out, page)
+	return out, hasMore, nil
 }
 
 func (s *Store) UTXO(key string) (UTXO, bool, error) {
@@ -790,21 +803,35 @@ func (s *Store) UTXO(key string) (UTXO, bool, error) {
 }
 
 func (s *Store) UTXOsForHash160(hash160 string) ([]UTXO, error) {
+	out, _, err := s.UTXOsForHash160Page(hash160, Unlimited)
+	return out, err
+}
+
+// UTXOsForHash160Page is UTXOsForHash160 over a window, LARGEST VALUE
+// FIRST. The order is deliberate: a wallet funds transactions from this
+// list, so if it only ever reads the first page that page must be the one
+// most likely to cover the amount. See page.go.
+func (s *Store) UTXOsForHash160Page(hash160 string, page Page) ([]UTXO, bool, error) {
 	rows, err := s.db.Query(
-		`SELECT txid, vout, hash160, value, height FROM utxos WHERE hash160 = ?`, hash160)
+		`SELECT txid, vout, hash160, value, height FROM utxos WHERE hash160 = ?`+
+			` ORDER BY value DESC, txid, vout`+page.sqlSuffix(), hash160)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	var out []UTXO
 	for rows.Next() {
 		u, err := scanUTXO(rows)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, *u)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	out, hasMore := truncate(out, page)
+	return out, hasMore, nil
 }
 
 // tokenQuery renders the maintained aggregate as the API's TokenInfo. The
@@ -851,20 +878,31 @@ func scanToken(row scanner) (TokenInfo, error) {
 }
 
 func (s *Store) AllTokens() ([]TokenInfo, error) {
-	rows, err := s.db.Query(tokenQuery)
+	out, _, err := s.AllTokensPage(Unlimited)
+	return out, err
+}
+
+// AllTokensPage is AllTokens over a window, ordered by origin -- the
+// lineage's own outpoint, which is unique, so the order is total.
+func (s *Store) AllTokensPage(page Page) ([]TokenInfo, bool, error) {
+	rows, err := s.db.Query(tokenQuery + ` ORDER BY l.origin` + page.sqlSuffix())
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	var out []TokenInfo
 	for rows.Next() {
 		t, err := scanToken(rows)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	out, hasMore := truncate(out, page)
+	return out, hasMore, nil
 }
 
 func (s *Store) Token(origin string) (TokenInfo, bool, error) {
@@ -901,16 +939,33 @@ func scanOrders(rows *sql.Rows) ([]Order, error) {
 }
 
 func (s *Store) ListOrders(multiplier *int64) ([]Order, error) {
+	out, _, err := s.ListOrdersPage(multiplier, Unlimited)
+	return out, err
+}
+
+// ListOrdersPage is ListOrders over a window, oldest order first with the
+// outpoint as a tiebreak so the order is total.
+func (s *Store) ListOrdersPage(multiplier *int64, page Page) ([]Order, bool, error) {
 	q, args := orderQuery, []interface{}{}
 	if multiplier != nil {
 		q += ` AND p.multiplier = ?`
 		args = append(args, *multiplier)
 	}
+	// o.key is the outpoint and the table's primary key: unique, so this
+	// is a total order. There is no created_at COLUMN -- created_at lives
+	// inside the JSON blob in o.data -- so ordering by it would be a
+	// runtime SQL error on every request.
+	q += ` ORDER BY o.key` + page.sqlSuffix()
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return scanOrders(rows)
+	orders, err := scanOrders(rows)
+	if err != nil {
+		return nil, false, err
+	}
+	orders, hasMore := truncate(orders, page)
+	return orders, hasMore, nil
 }
 
 func (s *Store) Order(key string) (Order, bool, error) {

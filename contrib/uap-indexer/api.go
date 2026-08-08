@@ -116,13 +116,19 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 			return
 		}
 		unspentOnly := r.URL.Query().Get("unspent") == "true"
-		positions, err := idx.PositionsForPubKey(pubkey, unspentOnly)
+		page, err := parsePage(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": pageErrorMessage})
+			return
+		}
+		positions, hasMore, err := idx.PositionsForPubKeyPage(pubkey, unspentOnly, page)
 		if writeStoreError(w, err) {
 			return
 		}
 		if positions == nil {
 			positions = []Position{}
 		}
+		writePageHeaders(w, page, len(positions), hasMore)
 		writeJSON(w, http.StatusOK, positions)
 	}
 	mux.HandleFunc("/positions", positionsHandler)
@@ -212,13 +218,19 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 				}
 				multiplierFilter = &m
 			}
-			orders, err := idx.ListOrders(multiplierFilter)
+			page, err := parsePage(r)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": pageErrorMessage})
+				return
+			}
+			orders, hasMore, err := idx.ListOrdersPage(multiplierFilter, page)
 			if writeStoreError(w, err) {
 				return
 			}
 			if orders == nil {
 				orders = []Order{}
 			}
+			writePageHeaders(w, page, len(orders), hasMore)
 			writeJSON(w, http.StatusOK, orders)
 
 		default:
@@ -323,14 +335,22 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 			return
 		}
 
-		// Get UTXOs for this hash160
-		utxos, err := idx.UTXOsForHash160(hash160Hex)
+		page, err := parsePage(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": pageErrorMessage})
+			return
+		}
+		// Largest value first (see page.go): a wallet funds transactions
+		// from this list, so a truncated first page must be the one most
+		// likely to cover the amount.
+		utxos, hasMore, err := idx.UTXOsForHash160Page(hash160Hex, page)
 		if writeStoreError(w, err) {
 			return
 		}
 		if utxos == nil {
 			utxos = []UTXO{}
 		}
+		writePageHeaders(w, page, len(utxos), hasMore)
 		writeJSON(w, http.StatusOK, utxos)
 	}
 	mux.HandleFunc("/utxos", utxosHandler)
@@ -341,13 +361,19 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 		if !checkRateLimit(readRL, trustProxy, w, r) {
 			return
 		}
-		tokens, err := idx.AllTokens()
+		page, err := parsePage(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": pageErrorMessage})
+			return
+		}
+		tokens, hasMore, err := idx.AllTokensPage(page)
 		if writeStoreError(w, err) {
 			return
 		}
 		if tokens == nil {
 			tokens = []TokenInfo{}
 		}
+		writePageHeaders(w, page, len(tokens), hasMore)
 		writeJSON(w, http.StatusOK, tokens)
 	}
 	mux.HandleFunc("/tokens", tokensHandler)

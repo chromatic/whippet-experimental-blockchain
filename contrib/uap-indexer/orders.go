@@ -201,6 +201,11 @@ func (idx *Index) ListOrders(multiplierFilter *int64) ([]Order, error) {
 	return idx.store.ListOrders(multiplierFilter)
 }
 
+// ListOrdersPage is ListOrders over one page.
+func (idx *Index) ListOrdersPage(multiplierFilter *int64, page Page) ([]Order, bool, error) {
+	return idx.store.ListOrdersPage(multiplierFilter, page)
+}
+
 // GetOrder looks up a single open order by the outpoint it sells.
 func (idx *Index) GetOrder(txid string, vout uint32) (Order, bool, error) {
 	return idx.store.Order(positionKey(txid, vout))

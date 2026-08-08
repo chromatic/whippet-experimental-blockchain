@@ -745,4 +745,85 @@ test('pollForConfirmation resolves even when a match arrives on the very last at
 // RUN TESTS
 // =============================================================================
 
+// =============================================================================
+// PAGINATION
+// =============================================================================
+//
+// The indexer now caps list responses (default 500) and reports X-Has-More.
+// A client that ignores that header sees a silently short list -- and for
+// /utxos that means a wallet under-reporting its balance and refusing to
+// spend coins the user really holds. These cover the following of pages.
+
+function pagedFetch(pages) {
+  // pages: array of arrays. Each response carries X-Has-More while another
+  // page remains.
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    const u = new URL(url, 'http://api.local');
+    const offset = Number(u.searchParams.get('offset') || 0);
+    let idx = 0, seen = 0;
+    while (idx < pages.length && seen + pages[idx].length <= offset) {
+      seen += pages[idx].length;
+      idx++;
+    }
+    const body = idx < pages.length ? pages[idx] : [];
+    const hasMore = idx < pages.length - 1;
+    return {
+      status: 200,
+      json: async () => body,
+      headers: { get: (h) => (h === 'X-Has-More' ? String(hasMore) : null) }
+    };
+  };
+  return { fetchImpl, calls };
+}
+
+const utxo = (i) => ({ txid: String(i).padStart(64, '0'), vout: 0, value: 1000, height: 1 });
+
+test('getUtxos follows pages until the indexer says there are no more', async () => {
+  const { fetchImpl, calls } = pagedFetch([
+    [utxo(1), utxo(2)],
+    [utxo(3), utxo(4)],
+    [utxo(5)]
+  ]);
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl });
+  const all = await client.getUtxos('Waddress');
+  assertEqual(all.length, 5, 'every UTXO must be returned, not just the first page');
+  assertEqual(calls.length, 3, 'one request per page');
+});
+
+test('getUtxos stops after one request when there is no next page', async () => {
+  const { fetchImpl, calls } = pagedFetch([[utxo(1), utxo(2)]]);
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl });
+  const all = await client.getUtxos('Waddress');
+  assertEqual(all.length, 2);
+  assertEqual(calls.length, 1, 'a complete first page must not trigger a second request');
+});
+
+test('getPositions follows pages too', async () => {
+  const pos = (i) => ({ txid: String(i).padStart(64, '0'), vout: 0, height: 1, value: 1, multiplier: 1, pubkey: 'aa' });
+  const { fetchImpl, calls } = pagedFetch([[pos(1)], [pos(2)], [pos(3)]]);
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl });
+  const all = await client.getPositions('aa'.repeat(33));
+  assertEqual(all.length, 3, 'positions must be followed across pages');
+  assertEqual(calls.length, 3);
+});
+
+test('page following is bounded, so a broken relay cannot spin forever', async () => {
+  // A server that always says "more" must not hang the wallet.
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    return {
+      status: 200,
+      json: async () => [utxo(calls)],
+      headers: { get: (h) => (h === 'X-Has-More' ? 'true' : null) }
+    };
+  };
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl });
+  await client.getUtxos('Waddress');
+  assert(calls < 200, `page following must terminate, made ${calls} requests`);
+});
+
+
 run();

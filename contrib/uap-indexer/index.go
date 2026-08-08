@@ -617,6 +617,12 @@ func (idx *Index) PositionsForPubKey(pubkeyHex string, unspentOnly bool) ([]Posi
 	return idx.store.PositionsForPubKey(pubkeyHex, unspentOnly)
 }
 
+// PositionsForPubKeyPage is PositionsForPubKey over one page, also
+// reporting whether more rows follow.
+func (idx *Index) PositionsForPubKeyPage(pubkeyHex string, unspentOnly bool, page Page) ([]Position, bool, error) {
+	return idx.store.PositionsForPubKeyPage(pubkeyHex, unspentOnly, page)
+}
+
 // Position looks up a single position by outpoint.
 func (idx *Index) Position(txid string, vout uint32) (Position, bool, error) {
 	return idx.store.Position(positionKey(txid, vout))
@@ -632,10 +638,21 @@ func (idx *Index) UTXOsForHash160(hash160Hex string) ([]UTXO, error) {
 	return idx.store.UTXOsForHash160(hash160Hex)
 }
 
+// UTXOsForHash160Page is UTXOsForHash160 over one page, largest value
+// first so a truncated page is still the most spendable one.
+func (idx *Index) UTXOsForHash160Page(hash160Hex string, page Page) ([]UTXO, bool, error) {
+	return idx.store.UTXOsForHash160Page(hash160Hex, page)
+}
+
 // AllTokens returns every lineage that still has unspent positions.
 // Positions with an empty Origin belong to no lineage and are excluded.
 func (idx *Index) AllTokens() ([]TokenInfo, error) {
 	return idx.store.AllTokens()
+}
+
+// AllTokensPage is AllTokens over one page.
+func (idx *Index) AllTokensPage(page Page) ([]TokenInfo, bool, error) {
+	return idx.store.AllTokensPage(page)
 }
 
 // Token returns a single lineage by origin, or ok=false if the origin is

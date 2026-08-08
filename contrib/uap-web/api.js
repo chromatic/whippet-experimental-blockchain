@@ -46,6 +46,40 @@ export function staleInfo(data) {
   return data[STALE_INFO] || { stale: false, cachedAt: null };
 }
 
+
+// Maximum pages a single logical request will follow. The indexer caps a
+// page at 1000 rows, so this allows 100k rows -- far past any real wallet
+// -- while guaranteeing a relay that always answers "there is more" cannot
+// spin the wallet forever.
+const MAX_PAGES = 100;
+
+/**
+ * Fetch every page of a list endpoint.
+ *
+ * The indexer caps list responses and sets X-Has-More when it truncated
+ * one (see contrib/uap-indexer/page.go). Ignoring that header is not a
+ * missed optimisation: for /utxos it means the wallet sees only part of
+ * its coins, reports a low balance, and refuses to spend money the user
+ * actually has.
+ *
+ * @private
+ */
+async function requestAllPages(client, basePath) {
+  const sep = basePath.includes('?') ? '&' : '?';
+  let offset = 0;
+  let out = null;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const path = `${basePath}${sep}offset=${offset}`;
+    const { data, hasMore } = await client.requestPage(path);
+    if (!Array.isArray(data)) return data; // let the caller's validation report it
+    out = out === null ? data : out.concat(data);
+    if (!hasMore || data.length === 0) break;
+    offset += data.length;
+  }
+  return out === null ? [] : out;
+}
+
 export class API {
   /**
    * Create an API client.
@@ -59,6 +93,31 @@ export class API {
 
     this.baseUrl = baseUrl;
     this.fetchImpl = fetchImpl;
+  }
+
+  /**
+   * Make a GET request, returning both the parsed body and whether the
+   * indexer truncated it. Used by requestAllPages.
+   * @private
+   */
+  async requestPage(path) {
+    const url = this.baseUrl + path;
+    const response = await this.fetchImpl(url, { method: 'GET' });
+    if (response.status < 200 || response.status >= 300) {
+      // Reuse request()'s error shaping by delegating; it will re-fetch,
+      // but only on a failure path where one extra request is harmless.
+      return this.request(path).then((data) => ({ data, hasMore: false }));
+    }
+    let data;
+    try {
+      data = attachStaleInfo(await response.json(), response);
+    } catch (e) {
+      throw new Error(`Failed to parse JSON response: ${e.message}`);
+    }
+    const headers = response.headers;
+    const hasMore = !!(headers && typeof headers.get === 'function' &&
+      headers.get('X-Has-More') === 'true');
+    return { data, hasMore };
   }
 
   /**
@@ -108,7 +167,7 @@ export class API {
     params.append('pubkey', pubkeyHex);
     params.append('unspent', unspentOnly ? 'true' : 'false');
 
-    const result = await this.request(`/positions?${params.toString()}`);
+    const result = await requestAllPages(this, `/positions?${params.toString()}`);
 
     if (!Array.isArray(result)) {
       throw new Error('getPositions: response is not an array');
@@ -170,7 +229,7 @@ export class API {
     const params = new URLSearchParams();
     params.append('address', address);
 
-    const result = await this.request(`/utxos?${params.toString()}`);
+    const result = await requestAllPages(this, `/utxos?${params.toString()}`);
 
     if (!Array.isArray(result)) {
       throw new Error('getUtxos: response is not an array');
