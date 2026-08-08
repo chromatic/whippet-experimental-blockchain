@@ -58,7 +58,12 @@ class RpcError extends Error {
  *   - rpc(method, ...params): JSON-RPC call, throws RpcError on failure
  *   - stop(): graceful shutdown (RPC `stop`, wait for exit, else SIGKILL),
  *     then removes the temp datadir. Safe to call more than once.
- *   - datadir, rpcport, port
+ *   - datadir, port, rpcport, rpcuser, rpcpassword
+ *
+ * The credentials are returned, not just used internally, because a caller
+ * may need to hand them to another process that talks to this same node --
+ * the uap-indexer in the uap-web e2e suite does exactly that. Copying the
+ * literal into that caller instead would let the two drift apart silently.
  */
 async function startNode(opts) {
   opts = opts || {};
@@ -210,7 +215,7 @@ async function startNode(opts) {
     try { rmSync(datadir, { recursive: true, force: true }); } catch (_) {}
   }
 
-  return { rpc, stop, datadir, port, rpcport, RpcError };
+  return { rpc, stop, datadir, port, rpcport, rpcuser, rpcpassword, RpcError };
 }
 
 export { startNode, resolveBinaries, RpcError, WHIPPETD, WHIPPET_CLI };

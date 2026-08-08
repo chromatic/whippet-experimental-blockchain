@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "node bip32.test.js && node wallet.test.js && node dom.test.js && node api.test.js && node mint.test.js && node sell.test.js && node cancel.test.js && node market.test.js && node sw.test.js && node qrscan.test.js && node transfer.test.js && node app.test.js",
-    "test:integration": "node mint.integration.test.js && node market.integration.test.js"
+    "test:integration": "node mint.integration.test.js && node market.integration.test.js",
+    "test:e2e": "node e2e/run.js"
   },
   "description": "Self-custody wallet for Whippet UAP marketplace",
   "devDependencies": {
