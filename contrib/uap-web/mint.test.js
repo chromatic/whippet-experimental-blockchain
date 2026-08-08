@@ -384,6 +384,80 @@ test('two builds produce different salts', async () => {
 // RUN ALL TESTS
 // =============================================================================
 
+// =============================================================================
+// TOKEN METADATA
+//
+// The ticker and name only reach the chain if buildMintTx emits the OP_RETURN
+// that carries them. Leave it out and everything still looks right: the mint
+// confirms, the covenant is valid, the position shows up in the wallet -- as
+// an anonymous token. The indexer reads metadata from that output and nowhere
+// else, so these assertions are the only thing between a named token and a
+// nameless one.
+// =============================================================================
+
+test('the mint transaction carries the ticker and name in an OP_RETURN', async () => {
+  const plan = planMint(VALID_PLAN_INPUT).plan;
+  const built = await buildMintTx({
+    secp: secp256k1, plan, privKey: TEST_PRIVKEY, pubKey: TEST_PUBKEY,
+    utxos: VALID_PLAN_INPUT.utxos, changeAddress: TEST_ADDRESS
+  });
+
+  const opReturns = built.tx.vout.filter((o) => o.scriptPubKey[0] === 0x6a);
+  assertEqual(opReturns.length, 1, 'exactly one metadata output');
+  assertEqual(opReturns[0].value, 0,
+    'an OP_RETURN is unspendable, so paying it anything would burn those coins');
+
+  const hex = uap.bytesToHex(opReturns[0].scriptPubKey);
+  assert(hex.includes(uap.bytesToHex(new TextEncoder().encode('WUAP'))),
+    'the record is tagged with the WUAP magic the indexer looks for');
+  assert(hex.includes(uap.bytesToHex(new TextEncoder().encode('TEST'))),
+    `the ticker is in the script: ${hex}`);
+  assert(hex.includes(uap.bytesToHex(new TextEncoder().encode('Test Token'))),
+    `the name is in the script: ${hex}`);
+});
+
+test('the metadata script stays inside the relay limit', () => {
+  const script = uap.buildMetadataScript({ ticker: 'TEST', name: 'Test Token' });
+  assert(script.length <= uap.MAX_METADATA_SCRIPT_BYTES,
+    `${script.length} bytes exceeds the ${uap.MAX_METADATA_SCRIPT_BYTES}-byte relay limit`);
+});
+
+test('a ticker and name that individually fit but together do not are refused', () => {
+  // Each field is inside its own documented bound -- 16 and 64 bytes -- but
+  // MAX_OP_RETURN_RELAY leaves only 72 bytes for both. A wallet that built
+  // this anyway would produce a mint no node relays, so the user would watch
+  // it sit unconfirmed forever with nothing to explain why.
+  const result = planMint({
+    ...VALID_PLAN_INPUT,
+    ticker: 'A'.repeat(16),
+    name: 'B'.repeat(64)
+  });
+  assertEqual(result.ok, false, 'the combined length must be rejected');
+  const message = result.errors.map((e) => e.message).join(' ');
+  assert(/relay/.test(message), `the error should say why, got: ${message}`);
+  assert(/\d+ bytes/.test(message), `the error should quantify it, got: ${message}`);
+});
+
+test('the largest ticker and name that do fit are accepted', () => {
+  // 16 + 56 = 72, exactly the budget. The boundary is worth pinning in both
+  // directions: an off-by-one here rejects legitimate names.
+  const result = planMint({
+    ...VALID_PLAN_INPUT,
+    ticker: 'A'.repeat(16),
+    name: 'B'.repeat(56)
+  });
+  assertEqual(result.ok, true,
+    'a record that exactly fills the budget must be allowed: ' +
+    JSON.stringify(result.errors));
+});
+
+test('a multi-byte ticker is measured in bytes, not characters', () => {
+  // 'é' is two bytes in UTF-8. A wallet counting characters would let a
+  // 16-character ticker through as 32 bytes.
+  const result = planMint({ ...VALID_PLAN_INPUT, ticker: 'é'.repeat(16) });
+  assertEqual(result.ok, false, '32 bytes of ticker must not pass a 16-byte bound');
+});
+
 run({ banner: 'Running mint tests...\n', style: 'compact' }).catch(e => {
   console.error('Test harness error:', e);
   process.exit(1);

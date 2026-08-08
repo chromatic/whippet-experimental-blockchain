@@ -154,6 +154,20 @@ export function planMint({
     });
   }
 
+  // The ticker and name have to fit in a relayable OP_RETURN alongside the
+  // magic and version bytes. Each field's own bound is satisfiable, but the
+  // two are not satisfiable together (16 + 64 bytes against a 72-byte
+  // budget), so the combined total is checked here -- before anything is
+  // signed, and by calling the same builder that will produce the script,
+  // rather than by a copy of the size rule that could drift from it.
+  if (errors.length === 0) {
+    try {
+      uap.buildMetadataScript({ ticker, name });
+    } catch (e) {
+      errors.push({ field: 'name', message: e.message });
+    }
+  }
+
   // If there are validation errors, return them all
   if (errors.length > 0) {
     return { ok: false, errors };
@@ -166,7 +180,7 @@ export function planMint({
   // Calculate final fee and change
   const totalUtxoValue = utxos.reduce((sum, u) => sum + u.value, 0);
   const nInputs = utxos.length;
-  const nOutputs = 2;  // mint + change
+  const nOutputs = 3;  // mint covenant + metadata OP_RETURN + change
   const estimatedSize = estimateTxSize(nInputs, nOutputs);
   const estimatedFee = Math.ceil(estimatedSize * feeRate / 1000);
   const fee = Math.max(estimatedFee, uap.RECOMMENDED_MIN_TX_FEE);
@@ -210,6 +224,16 @@ export async function buildMintTx({
 }) {
   const mintScript = uap.buildMintScript(pubKey, plan.multiplier, plan.salt);
 
+  // The ticker and name only reach the chain if this output is built. Without
+  // it the mint confirms, the covenant is valid and the position appears in
+  // the wallet -- as an anonymous token, since uap-indexer reads metadata
+  // from this output and nowhere else. Nothing on screen looks different,
+  // which is exactly why this is asserted end to end (e2e/run.js phase 2).
+  const metadataScript = uap.buildMetadataScript({
+    ticker: plan.ticker,
+    name: plan.name
+  });
+
   // Input selection, change and signing all belong to uap.js. That code is
   // exercised against a real node by contrib/uap-js/integration.test.js;
   // reimplementing any of it here would mean a second, unverified copy of
@@ -229,7 +253,13 @@ export async function buildMintTx({
 
   const tx = uap.buildPaymentTx(secp, {
     inputs,
-    outputs: [{ value: plan.amountSats, scriptPubKey: mintScript }],
+    outputs: [
+      { value: plan.amountSats, scriptPubKey: mintScript },
+      // Zero value: an OP_RETURN is provably unspendable, so paying it
+      // anything would burn the coins outright. It also means this output is
+      // never held in the UTXO set, unlike the covenant above it.
+      { value: 0, scriptPubKey: metadataScript }
+    ],
     changeScript: addr.addressToScript(changeAddress),
     feeRate: plan.feeRate
   });
@@ -238,6 +268,7 @@ export async function buildMintTx({
     rawHex: uap.txToHex(tx),
     tx,
     mintScript,
+    metadataScript,
     salt: plan.salt,
     value: plan.amountSats
   };

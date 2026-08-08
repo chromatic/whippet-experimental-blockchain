@@ -31,6 +31,8 @@ const COIN = uap.COIN;
 const ASKING_PRICE = 50 * COIN;
 const MINT_AMOUNT_COINS = 1000;
 const MINT_MULTIPLIER = 100;
+const MINT_TICKER = 'E2E';
+const MINT_NAME = 'End To End Token';
 const FUNDING_COINS = 2000;
 
 const failures = [];
@@ -168,8 +170,8 @@ async function main() {
     phase('2. the maker mints a token');
     await m.click('Mint Token');
     await m.waitForScreen('mint');
-    await m.fill('mint-ticker', 'E2E');
-    await m.fill('mint-name', 'End To End Token');
+    await m.fill('mint-ticker', MINT_TICKER);
+    await m.fill('mint-name', MINT_NAME);
     await m.fill('mint-multiplier', MINT_MULTIPLIER);
     await m.fill('mint-amount', MINT_AMOUNT_COINS);
     await m.click('Review');
@@ -197,6 +199,23 @@ async function main() {
     check(positions.length === 1 && positions[0].txid === mintTxid,
       `the indexer sees the maker's new position (${positions.length} position)`);
     const P1 = positions[0];
+
+    // The ticker and name the user typed have to survive the round trip to
+    // the chain and back. They travel in an OP_RETURN on the mint
+    // transaction (see uap-indexer/metadata.go: OP_RETURN "WUAP" 0x01
+    // <ticker> <name> <hash>), which is a separate output the wallet has to
+    // remember to build -- a form that validates a ticker and then drops it
+    // looks identical on screen to one that publishes it.
+    const wuapOut = mintTx.vout.find((v) => v.scriptPubKey.type === 'nulldata');
+    check(!!wuapOut, 'the mint transaction carries an OP_RETURN metadata output');
+
+    const tokens = await st.api.get('/api/tokens');
+    const token = tokens.find((t) => t.origin === `${mintTxid}:${mintVout ? mintVout.n : 0}`);
+    check(!!token, `the indexer lists the new token (${tokens.length} token)`);
+    if (token) {
+      checkEqual(token.ticker, MINT_TICKER, 'the token keeps the ticker that was typed');
+      checkEqual(token.name, MINT_NAME, 'the token keeps the name that was typed');
+    }
 
     // ==================================================================
     phase('3. the maker offers it for sale');
