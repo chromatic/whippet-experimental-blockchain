@@ -476,7 +476,8 @@ textarea {
   white-space: nowrap;
 }
 
-.scan-notice {
+.scan-notice,
+.copy-notice {
   margin-top: 0.5rem;
   margin-bottom: 0;
   color: var(--color-text-secondary);

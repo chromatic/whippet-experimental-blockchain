@@ -184,6 +184,7 @@ const secp256k1 = await import('../uap-js/secp.js');
 const app = await import('./app.js');
 const addr = await import('../uap-js/addr.js');
 const mint = await import('./mint.js');
+const transfer = await import('./transfer.js');
 
 const COIN = uap.COIN;
 
@@ -1127,6 +1128,164 @@ test('the mint review screen renders a broadcast failure inline, not as an alert
   const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
   assertEqual(errors.length, 1, 'the broadcast failure must render as an error element');
   assert(/node unreachable/.test(textOf(errors[0])));
+});
+
+// =============================================================================
+// SEND PUBLISH (replaces alert() for transfer failures)
+// =============================================================================
+
+const SEND_PRIVKEY = new Uint8Array(32).fill(0x11);
+const SEND_PUBKEY = secp256k1.getPublicKey(SEND_PRIVKEY, true);
+const SEND_UTXOS = [
+  { txid: '00'.repeat(32), vout: 0, value: 1010 * COIN, scriptPubKey: addr.buildP2PKHScript(SEND_PUBKEY) }
+];
+
+// Built by the real planner rather than written out by hand. A hand-rolled
+// plan drifts from what planTransfer actually emits, and then publishTransfer
+// gets tested against a shape it will never be handed -- which is how the
+// NaN-fee bug survived a full green suite once already.
+const SEND_PLAN = (() => {
+  const result = transfer.planTransfer({
+    position: {
+      txid: 'aa'.repeat(32),
+      vout: 1,
+      value: 100 * COIN,
+      multiplier: 100,
+      pubkey: uap.bytesToHex(SEND_PUBKEY),
+      is_mint: false,
+      height: 500,
+      spent: false
+    },
+    ownPubKey: SEND_PUBKEY,
+    toPubKey: uap.bytesToHex(THEIR_PUBKEY),
+    network: 'regtest',
+    amountSats: 40 * COIN,
+    fundingUtxos: SEND_UTXOS,
+    feeRate: 1000
+  });
+  if (!result.ok) throw new Error('SEND_PLAN fixture does not plan: ' + JSON.stringify(result.errors));
+  return result.plan;
+})();
+
+test('a failed transfer broadcast is reported, not swallowed', async () => {
+  const result = await app.publishTransfer({
+    api: { broadcast: async () => { throw new Error('relay unreachable'); } },
+    secp: secp256k1,
+    plan: SEND_PLAN,
+    privKey: SEND_PRIVKEY
+  });
+  assertEqual(result.ok, false, 'a rejected broadcast is not a successful transfer');
+  assert(/relay unreachable/.test(result.error), `got: ${result.error}`);
+});
+
+test('a successful transfer reports success and sends the transaction onward', async () => {
+  let broadcast = null;
+  const result = await app.publishTransfer({
+    api: { broadcast: async (hex) => { broadcast = hex; return 'aa'.repeat(32); } },
+    secp: secp256k1,
+    plan: SEND_PLAN,
+    privKey: SEND_PRIVKEY
+  });
+  assertEqual(result.ok, true, result.error);
+  assert(broadcast !== null, 'a successful transfer must be broadcast');
+  assertEqual(result.txid, 'aa'.repeat(32), 'the node-assigned txid must be reported back');
+});
+
+test('the send review card with an error renders it inline', () => {
+  const card = app.buildSendReviewCard({
+    plan: SEND_PLAN,
+    error: 'network unreachable'
+  });
+  const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
+  assertEqual(errors.length, 1, 'the transfer failure must render as an error element');
+  assert(/network unreachable/.test(textOf(errors[0])));
+});
+
+test('with no error, the send review screen shows none', () => {
+  const card = app.buildSendReviewCard({ plan: SEND_PLAN });
+  const errors = findAll(card, (n) => (n.getAttribute('class') || '') === 'error');
+  assertEqual(errors.length, 0, 'a first look at a transfer must not accuse it of failing');
+});
+
+// =============================================================================
+// FILL PUBLISH (replaces alert() for fill failures)
+// =============================================================================
+
+// A maker's standing offer, in the shape GET /orders returns. script_sig and
+// payment_script are not optional decoration: buildFillTx hex-decodes both to
+// assemble the maker's already-signed input and the output their
+// SIGHASH_SINGLE signature commits to, so an order missing either cannot be
+// filled at all.
+const FILL_ORDER = {
+  txid: 'aa'.repeat(32),
+  vout: 0,
+  multiplier: 100,
+  payment_value: 50 * COIN,
+  payment_script: uap.bytesToHex(addr.buildP2PKHScript(THEIR_PUBKEY)),
+  // A single 71-byte push: a DER signature ending in the SIGHASH byte 0x83
+  // (SIGHASH_SINGLE|ANYONECANPAY), which is the only hashtype the relay
+  // accepts for an order.
+  script_sig: '47' + 'aa'.repeat(70) + '83'
+};
+
+test('a failed fill broadcast is reported, not swallowed', async () => {
+  const fillPlan = { fee: 10000, change: 100 * COIN };
+  const order = FILL_ORDER;
+  const position = { value: 100 * COIN };
+  const takerUtxos = SEND_UTXOS;
+
+  const result = await app.publishFill({
+    api: { broadcast: async () => { throw new Error('relay unreachable'); } },
+    secp: secp256k1,
+    plan: fillPlan,
+    privKey: SEND_PRIVKEY,
+    order,
+    position,
+    takerUtxos
+  });
+  assertEqual(result.ok, false, 'a rejected broadcast is not a successful fill');
+  assert(/relay unreachable/.test(result.error), `got: ${result.error}`);
+});
+
+test('a successful fill reports success and sends the transaction onward', async () => {
+  let broadcast = null;
+  const fillPlan = { fee: 10000, change: 100 * COIN };
+  const order = FILL_ORDER;
+  const position = { value: 100 * COIN };
+  const takerUtxos = SEND_UTXOS;
+
+  const result = await app.publishFill({
+    api: { broadcast: async (hex) => { broadcast = hex; return 'bb'.repeat(32); } },
+    secp: secp256k1,
+    plan: fillPlan,
+    privKey: SEND_PRIVKEY,
+    order,
+    position,
+    takerUtxos
+  });
+  assertEqual(result.ok, true, result.error);
+  assert(broadcast !== null, 'a successful fill must be broadcast');
+  assertEqual(result.txid, 'bb'.repeat(32), 'the node-assigned txid must be reported back');
+});
+
+// =============================================================================
+// COPY ADDRESS (replaces alert() for clipboard success/failure)
+// =============================================================================
+
+test('a successful copy is a notice, not an error', () => {
+  const result = app.copyAddressResult(true);
+  assert(result.notice, 'copying an address must confirm it worked');
+  assertEqual(result.error, null, 'a successful copy is not an error');
+});
+
+test('a failed copy is an error, and says what to do instead', () => {
+  const result = app.copyAddressResult(false);
+  assertEqual(result.notice, null, 'a failed copy must not claim the address was copied');
+  assert(result.error, 'a failed copy must be reported');
+  // The clipboard API is permission-gated and simply unavailable over plain
+  // HTTP. "Failed to copy" on its own leaves the user stuck; the fallback is
+  // the whole point of saying anything.
+  assert(/manually/i.test(result.error), `got: ${result.error}`);
 });
 
 run({ style: 'compact' });

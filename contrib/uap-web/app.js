@@ -76,6 +76,11 @@ function freshMintState() {
 
 let mintState = freshMintState();
 
+// Result of the most recent "copy address" tap, shown on the wallet screen
+// and cleared on any navigation away from it (see render). Null means the
+// user has not tried to copy since arriving.
+let copyStatus = null;
+
 // Send (token transfer) flow state.
 //
 // `positions` is null until the first fetch resolves, which is what tells
@@ -116,6 +121,7 @@ function freshSendState() {
     amountCoins: '',
     plan: null,
     planErrors: null,
+    error: null,
     scanNotice: null,
     scanError: null,
     scanning: false
@@ -123,12 +129,17 @@ function freshSendState() {
 }
 
 // Market/order book flow state
-let marketState = {
-  orders: [],
-  selectedOrder: null,
-  fillPlan: null,
-  fillPlanErrors: null
-};
+function freshMarketState() {
+  return {
+    orders: [],
+    selectedOrder: null,
+    fillPlan: null,
+    fillPlanErrors: null,
+    fillError: null
+  };
+}
+
+let marketState = freshMarketState();
 
 // The marketplace binary serves this page and its API from the same origin
 // (Phase 2.3 of doc/uap-marketplace-website-plan.md), so the base URL is
@@ -147,6 +158,11 @@ const apiClient = new API({
 
 function render() {
   dom.clear(app);
+
+  // The copy notice belongs to one visit to the wallet screen. Leaving it
+  // set would have it reappear later, claiming an address was copied that
+  // was copied several screens ago.
+  if (currentScreen !== 'wallet') copyStatus = null;
 
   if (currentScreen === 'init') {
     renderInit();
@@ -261,6 +277,11 @@ async function renderCreate() {
       dom.el('label', {}, 'Set a passphrase (optional but recommended):'),
       passphraseInput
     ),
+    // Mirrors #restore-error. The likeliest failure here is an empty
+    // passphrase -- Wallet.lock rejects one -- which makes this the error
+    // a first-time user is most likely to meet, so it belongs on the page
+    // next to the field rather than in a modal.
+    dom.el('div', { id: 'create-error', class: 'error hidden' }),
     buttonGroup
   );
 
@@ -435,7 +456,15 @@ async function renderWallet() {
     dom.el('h2', {}, 'Wallet'),
     statusBadge,
     ...(legacyNotice ? [legacyNotice] : []),
-    dom.el('div', { class: 'wallet-info' }, infoRow),
+    dom.el('div', { class: 'wallet-info' },
+      infoRow,
+      copyStatus && copyStatus.notice
+        ? dom.el('p', { class: 'hint copy-notice', role: 'status' }, copyStatus.notice)
+        : null,
+      copyStatus && copyStatus.error
+        ? dom.el('p', { class: 'error copy-error', role: 'alert' }, copyStatus.error)
+        : null
+    ),
     balanceSection,
     dom.el('div', { class: 'section' },
       dom.el('h3', {}, 'Actions'),
@@ -520,13 +549,15 @@ function goToInit() {
 
 async function finishWalletSetup() {
   const passphrase = document.getElementById('passphrase').value;
+  const errorEl = document.getElementById('create-error');
 
   try {
     await wallet.lock(passphrase);
     currentScreen = 'unlock';
     render();
   } catch (e) {
-    alert(`Error locking wallet: ${e.message}`);
+    errorEl.textContent = e.message;
+    errorEl.setAttribute('class', 'error');
   }
 }
 
@@ -578,12 +609,27 @@ async function lockWallet() {
   render();
 }
 
+/**
+ * What the wallet screen should say after a copy attempt.
+ *
+ * Split out from copyAddress so the outcome is testable without a clipboard:
+ * navigator.clipboard is unavailable in the test environment and is gated
+ * behind a permission prompt in a real browser, so the only part a test can
+ * reach is this decision. Copying an address is a SUCCESS worth confirming --
+ * it is how a user knows the tap registered -- so the success case is a
+ * notice, not silence, and the failure case is an error, not a notice.
+ */
+export function copyAddressResult(ok) {
+  return ok
+    ? { notice: 'Address copied to clipboard', error: null }
+    : { notice: null, error: 'Failed to copy address. Select the address and copy it manually.' };
+}
+
 function copyAddress() {
-  navigator.clipboard.writeText(wallet.address).then(() => {
-    alert('Address copied to clipboard');
-  }).catch(() => {
-    alert('Failed to copy address');
-  });
+  navigator.clipboard.writeText(wallet.address).then(
+    () => { copyStatus = copyAddressResult(true); render(); },
+    () => { copyStatus = copyAddressResult(false); render(); }
+  );
 }
 
 // Mint flow handlers
@@ -1308,8 +1354,12 @@ async function planSendTx() {
  * The review step. A wallet must never broadcast straight off the form:
  * every number that is about to be committed to gets shown first, and the
  * only way past this screen is an explicit confirmation.
+ *
+ * `error`, if given, is a failed broadcast (see confirmSend) rendered inline.
+ * Every confirm screen in the app now reports failure this way; this one used
+ * alert(), which froze the page behind a modal the user could only dismiss.
  */
-export function buildSendReviewCard({ plan, onConfirm = () => {}, onEdit = () => {} } = {}) {
+export function buildSendReviewCard({ plan, error = null, onConfirm = () => {}, onEdit = () => {} } = {}) {
   const coins = (sats) => (sats / uap.COIN).toFixed(8) + ' coins';
   const recipient = plan.outputs.find((o) => o.kind === OUTPUT_TOKEN_RECIPIENT);
   const tokenChange = plan.outputs.find((o) => o.kind === OUTPUT_TOKEN_CHANGE);
@@ -1396,6 +1446,8 @@ export function buildSendReviewCard({ plan, onConfirm = () => {}, onEdit = () =>
     card.appendChild(dom.el('p', { class: 'warning warning-advisory' }, warning.message));
   }
 
+  if (error) card.appendChild(dom.el('p', { class: 'error' }, error));
+
   card.appendChild(dom.el('div', { class: 'button-group' },
     dom.el('button', { class: 'btn btn-primary', onClick: onConfirm }, 'Confirm & Broadcast'),
     dom.el('button', { class: 'btn btn-secondary', onClick: onEdit }, 'Edit')
@@ -1413,6 +1465,7 @@ async function renderSendReview() {
 
   const card = buildSendReviewCard({
     plan: { ...sendState.plan, toAddressChecked: sendState.toAddress },
+    error: sendState.error,
     onConfirm: confirmSend,
     onEdit: goTo('send')
   });
@@ -1420,51 +1473,68 @@ async function renderSendReview() {
   app.appendChild(dom.el('div', { class: 'screen screen-send-review' }, card));
 }
 
+/**
+ * Sign and broadcast a transfer. Exported and pure with respect to module
+ * state for the same reason publishSellOrder and publishMint are: the
+ * FAILURE path is the one worth testing, and a failure that only ever
+ * surfaced from inside a render function was a failure no test could reach.
+ *
+ * Returns {ok: true, txid} or {ok: false, error} rather than throwing.
+ */
+export async function publishTransfer({ api, secp, plan, privKey }) {
+  try {
+    uap.configureSecp(secp);
+    const built = await buildTransferTx({ secp, plan, privKey });
+    // Resolves only on a 2xx: the node took it into its mempool. Not a
+    // confirmation -- see confirmFill for the full reasoning.
+    const txid = await api.broadcast(built.rawHex);
+    return { ok: true, txid };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 async function confirmSend() {
+  // No plan means the review screen was reached without one, which
+  // renderSendReview already treats as "go back to the form". Do the same
+  // rather than trapping the user behind a modal.
   if (!sendState.plan) {
-    alert('No transfer plan available. Please review again.');
+    currentScreen = 'send';
+    render();
     return;
   }
 
-  try {
-    uap.configureSecp(secp256k1);
+  const result = await publishTransfer({
+    api: apiClient,
+    secp: secp256k1,
+    plan: sendState.plan,
+    privKey: wallet.privKey
+  });
 
-    const buildResult = await buildTransferTx({
-      secp: secp256k1,
-      plan: sendState.plan,
-      privKey: wallet.privKey
-    });
-
-    // Resolves only on a 2xx: the node accepted it into its mempool. That
-    // is not confirmation -- see the same reasoning in confirmFill.
-    const txid = await apiClient.broadcast(buildResult.rawHex);
-
-    broadcastStatus = { txid, state: 'pending' };
-    sendState = freshSendState();
-    currentScreen = 'wallet';
+  if (!result.ok) {
+    sendState.error = result.error;
     render();
-
-    pollForConfirmation({ apiClient, address: wallet.address, txid }).then((result) => {
-      if (!broadcastStatus || broadcastStatus.txid !== txid) return;
-      broadcastStatus = {
-        txid,
-        state: result.status === 'confirmed' ? 'confirmed' : 'timeout'
-      };
-      if (currentScreen === 'wallet') render();
-    });
-  } catch (e) {
-    alert(`Error sending tokens: ${e.message}`);
+    return;
   }
+
+  broadcastStatus = { txid: result.txid, state: 'pending' };
+  sendState = freshSendState();
+  currentScreen = 'wallet';
+  render();
+
+  pollForConfirmation({ apiClient, address: wallet.address, txid: result.txid }).then((r) => {
+    if (!broadcastStatus || broadcastStatus.txid !== result.txid) return;
+    broadcastStatus = {
+      txid: result.txid,
+      state: r.status === 'confirmed' ? 'confirmed' : 'timeout'
+    };
+    if (currentScreen === 'wallet') render();
+  });
 }
 
 // Market flow handlers
 function goToMarket() {
-  marketState = {
-    orders: [],
-    selectedOrder: null,
-    fillPlan: null,
-    fillPlanErrors: null
-  };
+  marketState = freshMarketState();
   currentScreen = 'market';
   render();
 }
@@ -1604,6 +1674,9 @@ async function renderMarketFill() {
       }
       card.appendChild(dom.el('div', { class: 'error-list' }, ...errorsList));
 
+      if (marketState.fillError) {
+        card.appendChild(dom.el('p', { class: 'error' }, marketState.fillError));
+      }
       card.appendChild(dom.el('div', { class: 'button-group' }, backButton('market')));
     } else {
       marketState.fillPlan = planResult.plan;
@@ -1642,6 +1715,10 @@ async function renderMarketFill() {
         )
       ));
 
+      if (marketState.fillError) {
+        card.appendChild(dom.el('p', { class: 'error' }, marketState.fillError));
+      }
+
       const confirmBtn = dom.el('button',
         { class: 'btn btn-primary', onClick: () => confirmFill(order, position, takerUtxos, feeRate) },
         'Confirm & Broadcast'
@@ -1658,61 +1735,89 @@ async function renderMarketFill() {
   }
 }
 
-async function confirmFill(order, position, takerUtxos, feeRate) {
-  if (!marketState.fillPlan) {
-    alert('No fill plan available.');
-    return;
-  }
-
+/**
+ * Sign and broadcast a fill. Exported and pure with respect to module state,
+ * for the same reason publishTransfer and publishSellOrder are: this is the
+ * point where a taker's money leaves, so its failure path has to be reachable
+ * from a test.
+ *
+ * The taker's public key is derived here rather than passed in, so a caller
+ * cannot pair a private key with somebody else's public key and build a
+ * covenant it can never spend.
+ *
+ * Returns {ok: true, txid} or {ok: false, error} rather than throwing.
+ */
+export async function publishFill({ api, secp, plan, privKey, order, position, takerUtxos }) {
   try {
-    // Configure secp
-    uap.configureSecp(secp256k1);
-
-    // Build the fill transaction
-    const pubKey = secp256k1.getPublicKey(wallet.privKey, true);
-    const buildResult = await buildFillTx({
-      secp: secp256k1,
-      plan: marketState.fillPlan,
-      privKey: wallet.privKey,
-      pubKey,
+    uap.configureSecp(secp);
+    const built = await buildFillTx({
+      secp,
+      plan,
+      privKey,
+      pubKey: secp.getPublicKey(privKey, true),
       order,
       position,
       takerUtxos
     });
-
-    // Broadcast the transaction. This only resolves on a 2xx -- the node
-    // has accepted the transaction into its mempool -- it does not mean
-    // the transaction is confirmed.
-    const txid = await apiClient.broadcast(buildResult.rawHex);
-
-    // Optimistic UI: show the pending state immediately rather than
-    // blocking the user behind another round trip. This is safe to do
-    // *because* a block is only ~6s away -- the wait to actually confirm is
-    // short, and the badge is worded so it can never be mistaken for a
-    // confirmation (see dom.js txStatus). It is not a claim that the
-    // transfer succeeded, only that the node accepted it.
-    broadcastStatus = { txid, state: 'pending' };
-    currentScreen = 'wallet';
-    render();
-
-    // Resolve the pending state in the background. If confirmation never
-    // comes, pollForConfirmation still resolves -- to 'timeout' -- after
-    // its poll budget (~90s by default), so this can never leave the badge
-    // reading "pending" forever; the user just falls back to checking
-    // again later, same as any other wallet that lost track of a tx.
-    pollForConfirmation({ apiClient, address: wallet.address, txid }).then((result) => {
-      // A newer broadcast may have replaced broadcastStatus by the time
-      // this resolves; don't let a stale poll clobber it.
-      if (!broadcastStatus || broadcastStatus.txid !== txid) return;
-      broadcastStatus = {
-        txid,
-        state: result.status === 'confirmed' ? 'confirmed' : 'timeout'
-      };
-      if (currentScreen === 'wallet') render();
-    });
+    // Resolves only on a 2xx -- the node has accepted it into its mempool.
+    // That is not a confirmation.
+    const txid = await api.broadcast(built.rawHex);
+    return { ok: true, txid };
   } catch (e) {
-    alert(`Error filling order: ${e.message}`);
+    return { ok: false, error: e.message };
   }
+}
+
+async function confirmFill(order, position, takerUtxos, feeRate) {
+  // No plan means this screen was reached without one; go back to the book
+  // rather than trapping the user behind a modal.
+  if (!marketState.fillPlan) {
+    currentScreen = 'market';
+    render();
+    return;
+  }
+
+  const result = await publishFill({
+    api: apiClient,
+    secp: secp256k1,
+    plan: marketState.fillPlan,
+    privKey: wallet.privKey,
+    order,
+    position,
+    takerUtxos
+  });
+
+  if (!result.ok) {
+    marketState.fillError = result.error;
+    render();
+    return;
+  }
+
+  // Optimistic UI: show the pending state immediately rather than blocking
+  // the user behind another round trip. This is safe to do *because* a block
+  // is only ~6s away -- the wait to actually confirm is short, and the badge
+  // is worded so it can never be mistaken for a confirmation (see dom.js
+  // txStatus). It is not a claim that the trade settled, only that the node
+  // accepted it.
+  broadcastStatus = { txid: result.txid, state: 'pending' };
+  currentScreen = 'wallet';
+  render();
+
+  // Resolve the pending state in the background. If confirmation never
+  // comes, pollForConfirmation still resolves -- to 'timeout' -- after its
+  // poll budget (~90s by default), so this can never leave the badge reading
+  // "pending" forever; the user just falls back to checking again later,
+  // same as any other wallet that lost track of a tx.
+  pollForConfirmation({ apiClient, address: wallet.address, txid: result.txid }).then((r) => {
+    // A newer broadcast may have replaced broadcastStatus by the time this
+    // resolves; don't let a stale poll clobber it.
+    if (!broadcastStatus || broadcastStatus.txid !== result.txid) return;
+    broadcastStatus = {
+      txid: result.txid,
+      state: r.status === 'confirmed' ? 'confirmed' : 'timeout'
+    };
+    if (currentScreen === 'wallet') render();
+  });
 }
 
 // Initial render
@@ -1886,9 +1991,8 @@ function planSellFlow() {
  * anyone can take, so the builder is exported and dependency-injected
  * rather than buried in a render function no test can reach.
  *
- * `error`, if given, is a failed publish (see confirmSell) rendered inline
- * -- this used to be the one confirm/edit screen in the app that reported
- * that failure via alert() instead.
+ * `error`, if given, is a failed publish (see confirmSell) rendered inline --
+ * the convention every confirm screen in the app follows.
  */
 export function buildSellReviewCard({ plan, error = null, onConfirm = () => {}, onEdit = () => {} } = {}) {
   const s = plan.summary;
@@ -1971,8 +2075,7 @@ async function confirmSell() {
     sellState.error = null;
     currentScreen = 'market';
   } else {
-    // Inline, like every other flow's failure -- this used to be an
-    // alert(), the one place in the app that broke that convention.
+    // Inline, like every other flow's failure.
     sellState.error = result.error;
   }
   render();
