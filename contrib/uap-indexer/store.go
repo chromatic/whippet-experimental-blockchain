@@ -79,6 +79,20 @@ type stmtSet struct {
 	delHolders   *sql.Stmt
 }
 
+// ORDER BY clauses for paginated queries. Each must have a total order:
+// the final columns form a unique tiebreaker so LIMIT/OFFSET cannot skip
+// or duplicate rows when the sort columns have ties. See page.go.
+const (
+	// PositionsOrderBy orders by height (oldest first), with outpoint as tiebreak.
+	PositionsOrderBy = "height, txid, vout"
+	// UtxosOrderBy orders by value (largest first), with outpoint as tiebreak.
+	UtxosOrderBy = "value DESC, txid, vout"
+	// TokensOrderBy orders by origin, which is unique (the token's mint outpoint).
+	TokensOrderBy = "l.origin"
+	// OrdersOrderBy orders by key (the outpoint), which is unique and the primary key.
+	OrdersOrderBy = "o.key"
+)
+
 // Heights and their undo logs live in one table because they are always
 // written, pruned and rolled back together: every ApplyBlock writes both,
 // UndoBlock drops both, and the reorg window discards both. Splitting them
@@ -111,6 +125,7 @@ CREATE TABLE IF NOT EXISTS positions (
     spent_txid   TEXT    NOT NULL DEFAULT '',
     spent_height INTEGER NOT NULL DEFAULT 0,
     origin       TEXT    NOT NULL DEFAULT '',
+    script       TEXT    NOT NULL DEFAULT '',
     metadata     BLOB
 );
 CREATE INDEX IF NOT EXISTS positions_by_pubkey ON positions(pubkey);
@@ -159,7 +174,7 @@ CREATE TABLE IF NOT EXISTS lineage_holders (
 // against the old shape would misread or fail on -- a column added,
 // renamed, retyped, or a table repurposed. Purely additive changes that
 // existing queries are indifferent to (a new index, say) don't need a bump.
-const CurrentSchemaVersion = 1
+const CurrentSchemaVersion = 2
 
 // schemaVersionKey is the meta row that records CurrentSchemaVersion at the
 // time a database was created or last confirmed compatible.
@@ -280,7 +295,7 @@ func (s *Store) prepare() error {
 		query string
 	}{
 		{&s.stmts.selPosition, `SELECT txid, vout, pubkey, multiplier, value, is_mint,
-			height, spent, spent_txid, spent_height, origin, metadata
+			height, spent, spent_txid, spent_height, origin, script, metadata
 			FROM positions WHERE key = ?`},
 		{&s.stmts.selUTXO, `SELECT txid, vout, hash160, value, height FROM utxos WHERE key = ?`},
 		{&s.stmts.selLineage, `SELECT multiplier, unspent_value, holder_count,
@@ -292,12 +307,12 @@ func (s *Store) prepare() error {
 		{&s.stmts.selHash, `SELECT hash FROM heights WHERE height = ?`},
 
 		{&s.stmts.putPosition, `INSERT INTO positions
-			(key, txid, vout, pubkey, multiplier, value, is_mint, height, spent, spent_txid, spent_height, origin, metadata)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+			(key, txid, vout, pubkey, multiplier, value, is_mint, height, spent, spent_txid, spent_height, origin, script, metadata)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(key) DO UPDATE SET
 			  spent=excluded.spent, spent_txid=excluded.spent_txid,
 			  spent_height=excluded.spent_height, origin=excluded.origin,
-			  metadata=excluded.metadata`},
+			  script=excluded.script, metadata=excluded.metadata`},
 		{&s.stmts.delPosition, `DELETE FROM positions WHERE key = ?`},
 		{&s.stmts.putUTXO, `INSERT INTO utxos (key, txid, vout, hash160, value, height)
 			VALUES (?,?,?,?,?,?) ON CONFLICT(key) DO NOTHING`},
@@ -405,7 +420,7 @@ func scanPosition(row scanner) (*Position, error) {
 	)
 	err := row.Scan(&pos.TxID, &pos.Vout, &pos.PubKey, &pos.Multiplier, &pos.Value,
 		&pos.IsMint, &pos.Height, &pos.Spent, &pos.SpentTxID, &pos.SpentHeight,
-		&pos.Origin, &metadata)
+		&pos.Origin, &pos.Script, &metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +529,7 @@ func (t *storeTx) putPosition(pos *Position) error {
 	return t.exec(t.s.stmts.putPosition,
 		positionKey(pos.TxID, pos.Vout), pos.TxID, pos.Vout, pos.PubKey,
 		pos.Multiplier, pos.Value, pos.IsMint, pos.Height, pos.Spent,
-		pos.SpentTxID, pos.SpentHeight, pos.Origin, metadata)
+		pos.SpentTxID, pos.SpentHeight, pos.Origin, pos.Script, metadata)
 }
 
 func (t *storeTx) delPosition(key string) error {
@@ -765,12 +780,12 @@ func (s *Store) PositionsForPubKey(pubkey string, unspentOnly bool) ([]Position,
 // result reports whether further rows exist beyond it.
 func (s *Store) PositionsForPubKeyPage(pubkey string, unspentOnly bool, page Page) ([]Position, bool, error) {
 	q := `SELECT txid, vout, pubkey, multiplier, value, is_mint, height, spent,
-		spent_txid, spent_height, origin, metadata FROM positions WHERE pubkey = ?`
+		spent_txid, spent_height, origin, script, metadata FROM positions WHERE pubkey = ?`
 	if unspentOnly {
 		q += ` AND spent = 0`
 	}
 	// Oldest first, outpoint as the tiebreak so the order is total.
-	q += ` ORDER BY height, txid, vout` + page.sqlSuffix()
+	q += ` ORDER BY ` + PositionsOrderBy + page.sqlSuffix()
 	rows, err := s.db.Query(q, pubkey)
 	if err != nil {
 		return nil, false, err
@@ -814,7 +829,7 @@ func (s *Store) UTXOsForHash160(hash160 string) ([]UTXO, error) {
 func (s *Store) UTXOsForHash160Page(hash160 string, page Page) ([]UTXO, bool, error) {
 	rows, err := s.db.Query(
 		`SELECT txid, vout, hash160, value, height FROM utxos WHERE hash160 = ?`+
-			` ORDER BY value DESC, txid, vout`+page.sqlSuffix(), hash160)
+			` ORDER BY `+UtxosOrderBy+page.sqlSuffix(), hash160)
 	if err != nil {
 		return nil, false, err
 	}
@@ -885,7 +900,7 @@ func (s *Store) AllTokens() ([]TokenInfo, error) {
 // AllTokensPage is AllTokens over a window, ordered by origin -- the
 // lineage's own outpoint, which is unique, so the order is total.
 func (s *Store) AllTokensPage(page Page) ([]TokenInfo, bool, error) {
-	rows, err := s.db.Query(tokenQuery + ` ORDER BY l.origin` + page.sqlSuffix())
+	rows, err := s.db.Query(tokenQuery + ` ORDER BY ` + TokensOrderBy + page.sqlSuffix())
 	if err != nil {
 		return nil, false, err
 	}
@@ -955,7 +970,7 @@ func (s *Store) ListOrdersPage(multiplier *int64, page Page) ([]Order, bool, err
 	// is a total order. There is no created_at COLUMN -- created_at lives
 	// inside the JSON blob in o.data -- so ordering by it would be a
 	// runtime SQL error on every request.
-	q += ` ORDER BY o.key` + page.sqlSuffix()
+	q += ` ORDER BY ` + OrdersOrderBy + page.sqlSuffix()
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, false, err

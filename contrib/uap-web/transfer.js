@@ -802,7 +802,11 @@ export async function buildTransferTx({ secp, plan, privKey }) {
   }
   if (!privKey) throw new Error('buildTransferTx requires a private key');
 
-  const positionScript = positionScriptOf(plan);
+  const positionScript = positionScriptOf({
+    position: plan.position,
+    ownPubKey: plan.ownPubKey,
+    multiplier: plan.multiplier
+  });
 
   const vout = plan.outputs.map((out) => {
     if (out.kind === OUTPUT_WHIP_CHANGE) {
@@ -881,12 +885,16 @@ export async function buildTransferTx({ secp, plan, privKey }) {
  * blob of their choosing, and get the user's key to sign a preimage over it
  * -- exactly the substitution this function exists to stop.
  * @private
+ * Exported because signing a transfer is not the only place a covenant's own
+ * script has to be reconstructed: buildSellOrder signs over the very same
+ * scriptCode, and reimplementing this there is how sell.js came to sign every
+ * position as though it were a transfer -- which silently produced an
+ * unfillable order for any freshly minted one.
  */
-function positionScriptOf(plan) {
-  const position = plan.position;
+export function positionScriptOf({ position, ownPubKey, multiplier }) {
   if (position.script_hex) {
     const check = validatePositionScript(
-      position.script_hex, plan.ownPubKey, plan.multiplier, position.is_mint === true);
+      position.script_hex, ownPubKey, multiplier, position.is_mint === true);
     if (!check.ok) {
       throw new Error(`refusing to sign over this position's script: ${check.message}`);
     }
@@ -895,5 +903,5 @@ function positionScriptOf(plan) {
   if (position.is_mint === true) {
     throw new Error('cannot reconstruct a fresh mint position\'s script without its salt');
   }
-  return uap.buildTransferScript(plan.ownPubKey, plan.multiplier);
+  return uap.buildTransferScript(ownPubKey, multiplier);
 }

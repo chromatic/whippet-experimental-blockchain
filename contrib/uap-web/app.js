@@ -2050,7 +2050,10 @@ export async function publishSellOrder({ api, secp, plan, privKey, address }) {
     const s = plan.summary;
     const order = buildSellOrder({
       secp,
-      position: { txid: s.txid, vout: s.vout, multiplier: s.multiplier },
+      // The whole position, not a summary of it: signing over the covenant
+      // needs script_hex and is_mint, and rebuilding a stripped copy here is
+      // what once made every freshly-minted position unsellable.
+      position: plan.position,
       privKey,
       pubKey: secp.getPublicKey(privKey, true),
       priceSats: s.priceSats,

@@ -185,6 +185,7 @@ const app = await import('./app.js');
 const addr = await import('../uap-js/addr.js');
 const mint = await import('./mint.js');
 const transfer = await import('./transfer.js');
+const sell = await import('./sell.js');
 
 const COIN = uap.COIN;
 
@@ -854,16 +855,21 @@ test('Review and Back are wired to their handlers', () => {
 const SELL_PRIVKEY = new Uint8Array(32).fill(9);
 const SELL_PUBKEY = secp256k1.getPublicKey(SELL_PRIVKEY, true);
 const SELL_ADDRESS = addr.pubkeyToAddress(SELL_PUBKEY, addr.VERSIONS.mainnet.PUBKEY_ADDRESS);
-const REAL_SELL_PLAN = {
-  summary: {
+// Built by the real planner. publishSellOrder signs over the position's own
+// covenant script, so a plan carrying only a `summary` is not a plan it can
+// act on -- and a hand-written one would not have caught that.
+const REAL_SELL_PLAN = sell.planSell({
+  position: {
     txid: 'aa'.repeat(32),
     vout: 0,
     multiplier: 100,
-    tokenValue: 100 * COIN,
-    priceSats: 250000000,
-    payTo: SELL_ADDRESS
-  }
-};
+    value: 100 * COIN,
+    pubkey: uap.bytesToHex(SELL_PUBKEY),
+    is_mint: false
+  },
+  priceSats: 250000000,
+  ownAddress: SELL_ADDRESS
+});
 
 const SELL_PLAN = {
   summary: {

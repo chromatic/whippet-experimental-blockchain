@@ -21,6 +21,19 @@ type Position struct {
 	SpentHeight int64  `json:"spent_height,omitempty"`
 	Origin      string `json:"origin,omitempty"` // "txid:vout" of the originating mint, empty for orphans
 
+	// Script is this output's own scriptPubKey, hex-encoded.
+	//
+	// A wallet spending this position must sign with this exact script as
+	// the scriptCode. For a transfer covenant it could rebuild it from
+	// PubKey and Multiplier, but a MINT is `<pubkey> <multiplier> <salt>
+	// OP_MINT`, and the salt is arbitrary bytes recorded nowhere else.
+	// Without this field a freshly minted position can neither be
+	// transferred nor sold -- which is where the lifecycle of every token
+	// starts -- unless the wallet kept the salt from the moment it minted
+	// and never lost it. Publishing the script costs one column and removes
+	// that requirement entirely.
+	Script string `json:"script_hex,omitempty"`
+
 	// Metadata is the token's ticker/name/hash, declared by an OP_RETURN in
 	// the mint's own transaction. Set only on mints: it belongs to the
 	// lineage, and a transfer must not be able to rewrite it (see
@@ -398,6 +411,11 @@ func (idx *Index) applyBlock(t *storeTx, block *RPCBlock) (storeMeta, error) {
 					Value:      int64(vout.Value),
 					IsMint:     parsed.IsMint,
 					Height:     block.Height,
+					// Kept verbatim, not reassembled from the parsed
+					// fields: this is the scriptCode a spender has to sign
+					// over, so the only safe version of it is the one the
+					// chain actually has.
+					Script: vout.ScriptPubKey.Hex,
 				}
 				if parsed.IsMint {
 					// A mint's origin is its own outpoint.

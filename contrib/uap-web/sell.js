@@ -14,6 +14,7 @@
 // point, but it is not the same as choosing a counterparty.
 import * as uap from '../uap-js/uap.js';
 import * as addr from '../uap-js/addr.js';
+import { positionScriptOf } from './transfer.js';
 
 /**
  * Check a proposed sale and describe it, without signing anything.
@@ -67,6 +68,12 @@ export function planSell({ position, priceSats, ownAddress }) {
   return {
     ok: errors.length === 0,
     errors,
+    // The position itself, carried through rather than flattened into
+    // `summary`. buildSellOrder has to sign over the covenant's real script,
+    // and summary's txid/vout/multiplier are not enough to rebuild it: a
+    // freshly minted position also needs script_hex, because its salt is not
+    // derivable from anything else here.
+    position,
     summary: {
       txid: position && position.txid,
       vout: position && position.vout,
@@ -102,10 +109,26 @@ export function buildSellOrder({ secp, position, privKey, pubKey, priceSats, own
     throw new Error(plan.errors.join(' '));
   }
 
-  // The scriptCode signed against is the position's own scriptPubKey, so
-  // it must be rebuilt from the maker's pubkey and the position's
-  // multiplier -- not from anything the server said.
-  const scriptCode = uap.buildTransferScript(pubKey, position.multiplier);
+  // The scriptCode signed against is the position's own scriptPubKey.
+  //
+  // This used to be built unconditionally as a TRANSFER covenant, which is
+  // wrong for a freshly minted position: a mint is `<pubkey> <mult> <salt>
+  // OP_MINT`, different bytes entirely, and the salt is not derivable. The
+  // signature therefore committed to a script the output did not have, and
+  // the node rejected every attempt to fill the order with NULLFAIL
+  // ("Signature must be zero for failed CHECK(MULTI)SIG operation"). The
+  // order published and listed perfectly; only the buyer ever saw it fail.
+  //
+  // positionScriptOf is transfer.js's, deliberately shared rather than
+  // reimplemented: it re-verifies that the script really is this maker's
+  // covenant with this multiplier and this mint/transfer form before signing
+  // over it, which is what stops a mutated position object from getting the
+  // maker's key to sign a preimage over an attacker's blob.
+  const scriptCode = positionScriptOf({
+    position,
+    ownPubKey: pubKey,
+    multiplier: position.multiplier
+  });
 
   const order = uap.signMakerOrder(secp, {
     input: { txid: position.txid, vout: position.vout, scriptCode },

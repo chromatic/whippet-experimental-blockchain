@@ -171,4 +171,68 @@ test('two sales of the same position at different prices differ', () => {
   assert(a.script_sig !== b.script_sig, 'price is committed to by the signature');
 });
 
+// =============================================================================
+// WHAT THE SIGNATURE COMMITS TO
+//
+// A maker's signature is over the position's own scriptPubKey. Getting that
+// script wrong does not fail here -- signing succeeds, and the order
+// publishes and lists like any other. It fails much later, in the BUYER's
+// wallet, when the node rejects the fill with NULLFAIL. So it has to be
+// pinned here, where it is cheap to catch.
+// =============================================================================
+
+// A freshly minted position: `<pubkey> <multiplier> <salt> OP_MINT`, whose
+// salt exists only in the on-chain script. The indexer publishes the script
+// as script_hex for exactly this reason.
+const MINT_POSITION = {
+  ...POSITION,
+  is_mint: true,
+  script_hex: uap.bytesToHex(
+    uap.buildMintScript(PUB, POSITION.multiplier, new Uint8Array(16).fill(0xab))
+  )
+};
+
+test('a mint position is signed over its mint script, not a transfer script', () => {
+  const mintOrder = buildSellOrder({
+    secp, position: MINT_POSITION, privKey: PRIV, pubKey: PUB,
+    priceSats: 250000000, ownAddress: ADDRESS,
+  });
+  const transferOrder = buildSellOrder({
+    secp, position: POSITION, privKey: PRIV, pubKey: PUB,
+    priceSats: 250000000, ownAddress: ADDRESS,
+  });
+  // Same outpoint, same price, same key. If the signatures match, the mint's
+  // script was ignored and a transfer script signed in its place -- a
+  // signature the network will never accept for this output.
+  assert(mintOrder.script_sig !== transferOrder.script_sig,
+    'a mint covenant must not be signed as though it were a transfer covenant');
+});
+
+test('a mint position with no script_hex is refused, not guessed at', () => {
+  // Without the salt the script cannot be rebuilt, and guessing produces an
+  // order that looks perfect and can never be filled.
+  assertThrows(
+    () => buildSellOrder({
+      secp, position: { ...POSITION, is_mint: true }, privKey: PRIV, pubKey: PUB,
+      priceSats: 250000000, ownAddress: ADDRESS,
+    }),
+    'salt'
+  );
+});
+
+test('a script_hex that is not this maker\'s covenant is refused', () => {
+  const someoneElse = secp.getPublicKey(new Uint8Array(32).fill(9), true);
+  assertThrows(
+    () => buildSellOrder({
+      secp,
+      position: {
+        ...POSITION,
+        script_hex: uap.bytesToHex(uap.buildTransferScript(someoneElse, POSITION.multiplier))
+      },
+      privKey: PRIV, pubKey: PUB, priceSats: 250000000, ownAddress: ADDRESS,
+    }),
+    'refusing to sign'
+  );
+});
+
 run();

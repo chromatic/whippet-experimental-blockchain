@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -1784,5 +1785,57 @@ func TestUndoDoesNotResurrectAUTXOTheSameBlockCreated(t *testing.T) {
 	}
 	if got := mustUTXOsForHash160(t, idx, hash160Hex(0x11)); len(got) != 1 {
 		t.Errorf("hash160 index lists %d UTXO(s) for the restored output, want 1", len(got))
+	}
+}
+
+// A position carries the scriptPubKey it was created with.
+//
+// This is not bookkeeping. A wallet spending a position must sign with that
+// exact script as the scriptCode, and for a MINT the script contains a salt
+// that exists nowhere else -- not in the pubkey, not in the multiplier, not
+// in the metadata. Without this field a freshly minted position can be
+// neither transferred nor sold, which strands every token at the moment it
+// is created. A browser end-to-end run is what surfaced that; this pins it
+// somewhere cheaper to run.
+func TestPositionCarriesItsScript(t *testing.T) {
+	idx := NewIndex()
+	pubkey := fakePubKey(0x02)
+	salt := []byte("0123456789abcdef")
+
+	mintVout := uapMintVout(0, pubkey, 100, salt, 1.0)
+	transferVout := uapTransferVout(1, pubkey, 100, 1.0)
+	idx.ApplyBlock(makeBlock("hash0", 0, []RPCTx{{
+		TxID: "tx0",
+		Vin:  []RPCVin{coinbaseVin()},
+		Vout: []RPCVout{mintVout, transferVout},
+	}}))
+	if err := idx.StoreErr(); err != nil {
+		t.Fatalf("store error: %v", err)
+	}
+
+	mint, ok, err := idx.store.Position("tx0:0")
+	if err != nil || !ok {
+		t.Fatalf("mint position missing: ok=%v err=%v", ok, err)
+	}
+	if mint.Script != mintVout.ScriptPubKey.Hex {
+		t.Errorf("mint script not preserved:\n got %q\nwant %q", mint.Script, mintVout.ScriptPubKey.Hex)
+	}
+	// The salt is the part that cannot be reconstructed, so say so directly:
+	// a script that has lost it would still contain the pubkey and the
+	// multiplier and could pass a laxer check.
+	if !strings.Contains(mint.Script, hex.EncodeToString(salt)) {
+		t.Errorf("the mint script does not carry its salt: %q", mint.Script)
+	}
+
+	transfer, ok, err := idx.store.Position("tx0:1")
+	if err != nil || !ok {
+		t.Fatalf("transfer position missing: ok=%v err=%v", ok, err)
+	}
+	if transfer.Script != transferVout.ScriptPubKey.Hex {
+		t.Errorf("transfer script not preserved:\n got %q\nwant %q",
+			transfer.Script, transferVout.ScriptPubKey.Hex)
+	}
+	if mint.Script == transfer.Script {
+		t.Error("a mint and a transfer covenant must not have the same script")
 	}
 }

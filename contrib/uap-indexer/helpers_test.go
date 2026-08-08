@@ -177,8 +177,10 @@ func undoLogCount(t testing.TB, idx *Index) int {
 
 func allPositions(t testing.TB, idx *Index) []Position {
 	t.Helper()
+	// The column list has to match scanPosition's, which is what reads these
+	// rows -- a mismatch is a Scan arity error, not a compile error.
 	rows, err := idx.store.db.Query(`SELECT txid, vout, pubkey, multiplier, value,
-		is_mint, height, spent, spent_txid, spent_height, origin, metadata
+		is_mint, height, spent, spent_txid, spent_height, origin, script, metadata
 		FROM positions ORDER BY key`)
 	if err != nil {
 		t.Fatalf("scanning positions: %v", err)
