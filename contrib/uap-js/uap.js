@@ -170,20 +170,31 @@ function buildTransferScript(pubkey, multiplier) {
   return concatBytes(pushData(pubkey), pushMultiplier(multiplier), Uint8Array.of(OP_MINT_TRANSFER));
 }
 
-// A token's ticker and name live in an OP_RETURN on its mint transaction:
+// A token's ticker lives in an OP_RETURN on its mint transaction:
 //
-//   OP_RETURN "WUAP" <version> <ticker> <name> <metadata_hash>
+//   OP_RETURN "WUAP" <version> <ticker> <metadata_hash>
 //
-// Read back by uap-indexer/metadata.go, which is the authority on the format
-// and rejects anything that does not match it exactly -- including a sixth
-// push, so that two scripts cannot parse to the same metadata.
+// Exactly four pushes, in that order. Read back by uap-indexer/metadata.go,
+// which is the authority on the format and rejects anything that does not
+// match it exactly -- including a fifth push, so that two scripts cannot
+// parse to the same metadata.
+//
+// There used to be a fifth field here, `name`, a free-text UTF-8 string.
+// It is gone: a free-text field is exactly the kind of thing that grows
+// unboundedly and invites disputes about what a node "should" have relayed,
+// and nothing on chain depended on it being human-readable at parse time --
+// richer, mutable metadata belongs off-chain, committed to by the hash
+// field below. `ticker` is now restricted to [A-Z0-9] (see normalizeTicker)
+// for the same reason: a wire format with no charset rule eventually has to
+// answer what a lowercase ticker or an emoji ticker means, and the answer
+// that scales is "it can't happen".
 //
 // An OP_RETURN output is provably unspendable, so it never enters the UTXO
 // set. This is the reason the metadata goes here rather than into the
 // covenant: the covenant is a live UTXO that every node holds for as long as
-// the position exists, and a name in it would be resident forever.
+// the position exists, and metadata in it would be resident forever.
 const METADATA_MAGIC = Uint8Array.of(0x57, 0x55, 0x41, 0x50); // "WUAP"
-const METADATA_VERSION = 0x01;
+const METADATA_VERSION = 0x02;
 const OP_RETURN = 0x6a;
 
 // The relay ceiling on a whole data-carrier scriptPubKey: MAX_OP_RETURN_RELAY
@@ -193,62 +204,91 @@ const OP_RETURN = 0x6a;
 const MAX_METADATA_SCRIPT_BYTES = 83;
 
 // What is left for the caller's own bytes once the fixed parts are paid for:
-// OP_RETURN (1) + push"WUAP" (5) + push(version) (2) + the three push opcodes
-// for ticker, name and hash (3) = 11.
-const METADATA_FIXED_OVERHEAD = 11;
-const MAX_METADATA_PAYLOAD_BYTES = MAX_METADATA_SCRIPT_BYTES - METADATA_FIXED_OVERHEAD; // 72
+// OP_RETURN (1) + push"WUAP" (5) + push(version) (2) + the two push opcodes
+// for ticker and hash (2) = 10.
+const METADATA_FIXED_OVERHEAD = 10;
+const MAX_METADATA_PAYLOAD_BYTES = MAX_METADATA_SCRIPT_BYTES - METADATA_FIXED_OVERHEAD; // 73
+
+// Ticker length bound, enforced by normalizeTicker. Chosen independently of
+// the OP_RETURN budget above (8 + 32 = 40 is nowhere near the 73-byte
+// payload ceiling) -- it exists so a ticker reads like a ticker, not because
+// the wire format needs it.
+const MAX_TICKER_BYTES = 8;
 
 /**
- * Build the metadata OP_RETURN for a mint.
+ * Uppercase-fold and validate a ticker string, matching the charset the wire
+ * format allows: 1..8 bytes, every byte in [A-Z0-9]. This is the single
+ * implementation of that rule -- callers (buildMetadataScript, the mint UI)
+ * consume it rather than re-checking the charset themselves, so the rule
+ * cannot drift between what is validated and what is signed.
  *
- * `ticker` and `name` are strings (UTF-8, measured in BYTES not characters --
- * a 16-character ticker of astral-plane emoji is 64 bytes). `metadataHash` is
- * an optional 32-byte Uint8Array committing to richer off-chain metadata; the
- * commitment is on-chain so the content it names cannot be swapped later.
+ * Folding happens here, in the wallet, before anything is built or shown:
+ * folding on read (e.g. in an indexer) would let two different wire records
+ * ("doge" and "DOGE") mean the same displayed ticker, which is the
+ * collision this format exists to prevent.
  *
- * Throws rather than truncating if the record cannot be relayed. Truncation
- * would silently give someone a different token name than they typed, and a
- * name is the one field a user checks.
+ * Throws an Error naming the specific problem (the offending character, or
+ * the actual length) rather than a bare "invalid" -- this is the message a
+ * user sees on a form field.
  */
-function buildMetadataScript({ ticker, name = '', metadataHash = null }) {
-  const enc = new TextEncoder();
-  const tickerBytes = enc.encode(ticker || '');
-  const nameBytes = enc.encode(name || '');
+function normalizeTicker(ticker) {
+  const upper = (ticker || '').toUpperCase();
+  if (upper.length < 1 || upper.length > MAX_TICKER_BYTES) {
+    throw new Error(`ticker must be 1..${MAX_TICKER_BYTES} characters, got ${upper.length}`);
+  }
+  for (let i = 0; i < upper.length; i++) {
+    const ch = upper[i];
+    const code = upper.charCodeAt(i);
+    const isDigit = code >= 0x30 && code <= 0x39;
+    const isUpper = code >= 0x41 && code <= 0x5a;
+    if (!isDigit && !isUpper) {
+      throw new Error(`ticker contains invalid character ${JSON.stringify(ch)} at position ${i}; only A-Z and 0-9 are allowed`);
+    }
+  }
+  return upper;
+}
+
+/**
+ * Build the metadata OP_RETURN for a mint:
+ *   OP_RETURN "WUAP" <version> <ticker> <metadata_hash>
+ *
+ * `ticker` is normalized here (uppercase-folded and charset-checked, via
+ * normalizeTicker) rather than requiring an already-normalized string, so
+ * this function is the one place that can build a wire-valid record no
+ * matter what the caller passes in. `metadataHash` is an optional 32-byte
+ * Uint8Array committing to richer off-chain metadata; the commitment is
+ * on-chain so the content it names cannot be swapped later.
+ *
+ * Throws on an invalid ticker or hash length. The final length check below
+ * is a cheap invariant, not a real limit at today's field sizes (8 + 32 is
+ * nowhere near the 73-byte payload budget) -- it exists to catch a future
+ * field addition that overflows the relay ceiling, the way the ticker+name
+ * combination used to.
+ */
+function buildMetadataScript({ ticker, metadataHash = null }) {
+  const tickerBytes = new TextEncoder().encode(normalizeTicker(ticker));
   const hashBytes = metadataHash || new Uint8Array(0);
 
-  if (tickerBytes.length < 1 || tickerBytes.length > 16) {
-    throw new Error(`ticker must be 1..16 bytes of UTF-8, got ${tickerBytes.length}`);
-  }
-  if (nameBytes.length > 64) {
-    throw new Error(`name must be at most 64 bytes of UTF-8, got ${nameBytes.length}`);
-  }
   if (hashBytes.length !== 0 && hashBytes.length !== 32) {
     throw new Error(`metadata hash must be empty or exactly 32 bytes, got ${hashBytes.length}`);
   }
 
-  // The per-field bounds above are each satisfiable on their own but NOT
-  // together: 16 + 64 + 32 is 112 bytes against a budget of 72. So the
-  // combined total has to be checked separately, and the message has to give
-  // the actual remaining budget -- "too long" alone leaves the user guessing
-  // which of three fields to cut and by how much.
-  const total = tickerBytes.length + nameBytes.length + hashBytes.length;
-  if (total > MAX_METADATA_PAYLOAD_BYTES) {
-    throw new Error(
-      `token metadata is ${total} bytes; the most a node will relay is ` +
-      `${MAX_METADATA_PAYLOAD_BYTES} (ticker ${tickerBytes.length} + name ` +
-      `${nameBytes.length} + hash ${hashBytes.length}). Shorten the name by ` +
-      `at least ${total - MAX_METADATA_PAYLOAD_BYTES} bytes.`
-    );
-  }
-
-  return concatBytes(
+  const script = concatBytes(
     Uint8Array.of(OP_RETURN),
     pushData(METADATA_MAGIC),
     pushData(Uint8Array.of(METADATA_VERSION)),
     pushData(tickerBytes),
-    pushData(nameBytes),
     pushData(hashBytes)
   );
+
+  if (script.length > MAX_METADATA_SCRIPT_BYTES) {
+    throw new Error(
+      `internal error: built a ${script.length}-byte metadata script, over the ` +
+      `${MAX_METADATA_SCRIPT_BYTES}-byte relay ceiling`
+    );
+  }
+
+  return script;
 }
 
 /** Generate a cryptographically random 16+ byte salt for a new mint. */
@@ -859,8 +899,10 @@ export {
   buildMintScript,
   buildTransferScript,
   buildMetadataScript,
+  normalizeTicker,
   MAX_METADATA_PAYLOAD_BYTES,
   MAX_METADATA_SCRIPT_BYTES,
+  MAX_TICKER_BYTES,
   serializeTx,
   txToHex,
   signatureHash,

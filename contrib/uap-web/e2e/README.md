@@ -77,7 +77,7 @@ machine.
 
 ## Keeping it honest
 
-A green suite is worth nothing until you have watched it go red. These four
+A green suite is worth nothing until you have watched it go red. These
 mutations must each fail it, and each is worth re-running after a substantial
 change:
 
@@ -87,3 +87,17 @@ change:
 | `fillOrder` pays the maker one satoshi less | the node rejects the fill; the taker never reaches the wallet screen |
 | `planTransfer`'s address/pubkey cross-check always passes | negative A fails on both assertions |
 | `confirmFill` reports a failure with `alert()` again | the run stalls at the fill-failure wait — which is the freeze the modal causes, made visible |
+| `uap.normalizeTicker` stops folding case | phase 2 never reaches the review screen: the form rejects the typed `e2e` with `invalid character "e" at position 0` |
+| the JS builder emits version `0x01`, or a fifth push | the byte-exact record assertion fails, and the token disappears from `/api/tokens` |
+
+Phase 2 types its ticker in lowercase on purpose. The fold is the wallet's job
+and the fold alone — the Go parser rejects a lowercase ticker outright rather
+than folding on read, so that one displayed ticker has exactly one on-chain
+byte string. Typing `e2e` and demanding `E2E` back out of the node is the
+cheapest place to notice if that ever stops being true.
+
+Those last two are also the only mutations here that no unit suite can catch.
+The metadata format has two implementations in different languages, and each
+one's tests are written against its own idea of the format — so they can drift
+into disagreement and both stay green. Phase 2 is the one place the wallet's
+actual bytes are handed to the real parser.

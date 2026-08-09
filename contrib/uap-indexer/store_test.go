@@ -489,7 +489,7 @@ func TestStoreSurvivesMetadataAndOrphans(t *testing.T) {
 		TxID: "named", Vin: []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{
 			uapMintVout(0, fakePubKey(0x02), 1000, salt, 1.0),
-			opReturnVout(1, wuapPayload("WHIP", "Whippet Token", make([]byte, 32))),
+			opReturnVout(1, wuapPayload("WHIP", make([]byte, 32))),
 		},
 	}, {
 		TxID: "plain", Vin: []RPCVin{coinbaseVin()},
@@ -511,7 +511,7 @@ func TestStoreSurvivesMetadataAndOrphans(t *testing.T) {
 	if named.Metadata == nil {
 		t.Fatal("metadata lost across reload")
 	}
-	if named.Metadata.Ticker != "WHIP" || named.Metadata.Name != "Whippet Token" {
+	if named.Metadata.Ticker != "WHIP" {
 		t.Errorf("metadata changed across reload: %+v", *named.Metadata)
 	}
 	plain, ok := mustPosition(t, loaded, "plain", 0)
@@ -568,15 +568,15 @@ func TestOnlyAMintCanNameALineage(t *testing.T) {
 	seedPosition(t, idx, &Position{
 		TxID: "impostor", Vout: 0, PubKey: "02aa", Multiplier: 1000,
 		Value: 100, IsMint: false, Height: 1, Origin: origin,
-		Metadata: &TokenMetadata{Ticker: "FAKE", Name: "Not Your Token"},
+		Metadata: &TokenMetadata{Ticker: "FAKE"},
 	})
 
 	tok, ok := mustToken(t, idx, origin)
 	if !ok {
 		t.Fatal("the seeded position should form a lineage")
 	}
-	if tok.Ticker != "" || tok.Name != "" {
-		t.Errorf("a non-mint row named the lineage: ticker=%q name=%q", tok.Ticker, tok.Name)
+	if tok.Ticker != "" {
+		t.Errorf("a non-mint row named the lineage: ticker=%q", tok.Ticker)
 	}
 }
 

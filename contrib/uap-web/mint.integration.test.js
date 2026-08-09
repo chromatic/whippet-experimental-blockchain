@@ -47,7 +47,6 @@ async function main() {
     const amountSats = 1000 * uap.COIN; // exactly the OP_MINT entry fee
     const planned = planMint({
       ticker: 'E2E',
-      name: 'End To End',
       multiplier: 100,
       amountSats,
       utxos: [utxo],

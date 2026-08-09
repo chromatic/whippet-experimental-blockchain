@@ -14,8 +14,8 @@ const DEFAULT_DUST_LIMIT = uap.DEFAULT_DUST_LIMIT;
  * Reports all validation failures at once, not just the first.
  *
  * @param {Object} input
- * @param {string} input.ticker - 1..16 bytes UTF-8, no control chars, no leading/trailing whitespace
- * @param {string} input.name - 0..64 bytes UTF-8, no control chars
+ * @param {string} input.ticker - 1..8 characters, folded to uppercase and
+ *   restricted to A-Z/0-9 by uap.normalizeTicker
  * @param {number} input.multiplier - integer in [0, 2147483647]
  * @param {number} input.amountSats - >= 1000 * COIN
  * @param {Array} input.utxos - array of {txid, vout, value, height}
@@ -25,7 +25,6 @@ const DEFAULT_DUST_LIMIT = uap.DEFAULT_DUST_LIMIT;
  */
 export function planMint({
   ticker,
-  name,
   multiplier,
   amountSats,
   utxos,
@@ -35,50 +34,15 @@ export function planMint({
   const errors = [];
 
   // ========== TICKER VALIDATION ==========
-  if (!ticker || ticker.length === 0) {
-    errors.push({
-      field: 'ticker',
-      message: 'Ticker is required and must be 1-16 bytes UTF-8'
-    });
-  } else {
-    const tickerBytes = new TextEncoder().encode(ticker);
-    if (tickerBytes.length > 16) {
-      errors.push({
-        field: 'ticker',
-        message: 'Ticker must be at most 16 bytes UTF-8'
-      });
-    }
-    // Check for control characters
-    if (hasControlCharacters(ticker)) {
-      errors.push({
-        field: 'ticker',
-        message: 'Ticker cannot contain control characters'
-      });
-    }
-    // Check for leading/trailing whitespace
-    if (ticker !== ticker.trim()) {
-      errors.push({
-        field: 'ticker',
-        message: 'Ticker cannot have leading or trailing whitespace'
-      });
-    }
-  }
-
-  // ========== NAME VALIDATION ==========
-  if (name !== undefined && name !== null) {
-    const nameBytes = new TextEncoder().encode(name);
-    if (nameBytes.length > 64) {
-      errors.push({
-        field: 'name',
-        message: 'Name must be at most 64 bytes UTF-8'
-      });
-    }
-    if (hasControlCharacters(name)) {
-      errors.push({
-        field: 'name',
-        message: 'Name cannot contain control characters'
-      });
-    }
+  // uap.normalizeTicker is the single implementation of the charset rule
+  // (uppercase-fold, then 1..8 chars of A-Z/0-9); it is also what
+  // buildMetadataScript calls, so a ticker that passes here is guaranteed to
+  // build.
+  let normalizedTicker = null;
+  try {
+    normalizedTicker = uap.normalizeTicker(ticker);
+  } catch (e) {
+    errors.push({ field: 'ticker', message: e.message });
   }
 
   // ========== MULTIPLIER VALIDATION ==========
@@ -154,20 +118,6 @@ export function planMint({
     });
   }
 
-  // The ticker and name have to fit in a relayable OP_RETURN alongside the
-  // magic and version bytes. Each field's own bound is satisfiable, but the
-  // two are not satisfiable together (16 + 64 bytes against a 72-byte
-  // budget), so the combined total is checked here -- before anything is
-  // signed, and by calling the same builder that will produce the script,
-  // rather than by a copy of the size rule that could drift from it.
-  if (errors.length === 0) {
-    try {
-      uap.buildMetadataScript({ ticker, name });
-    } catch (e) {
-      errors.push({ field: 'name', message: e.message });
-    }
-  }
-
   // If there are validation errors, return them all
   if (errors.length > 0) {
     return { ok: false, errors };
@@ -187,9 +137,10 @@ export function planMint({
   const change = totalUtxoValue - amountSats - fee;
 
   // Build the mint script (we'll need pubKey from buildMintTx, but store for reference)
+  // The plan carries the NORMALIZED (uppercased) ticker, so that what gets
+  // reviewed on screen is exactly what gets minted.
   const plan = {
-    ticker,
-    name,
+    ticker: normalizedTicker,
     multiplier,
     amountSats,
     fee,
@@ -224,15 +175,12 @@ export async function buildMintTx({
 }) {
   const mintScript = uap.buildMintScript(pubKey, plan.multiplier, plan.salt);
 
-  // The ticker and name only reach the chain if this output is built. Without
-  // it the mint confirms, the covenant is valid and the position appears in
+  // The ticker only reaches the chain if this output is built. Without it
+  // the mint confirms, the covenant is valid and the position appears in
   // the wallet -- as an anonymous token, since uap-indexer reads metadata
   // from this output and nowhere else. Nothing on screen looks different,
   // which is exactly why this is asserted end to end (e2e/run.js phase 2).
-  const metadataScript = uap.buildMetadataScript({
-    ticker: plan.ticker,
-    name: plan.name
-  });
+  const metadataScript = uap.buildMetadataScript({ ticker: plan.ticker });
 
   // Input selection, change and signing all belong to uap.js. That code is
   // exercised against a real node by contrib/uap-js/integration.test.js;
@@ -287,20 +235,4 @@ function estimateTxSize(nInputs, nOutputs) {
   // Each output: ~34 bytes (value 8 + scriptPubKey varint 1 + script ~25)
   size += nOutputs * 34;
   return size;
-}
-
-/**
- * Check if a string contains control characters (ASCII 0-31 except valid ones).
- * @private
- */
-function hasControlCharacters(str) {
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
-    // Allow only printable ASCII and valid UTF-8 multibyte (code > 127)
-    // Reject control characters (0-31) and DEL (127)
-    if (code < 32 || code === 127) {
-      return true;
-    }
-  }
-  return false;
 }

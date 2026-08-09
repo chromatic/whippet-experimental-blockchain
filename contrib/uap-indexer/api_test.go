@@ -875,7 +875,7 @@ func TestGetTokensSupplyDoesNotWrapAcrossManyPositions(t *testing.T) {
 	}
 }
 
-// A mint may carry its token's ticker/name/metadata-hash in an OP_RETURN
+// A mint may carry its token's ticker/metadata-hash in an OP_RETURN
 // output alongside it. ParseMetadata exists and is unit-tested, but the
 // indexer has to actually call it during ApplyBlock and surface the result
 // on the lineage -- otherwise /tokens reports every token as nameless.
@@ -890,7 +890,7 @@ func TestTokensCarryMintMetadata(t *testing.T) {
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
 				uapMintVout(0, pubkey1, 1000, salt, 2000.0),
-				opReturnVout(1, wuapPayload("WHIP", "Whippet Token", nil)),
+				opReturnVout(1, wuapPayload("WHIP", nil)),
 			},
 		},
 	}))
@@ -901,9 +901,6 @@ func TestTokensCarryMintMetadata(t *testing.T) {
 	}
 	if tokens[0].Ticker != "WHIP" {
 		t.Errorf("ticker = %q, want %q", tokens[0].Ticker, "WHIP")
-	}
-	if tokens[0].Name != "Whippet Token" {
-		t.Errorf("name = %q, want %q", tokens[0].Name, "Whippet Token")
 	}
 }
 
@@ -921,7 +918,7 @@ func TestTransferMetadataDoesNotOverwriteLineage(t *testing.T) {
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
 				uapMintVout(0, pubkey1, 1000, salt, 2000.0),
-				opReturnVout(1, wuapPayload("GOOD", "Honest Token", nil)),
+				opReturnVout(1, wuapPayload("GOOD", nil)),
 			},
 		},
 	}))
@@ -931,7 +928,7 @@ func TestTransferMetadataDoesNotOverwriteLineage(t *testing.T) {
 			Vin:  []RPCVin{{TxID: "mint_meta2", Vout: 0}},
 			Vout: []RPCVout{
 				uapTransferVout(0, pubkey1, 1000, 1999.0),
-				opReturnVout(1, wuapPayload("EVIL", "Hijacked", nil)),
+				opReturnVout(1, wuapPayload("EVIL", nil)),
 			},
 		},
 	}))
@@ -940,9 +937,9 @@ func TestTransferMetadataDoesNotOverwriteLineage(t *testing.T) {
 	if len(tokens) != 1 {
 		t.Fatalf("expected 1 lineage, got %d", len(tokens))
 	}
-	if tokens[0].Ticker != "GOOD" || tokens[0].Name != "Honest Token" {
-		t.Errorf("a transfer rewrote the lineage metadata: ticker=%q name=%q",
-			tokens[0].Ticker, tokens[0].Name)
+	if tokens[0].Ticker != "GOOD" {
+		t.Errorf("a transfer rewrote the lineage metadata: ticker=%q",
+			tokens[0].Ticker)
 	}
 
 	// Defence in depth: the read path only consults the mint, but the
@@ -968,7 +965,7 @@ func TestUndoRemovesMintMetadata(t *testing.T) {
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
 				uapMintVout(0, pubkey1, 1000, salt, 2000.0),
-				opReturnVout(1, wuapPayload("GONE", "Vanishing", nil)),
+				opReturnVout(1, wuapPayload("GONE", nil)),
 			},
 		},
 	}))

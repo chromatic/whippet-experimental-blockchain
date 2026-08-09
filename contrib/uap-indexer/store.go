@@ -174,7 +174,22 @@ CREATE TABLE IF NOT EXISTS lineage_holders (
 // against the old shape would misread or fail on -- a column added,
 // renamed, retyped, or a table repurposed. Purely additive changes that
 // existing queries are indifferent to (a new index, say) don't need a bump.
-const CurrentSchemaVersion = 2
+//
+// The same reasoning applies when no column changes at all but the
+// validity rules or meaning of a persisted value change. metadata is
+// PERSISTED, not re-derived: putPosition JSON-marshals a TokenMetadata into
+// positions.metadata, and scanToken unmarshals it back out. An existing
+// database therefore holds blobs like {"ticker":"whippet-token-x","name":"..."}
+// written under the old five-push/lowercase-tolerant rules. json.Unmarshal
+// silently ignores the now-unknown "name" key rather than erroring, so
+// without a version bump /api/tokens would keep serving long, mixed-case
+// tickers that no mint under the new rules could ever produce -- a silent
+// mismatch between what's on disk and what the current binary considers
+// valid. The version gate in checkSchemaVersion below is a hard open
+// failure and the only mechanism that forces an operator to reindex, so
+// bump here whenever a persisted value's validity rules or meaning change,
+// not only when a column does.
+const CurrentSchemaVersion = 3
 
 // schemaVersionKey is the meta row that records CurrentSchemaVersion at the
 // time a database was created or last confirmed compatible.
@@ -851,7 +866,7 @@ func (s *Store) UTXOsForHash160Page(hash160 string, page Page) ([]UTXO, bool, er
 
 // tokenQuery renders the maintained aggregate as the API's TokenInfo. The
 // join reaches back to the mint's own row for the token's declared
-// ticker/name: a lineage's origin is by construction the mint's outpoint
+// ticker: a lineage's origin is by construction the mint's outpoint
 // key, so this finds it even once the mint has been spent onward, which it
 // normally is immediately. Only the mint is consulted, so a later holder
 // cannot attach metadata of their own.
@@ -886,7 +901,6 @@ func scanToken(row scanner) (TokenInfo, error) {
 			return TokenInfo{}, err
 		}
 		t.Ticker = md.Ticker
-		t.Name = md.Name
 		t.MetadataHash = md.MetadataHash
 	}
 	return t, nil

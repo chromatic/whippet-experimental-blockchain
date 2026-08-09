@@ -384,7 +384,7 @@ func (idx *Index) applyBlock(t *storeTx, block *RPCBlock) (storeMeta, error) {
 			meta.ambiguous++
 		}
 
-		// A mint may declare its token's ticker/name/metadata hash in an
+		// A mint may declare its token's ticker/metadata hash in an
 		// OP_RETURN output of the same transaction. Found once per
 		// transaction; applied only to mints below, so a transfer carrying
 		// its own OP_RETURN cannot rename a token for the holders who did
@@ -706,7 +706,6 @@ type TokenInfo struct {
 	Origin       string `json:"origin"` // txid:vout of the originating mint
 	Multiplier   int64  `json:"multiplier"`
 	Ticker       string `json:"ticker,omitempty"`
-	Name         string `json:"name,omitempty"`
 	MetadataHash string `json:"metadata_hash,omitempty"`
 	Supply       int64  `json:"supply"`  // sum of unspent value * multiplier
 	Holders      int    `json:"holders"` // count of distinct unspent pubkeys

@@ -65,7 +65,6 @@ let broadcastStatus = null;
 function freshMintState() {
   return {
     ticker: '',
-    name: '',
     multiplier: 100,
     amountSats: 1000 * uap.COIN,
     plan: null,
@@ -647,13 +646,6 @@ async function renderMint() {
     value: mintState.ticker
   });
 
-  const nameInput = dom.el('input', {
-    id: 'mint-name',
-    type: 'text',
-    placeholder: 'e.g., Dogecoin Token',
-    value: mintState.name
-  });
-
   const multiplierInput = dom.el('input', {
     id: 'mint-multiplier',
     type: 'number',
@@ -690,12 +682,8 @@ async function renderMint() {
     dom.el('h2', {}, 'Mint New Token'),
     errorsList.length > 0 ? dom.el('div', { class: 'error-list' }, ...errorsList) : null,
     dom.el('div', { class: 'form-group' },
-      dom.el('label', {}, 'Ticker (1-16 characters):'),
+      dom.el('label', {}, 'Ticker (1-8 characters, A-Z and 0-9):'),
       tickerInput
-    ),
-    dom.el('div', { class: 'form-group' },
-      dom.el('label', {}, 'Name (0-64 characters, optional):'),
-      nameInput
     ),
     dom.el('div', { class: 'form-group' },
       dom.el('label', {}, 'Multiplier (0-2147483647):'),
@@ -744,8 +732,13 @@ export async function resolveMintInputs({ api, address }) {
 }
 
 async function planMintTx() {
+  // Read the ticker exactly as typed. The uppercase fold belongs to
+  // uap.normalizeTicker and happens once, inside planMint -- folding here too
+  // would be a second copy of the rule standing in for the first, so breaking
+  // normalizeTicker's fold would leave the wallet working by accident and the
+  // e2e green. The normalized value is read back off the plan below, so the
+  // review screen still shows what will actually be minted.
   mintState.ticker = document.getElementById('mint-ticker').value;
-  mintState.name = document.getElementById('mint-name').value;
   mintState.multiplier = parseInt(document.getElementById('mint-multiplier').value) || 0;
   mintState.amountSats = parseFloat(document.getElementById('mint-amount').value) * uap.COIN;
 
@@ -764,7 +757,6 @@ async function planMintTx() {
 
   const planResult = planMint({
     ticker: mintState.ticker,
-    name: mintState.name,
     multiplier: mintState.multiplier,
     amountSats: mintState.amountSats,
     utxos,
@@ -779,6 +771,9 @@ async function planMintTx() {
   }
 
   mintState.plan = planResult.plan;
+  // Adopt the normalized ticker, so the review screen and the OP_RETURN show
+  // the same bytes. planMint is the only thing that folds case.
+  mintState.ticker = planResult.plan.ticker;
   mintState.planErrors = null;
   currentScreen = 'mint-review';
   render();
@@ -824,10 +819,6 @@ export function buildMintReviewCard({
       dom.el('div', { class: 'review-row' },
         dom.el('span', {}, 'Ticker:'),
         dom.el('code', {}, mintState.ticker)
-      ),
-      dom.el('div', { class: 'review-row' },
-        dom.el('span', {}, 'Name:'),
-        dom.el('code', {}, mintState.name || '(empty)')
       ),
       dom.el('div', { class: 'review-row' },
         dom.el('span', {}, 'Multiplier:'),

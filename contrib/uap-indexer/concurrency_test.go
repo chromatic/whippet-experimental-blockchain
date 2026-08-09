@@ -70,7 +70,6 @@ func buildChain(n int) []chainBlock {
 					uapMintVout(0, pubkey, int64(10+i), salt, 1.0),
 					opReturnVout(1, wuapPayload(
 						fmt.Sprintf("TK%d", i),
-						fmt.Sprintf("Token %d", i),
 						make([]byte, 32),
 					)),
 					p2pkhVoutFor(2, byte(i+1), 2.0),
@@ -202,7 +201,7 @@ func TestConcurrentReadsDuringApplyAndUndo(t *testing.T) {
 							_ = pos.TxID + pos.PubKey + pos.Origin + pos.SpentTxID
 							_ = pos.Multiplier + pos.Value + pos.Height + pos.SpentHeight
 							if pos.Metadata != nil {
-								_ = pos.Metadata.Ticker + pos.Metadata.Name + pos.Metadata.MetadataHash
+								_ = pos.Metadata.Ticker + pos.Metadata.MetadataHash
 							}
 						}
 					}
@@ -226,7 +225,7 @@ func TestConcurrentReadsDuringApplyAndUndo(t *testing.T) {
 				// result -- not that each individual call succeeds.
 				tokens, _ := idx.AllTokens()
 				for _, tok := range tokens {
-					_ = tok.Ticker + tok.Name + tok.MetadataHash + tok.Origin
+					_ = tok.Ticker + tok.MetadataHash + tok.Origin
 					_, _, _ = idx.Token(tok.Origin)
 				}
 
@@ -389,7 +388,7 @@ func TestConcurrentReorgWithExtendedState(t *testing.T) {
 				// concurrent writer, not to assert on each one.
 				tokens, _ := idx.AllTokens()
 				for _, tok := range tokens {
-					_ = tok.Ticker + tok.Name
+					_ = tok.Ticker
 					_, _, _ = idx.Token(tok.Origin)
 				}
 				_, _ = idx.PositionsForPubKey(hex.EncodeToString(fakePubKey(0x02)), false)
@@ -448,7 +447,7 @@ func forkAt(height int64, tag string) []chainBlock {
 				Vin:  []RPCVin{coinbaseVin()},
 				Vout: []RPCVout{
 					uapMintVout(0, fakePubKey(0x02), int64(500+i), salt, 3.0),
-					opReturnVout(1, wuapPayload(tag+"TK", tag+" token", make([]byte, 32))),
+					opReturnVout(1, wuapPayload(tag+"TK", make([]byte, 32))),
 					p2pkhVoutFor(2, seed+byte(i), 4.0),
 				},
 			},

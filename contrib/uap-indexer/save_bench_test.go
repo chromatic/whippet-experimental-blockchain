@@ -30,7 +30,7 @@ func scaleBlocks(n int) []*RPCBlock {
 				Vin:  []RPCVin{coinbaseVin()},
 				Vout: []RPCVout{
 					uapMintVout(0, pk, int64(10+i), salt, 1.0),
-					opReturnVout(1, wuapPayload("TK", "Token", make([]byte, 32))),
+					opReturnVout(1, wuapPayload("TK", make([]byte, 32))),
 					p2pkhVoutFor(2, byte(i), 2.0),
 				},
 			},

@@ -18,13 +18,12 @@ func uapTransferVout(n uint32, pubkey []byte, multiplier int64, value float64) R
 }
 
 // Helper: build a WUAP metadata payload as ParseMetadata expects it --
-// OP_RETURN followed by five pushes: magic, version, ticker, name, hash.
-func wuapPayload(ticker, name string, hash []byte) []byte {
+// OP_RETURN followed by four pushes: magic, version, ticker, hash.
+func wuapPayload(ticker string, hash []byte) []byte {
 	out := []byte{0x6a}
 	out = append(out, buildPush([]byte("WUAP"))...)
-	out = append(out, buildPush([]byte{0x01})...)
+	out = append(out, buildPush([]byte{0x02})...)
 	out = append(out, buildPush([]byte(ticker))...)
-	out = append(out, buildPush([]byte(name))...)
 	out = append(out, buildPush(hash)...)
 	return out
 }

@@ -1030,3 +1030,84 @@ console.log('uap.js: all tests passed');
     'buildTransferTx must refuse a fee above the cap'
   );
 }
+
+// ---- normalizeTicker ----
+{
+  // Folding: lowercase and mixed-case input is uppercased, not rejected.
+  assert.strictEqual(UAP.normalizeTicker('doge'), 'DOGE');
+  assert.strictEqual(UAP.normalizeTicker('DoGe1'), 'DOGE1');
+  assert.strictEqual(UAP.normalizeTicker('A'), 'A');
+  assert.strictEqual(UAP.normalizeTicker('12345678'), '12345678');
+
+  // Length bounds: 1..8 characters.
+  assert.throws(() => UAP.normalizeTicker(''), /1\.\.8/, 'empty ticker must be rejected');
+  assert.throws(() => UAP.normalizeTicker('a'.repeat(9)), /1\.\.8/, '9-character ticker must be rejected');
+
+  // Charset: only A-Z and 0-9 after folding.
+  assert.throws(() => UAP.normalizeTicker('DOG-E'), /-/, 'punctuation must be rejected and named in the message');
+  assert.throws(() => UAP.normalizeTicker('DOG E'), /position/, 'whitespace must be rejected');
+}
+
+// ---- buildMetadataScript ----
+// Byte-exact expectations for the new 4-push wire format:
+//   OP_RETURN "WUAP" <version> <ticker> <metadata_hash>
+{
+  const hash32 = new Uint8Array(32).fill(0xcd);
+
+  // A known ticker + 32-byte hash, checked byte for byte.
+  const script = UAP.buildMetadataScript({ ticker: 'DOGE', metadataHash: hash32 });
+  const expected = bytes(
+    0x6a,                               // OP_RETURN
+    0x04, 0x57, 0x55, 0x41, 0x50,       // push "WUAP"
+    0x01, 0x02,                         // push version (0x02)
+    0x04, 0x44, 0x4f, 0x47, 0x45,       // push "DOGE"
+    0x20, ...hash32                     // push 32-byte hash
+  );
+  assert.deepStrictEqual(script, expected, 'buildMetadataScript must match the wire format byte for byte');
+
+  // Version byte is 0x02, not the old 0x01.
+  assert.strictEqual(script[7], 0x02, 'version byte must be 0x02');
+
+  // Exactly four pushes: OP_RETURN followed by four push opcodes, nothing else.
+  {
+    let pc = 1; // skip OP_RETURN
+    let pushCount = 0;
+    while (pc < script.length) {
+      const len = script[pc];
+      assert(len < 0x4c, 'every push in this script must be a direct-length push (no PUSHDATA1/2/4)');
+      pc += 1 + len;
+      pushCount++;
+    }
+    assert.strictEqual(pushCount, 4, 'metadata script must contain exactly four pushes');
+    assert.strictEqual(pc, script.length, 'the four pushes must exactly cover the script');
+  }
+
+  // Minimal script: ticker only, no hash. 10 (fixed overhead) + 1 (ticker) = 11 bytes.
+  const minimal = UAP.buildMetadataScript({ ticker: 'A' });
+  assert.strictEqual(minimal.length, 11, 'minimal {ticker: "A"} metadata script must be exactly 11 bytes');
+
+  // Maximal script: 8-byte ticker + 32-byte hash. 10 + 8 + 32 = 50 bytes.
+  const maximal = UAP.buildMetadataScript({ ticker: 'WHIPPET8', metadataHash: hash32 });
+  assert.strictEqual(maximal.length, 50, 'maximal {ticker: "WHIPPET8", metadataHash: <32 bytes>} script must be exactly 50 bytes');
+
+  // Lowercase is folded, not rejected -- buildMetadataScript calls
+  // normalizeTicker itself, so this mints the uppercase ticker.
+  const foldedScript = UAP.buildMetadataScript({ ticker: 'doge' });
+  assert.deepStrictEqual(
+    foldedScript,
+    UAP.buildMetadataScript({ ticker: 'DOGE' }),
+    'a lowercase ticker must build the same script as its uppercase form'
+  );
+
+  // Ticker charset/length rejections flow through normalizeTicker.
+  assert.throws(() => UAP.buildMetadataScript({ ticker: 'A'.repeat(9) }), /1\.\.8/, '9-character ticker must be rejected');
+  assert.throws(() => UAP.buildMetadataScript({ ticker: 'DOG$' }), /\$/, 'punctuation must be rejected');
+  assert.throws(() => UAP.buildMetadataScript({ ticker: '' }), /1\.\.8/, 'empty ticker must be rejected');
+
+  // Hash length: 0 or 32 only.
+  assert.throws(
+    () => UAP.buildMetadataScript({ ticker: 'DOGE', metadataHash: new Uint8Array(31) }),
+    /32/,
+    'a 31-byte hash must be rejected'
+  );
+}

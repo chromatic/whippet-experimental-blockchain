@@ -31,8 +31,13 @@ const COIN = uap.COIN;
 const ASKING_PRICE = 50 * COIN;
 const MINT_AMOUNT_COINS = 1000;
 const MINT_MULTIPLIER = 100;
+// Typed in lowercase on purpose. The wallet folds a ticker to uppercase
+// before it builds the script, and the indexer rejects a lowercase one
+// outright -- so if the fold is ever dropped, the record stops parsing and
+// the token loses its name. Typing 'e2e' and expecting 'E2E' back out of
+// the node is the cheapest place to catch that.
+const MINT_TICKER_TYPED = 'e2e';
 const MINT_TICKER = 'E2E';
-const MINT_NAME = 'End To End Token';
 const FUNDING_COINS = 2000;
 
 const failures = [];
@@ -170,8 +175,7 @@ async function main() {
     phase('2. the maker mints a token');
     await m.click('Mint Token');
     await m.waitForScreen('mint');
-    await m.fill('mint-ticker', MINT_TICKER);
-    await m.fill('mint-name', MINT_NAME);
+    await m.fill('mint-ticker', MINT_TICKER_TYPED);
     await m.fill('mint-multiplier', MINT_MULTIPLIER);
     await m.fill('mint-amount', MINT_AMOUNT_COINS);
     await m.click('Review');
@@ -200,21 +204,33 @@ async function main() {
       `the indexer sees the maker's new position (${positions.length} position)`);
     const P1 = positions[0];
 
-    // The ticker and name the user typed have to survive the round trip to
-    // the chain and back. They travel in an OP_RETURN on the mint
-    // transaction (see uap-indexer/metadata.go: OP_RETURN "WUAP" 0x01
-    // <ticker> <name> <hash>), which is a separate output the wallet has to
-    // remember to build -- a form that validates a ticker and then drops it
-    // looks identical on screen to one that publishes it.
+    // The ticker the user typed has to survive the round trip to the chain
+    // and back. It travels in an OP_RETURN on the mint transaction -- a
+    // separate output the wallet has to remember to build, and a form that
+    // validates a ticker and then drops it looks identical on screen to one
+    // that publishes it. See doc/uap-token-metadata.md for the format.
     const wuapOut = mintTx.vout.find((v) => v.scriptPubKey.type === 'nulldata');
     check(!!wuapOut, 'the mint transaction carries an OP_RETURN metadata output');
+
+    // Byte-exact, because this is the one place where the JS builder and the
+    // Go parser can silently drift apart: OP_RETURN, push "WUAP", push the
+    // version, push the (folded) ticker.
+    //   6a 04 57554150 01 02 03 453245
+    if (wuapOut) {
+      const want = '6a' + '04' + '57554150' + '01' + '02' +
+        '03' + Buffer.from(MINT_TICKER, 'ascii').toString('hex');
+      check(wuapOut.scriptPubKey.hex.startsWith(want),
+        `the metadata record is v2 and carries the folded ticker ` +
+        `(want ${want}…, got ${wuapOut.scriptPubKey.hex})`);
+    }
 
     const tokens = await st.api.get('/api/tokens');
     const token = tokens.find((t) => t.origin === `${mintTxid}:${mintVout ? mintVout.n : 0}`);
     check(!!token, `the indexer lists the new token (${tokens.length} token)`);
     if (token) {
-      checkEqual(token.ticker, MINT_TICKER, 'the token keeps the ticker that was typed');
-      checkEqual(token.name, MINT_NAME, 'the token keeps the name that was typed');
+      checkEqual(token.ticker, MINT_TICKER,
+        `the indexer reports the ticker uppercased from the typed '${MINT_TICKER_TYPED}'`);
+      check(!('name' in token), 'the token carries no name field');
     }
 
     // ==================================================================

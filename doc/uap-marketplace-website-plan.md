@@ -23,8 +23,9 @@ details.
 - **Reuse what exists.** `uap-indexer` already does chain scanning, reorg
   handling, and order relaying. Extend it rather than adding a second
   service.
-- **6-second blocks are a UX feature.** Confirmation is fast enough that
-  we can skip mempool tracking entirely and still feel instant.
+- **6-second blocks are a UX feature.** Confirmation is fast, but the chain is
+  not yet popular enough that we can skip mempool tracking entirely and still
+  feel instant.
 
 ## Architecture
 
@@ -111,49 +112,44 @@ added later as pure client code with no protocol or backend change.
 
 ### 3. Token metadata: on-chain anchor + hash-verified off-chain blob
 
-Name, ticker, and image need somewhere to live.
+**Decision: an `OP_RETURN` output in the same transaction that creates the
+mint output, carrying the ticker plus a hash committing to a richer
+off-chain blob.**
 
-First, two facts that decide this:
+The format is specified normatively in
+[`doc/uap-token-metadata.md`](uap-token-metadata.md) — magic `"WUAP"`, a
+version byte, a `[A-Z0-9]{1,8}` ticker and an optional 32-byte
+`metadata_hash`, 50 bytes at most against an 83-byte relay limit. That
+document is the reference the wallet's builder and the indexer's parser are
+both written against; do not restate the layout here, or a third divergent
+copy is what the next reader will find.
 
-- **`OP_RETURN` does not bloat the UTXO set.** `IsUnspendable()`
-  (`src/script/script.h:642`) is true for any `OP_RETURN`-leading script,
-  and `CCoins::ClearUnspendable()` (`src/coins.h:121-127`) nulls those
-  outputs before the coins record is stored — pruned, in the code's own
-  words, "instantly when entering the UTXO set." The cost is one-time
-  block space and fee, not permanent state. (The *salt* is the thing that
-  genuinely does persist, since it sits in a real spendable output's
-  scriptPubKey — which is why metadata does not go there.)
+Three points of rationale that belong to this plan rather than to the format:
+
+- **There is deliberately no on-chain `name`.** Minter-supplied text carries
+  no authority wherever it is stored — anyone can mint a token named
+  `Dogecoin` — so a block only makes it more expensive and more permanent,
+  never more trustworthy. The ticker is constrained enough to be a safe
+  identifier; everything descriptive lives behind the hash. UI copy below
+  reflects this.
+- **`OP_RETURN` does not bloat the UTXO set,** so naming a token costs
+  one-time block space and fee rather than permanent node state. (The *salt*
+  is the thing that genuinely persists, since it sits in a real spendable
+  output's scriptPubKey — which is why metadata does not go there.)
 - **Provenance needs no new identifier.** The originating mint's outpoint
   (`txid:vout`) is already globally unique and unforgeable, and the
   indexer tracks it as `origin` regardless. A random ID would be redundant
   and strictly weaker: it is unbound, so two mints can claim the same one
   and a tiebreak rule becomes necessary.
 
-The real constraint is size. `MAX_OP_RETURN_RELAY` is 83
-(`src/script/standard.h:30`) — 1 byte `OP_RETURN` + 2 pushdata + **80
-bytes of payload**. Ticker, name, and an image URI do not comfortably fit
-(an IPFS CIDv1 alone is 59 characters as text).
-
-**Decision: an `OP_RETURN` output in the same transaction that creates the
-mint output, carrying the identity fields plus a hash of a richer
-off-chain blob.**
-
-```
-OP_RETURN <"WHP1"(4) || varstr(ticker) || varstr(name) || sha256(blob)(32)>
-```
-
-That leaves ~40 bytes for ticker and name. The blob holds description,
-socials, and full-resolution artwork.
-
 Anchoring with a **hash rather than an ID** is the point: an ID is a
 trusted pointer (whoever serves it can swap the content underneath), a
 hash is a verifiable one — the client fetches the blob and checks it, so
-neither the indexer nor the blob host needs to be trusted. It also
-degrades gracefully: if the blob host disappears, ticker and name still
-survive on-chain.
+neither the indexer nor the blob host needs to be trusted.
 
-Store the raw 32 bytes, not a text CID, and derive the fetch URL by
-convention (gateway + hex hash) so no URL is baked into the chain.
+Note the flip side, since it is a live gap: a hash proves *which* blob is
+authentic but not *where* to find it, and no resolver or blob store exists
+yet. Until one does, a token's only label is its ticker.
 
 The creating transaction is an ordinary spend, so its non-UAP outputs are
 unconstrained; and when the mint position is later spent, `OP_RETURN`
@@ -305,7 +301,7 @@ inherited from the spent position for transfers), and parse the
 `OP_RETURN` metadata during indexing.
 
 - `GET /api/tokens` → one row per lineage:
-  `{origin, multiplier, ticker, name, metadata_hash, supply, holders, mint_height}`
+  `{origin, multiplier, ticker, metadata_hash, supply, holders, mint_height}`
 - `GET /api/token/{origin}` → detail + position list
 
 The client fetches and verifies the metadata blob against
@@ -364,8 +360,10 @@ server-side key material whatsoever.
 
 ## Phase 5 — mint
 
-One page, one form: ticker, name, image, multiplier, amount to lock
-(≥ 1000 WHIP, enforced client-side with a clear explanation of why).
+One page, one form: ticker, multiplier, amount to lock (≥ 1000 WHIP,
+enforced client-side with a clear explanation of why). There is no name or
+image field — those live in the off-chain blob, and gain one when a
+resolver for `metadata_hash` exists.
 
 Flow: build mint script → build the funding transaction (mint output +
 `OP_RETURN` metadata + change) → sign with the wallet key → `POST
@@ -378,7 +376,8 @@ spending the position, not a burned fee.
 ## Phase 6 — market
 
 - **Token list** (`GET /api/tokens`): search/sort by newest, supply,
-  activity. Card grid — image, ticker, name, supply, best ask.
+  activity. Card grid — ticker, supply, best ask (plus image and
+  description once the off-chain blob behind `metadata_hash` resolves).
 - **Token detail** (`GET /api/token/{origin}` + `GET /api/orders`):
   metadata, your balance, the order book, buy/sell.
 - **Sell**: pick a position, enter an asking price, `signMakerOrder()`,
@@ -431,7 +430,6 @@ nginx terminates TLS and reverse-proxies to the binary on localhost.
 - Custody, accounts, email, or KYC.
 - A bonding curve (not expressible in the covenant).
 - Partial order fills (needs a split step; call it out in the UI instead).
-- Mempool display (6-second blocks make it noise).
 - Reorg-aware order restoration — the relay already documents this gap;
   makers republish.
 - Price charts and history, until there is enough trade volume for them to

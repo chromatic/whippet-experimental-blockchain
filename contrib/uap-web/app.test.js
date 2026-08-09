@@ -682,7 +682,6 @@ test('the review screen says the fee is paid in WHIP, not out of the tokens', ()
 function makeMintState(overrides = {}) {
   return {
     ticker: 'TEST',
-    name: 'Test Token',
     multiplier: 100,
     amountSats: 40.5 * COIN,
     ...overrides
@@ -695,7 +694,6 @@ test('the mint review screen shows the ticker, multiplier and amount being locke
   const card = app.buildMintReviewCard({ mintState: makeMintState(), plan: MINT_PLAN });
   const text = textOfLoose(card);
   assert(/TEST/.test(text), `the ticker must be shown, got: ${text}`);
-  assert(/Test Token/.test(text), `the name must be shown, got: ${text}`);
   assert(/40\.5/.test(text), `the amount being locked must be shown, got: ${text}`);
   assert(/0\.01000000/.test(text), `the fee must be shown, got: ${text}`);
 });
@@ -967,7 +965,6 @@ const MINT_UTXOS = [
 ];
 const REAL_MINT_PLAN = mint.planMint({
   ticker: 'TEST',
-  name: 'Test Token',
   multiplier: 100,
   amountSats: 1000 * COIN,
   utxos: MINT_UTXOS,
@@ -1109,7 +1106,7 @@ test('a mint plan built from resolved inputs has a real fee, not NaN', async () 
     address: MINT_ADDRESS
   });
   const planned = mint.planMint({
-    ticker: 'TEST', name: 'Test Token', multiplier: 100,
+    ticker: 'TEST', multiplier: 100,
     amountSats: 1000 * COIN, utxos: r.utxos, feeRate: r.feeRate, address: MINT_ADDRESS
   });
   assertEqual(planned.ok, true, (planned.errors || []).join(' '));

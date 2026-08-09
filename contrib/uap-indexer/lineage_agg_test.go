@@ -61,13 +61,12 @@ func scanTokens(t testing.TB, idx *Index) []TokenInfo {
 			Holders:    holders,
 			MintHeight: mintHeight,
 		}
-		// The lineage's declared ticker/name comes from the mint's own
+		// The lineage's declared ticker comes from the mint's own
 		// row, which the origin key names by construction. Only the mint
 		// is consulted, so a later holder cannot attach metadata of their
 		// own.
 		if mint, ok := byKey[origin]; ok && mint.IsMint && mint.Metadata != nil {
 			token.Ticker = mint.Metadata.Ticker
-			token.Name = mint.Metadata.Name
 			token.MetadataHash = mint.Metadata.MetadataHash
 		}
 		out = append(out, token)
@@ -160,7 +159,7 @@ func randomChainBlock(rng *rand.Rand, height int64, live *[]livePos) *RPCBlock {
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
 				uapMintVout(0, fakePubKey(byte(0x02+rng.Intn(4))), mult, salt, float64(rng.Intn(5)+1)),
-				opReturnVout(1, wuapPayload("TK", "Token", make([]byte, 32))),
+				opReturnVout(1, wuapPayload("TK", make([]byte, 32))),
 			},
 		})
 		*live = append(*live, livePos{txid: txid, vout: 0, mult: mult})

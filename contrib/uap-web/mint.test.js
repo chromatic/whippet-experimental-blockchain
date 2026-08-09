@@ -27,7 +27,6 @@ const COIN = uap.COIN;
 const DEFAULT_DUST_LIMIT = uap.DEFAULT_DUST_LIMIT;
 const VALID_PLAN_INPUT = {
   ticker: 'TEST',
-  name: 'Test Token',
   multiplier: 100,
   amountSats: 1000 * COIN,  // exactly minimum
   utxos: [
@@ -85,10 +84,17 @@ test('ticker is required', () => {
   assert(result.errors.some(e => e.field === 'ticker'), 'should have ticker error');
 });
 
-test('ticker max 16 bytes UTF-8', () => {
-  const input = { ...VALID_PLAN_INPUT, ticker: '🎉'.repeat(5) };  // 4 bytes per emoji
+test('ticker max 8 characters', () => {
+  const input = { ...VALID_PLAN_INPUT, ticker: 'A'.repeat(9) };
   const result = planMint(input);
-  assert(!result.ok, 'should reject long ticker');
+  assert(!result.ok, 'should reject a 9-character ticker');
+  assert(result.errors.some(e => e.field === 'ticker'), 'should have ticker error');
+});
+
+test('ticker rejects non-ASCII characters', () => {
+  const input = { ...VALID_PLAN_INPUT, ticker: '🎉' };
+  const result = planMint(input);
+  assert(!result.ok, 'should reject a non-ASCII ticker');
   assert(result.errors.some(e => e.field === 'ticker'), 'should have ticker error');
 });
 
@@ -122,29 +128,6 @@ test('ticker rejects NUL characters', () => {
   assert(!result.ok, 'should reject ticker with NUL');
   assert(result.errors.some(e => e.field === 'ticker'), 'should have ticker error');
 });
-
-test('name max 64 bytes UTF-8', () => {
-  const input = { ...VALID_PLAN_INPUT, name: 'x'.repeat(65) };
-  const result = planMint(input);
-  assert(!result.ok, 'should reject long name');
-  assert(result.errors.some(e => e.field === 'name'), 'should have name error');
-});
-
-test('name can be empty string', () => {
-  const input = { ...VALID_PLAN_INPUT, name: '' };
-  const result = planMint(input);
-  assert(result.ok, 'should accept empty name');
-});
-
-test('name rejects control characters', () => {
-  const input = { ...VALID_PLAN_INPUT, name: 'Test\tName' };
-  const result = planMint(input);
-  assert(!result.ok, 'should reject name with tab');
-  assert(result.errors.some(e => e.field === 'name'), 'should have name error');
-});
-
-// Note: HTML strings in name are not rejected by validation; UI rendering via
-// dom.js is responsible for safe output. Validation only checks consensus rules.
 
 test('multiplier must be an integer', () => {
   const input = { ...VALID_PLAN_INPUT, multiplier: 100.5 };
@@ -257,7 +240,6 @@ test('dust change is rejected', () => {
 test('multiple validation failures are all reported', () => {
   const input = {
     ticker: '',  // empty (invalid)
-    name: 'x'.repeat(100),  // too long (invalid)
     multiplier: -5,  // negative (invalid)
     amountSats: 500 * COIN,  // below minimum (invalid)
     utxos: [],  // empty (invalid)
@@ -267,10 +249,9 @@ test('multiple validation failures are all reported', () => {
 
   const result = planMint(input);
   assert(!result.ok, 'should reject');
-  assert(result.errors.length >= 4, 'should report all failures at once, got: ' +
+  assert(result.errors.length >= 3, 'should report all failures at once, got: ' +
     result.errors.map(e => e.field).join(', '));
   assert(result.errors.some(e => e.field === 'ticker'), 'should report ticker error');
-  assert(result.errors.some(e => e.field === 'name'), 'should report name error');
   assert(result.errors.some(e => e.field === 'multiplier'), 'should report multiplier error');
   assert(result.errors.some(e => e.field === 'amountSats'), 'should report amountSats error');
 });
@@ -387,15 +368,15 @@ test('two builds produce different salts', async () => {
 // =============================================================================
 // TOKEN METADATA
 //
-// The ticker and name only reach the chain if buildMintTx emits the OP_RETURN
-// that carries them. Leave it out and everything still looks right: the mint
+// The ticker only reaches the chain if buildMintTx emits the OP_RETURN that
+// carries it. Leave it out and everything still looks right: the mint
 // confirms, the covenant is valid, the position shows up in the wallet -- as
 // an anonymous token. The indexer reads metadata from that output and nowhere
 // else, so these assertions are the only thing between a named token and a
 // nameless one.
 // =============================================================================
 
-test('the mint transaction carries the ticker and name in an OP_RETURN', async () => {
+test('the mint transaction carries the ticker in an OP_RETURN', async () => {
   const plan = planMint(VALID_PLAN_INPUT).plan;
   const built = await buildMintTx({
     secp: secp256k1, plan, privKey: TEST_PRIVKEY, pubKey: TEST_PUBKEY,
@@ -412,50 +393,32 @@ test('the mint transaction carries the ticker and name in an OP_RETURN', async (
     'the record is tagged with the WUAP magic the indexer looks for');
   assert(hex.includes(uap.bytesToHex(new TextEncoder().encode('TEST'))),
     `the ticker is in the script: ${hex}`);
-  assert(hex.includes(uap.bytesToHex(new TextEncoder().encode('Test Token'))),
-    `the name is in the script: ${hex}`);
 });
 
 test('the metadata script stays inside the relay limit', () => {
-  const script = uap.buildMetadataScript({ ticker: 'TEST', name: 'Test Token' });
+  const script = uap.buildMetadataScript({ ticker: 'TEST' });
   assert(script.length <= uap.MAX_METADATA_SCRIPT_BYTES,
     `${script.length} bytes exceeds the ${uap.MAX_METADATA_SCRIPT_BYTES}-byte relay limit`);
 });
 
-test('a ticker and name that individually fit but together do not are refused', () => {
-  // Each field is inside its own documented bound -- 16 and 64 bytes -- but
-  // MAX_OP_RETURN_RELAY leaves only 72 bytes for both. A wallet that built
-  // this anyway would produce a mint no node relays, so the user would watch
-  // it sit unconfirmed forever with nothing to explain why.
+test('the largest ticker (8 chars) is accepted', () => {
   const result = planMint({
     ...VALID_PLAN_INPUT,
-    ticker: 'A'.repeat(16),
-    name: 'B'.repeat(64)
-  });
-  assertEqual(result.ok, false, 'the combined length must be rejected');
-  const message = result.errors.map((e) => e.message).join(' ');
-  assert(/relay/.test(message), `the error should say why, got: ${message}`);
-  assert(/\d+ bytes/.test(message), `the error should quantify it, got: ${message}`);
-});
-
-test('the largest ticker and name that do fit are accepted', () => {
-  // 16 + 56 = 72, exactly the budget. The boundary is worth pinning in both
-  // directions: an off-by-one here rejects legitimate names.
-  const result = planMint({
-    ...VALID_PLAN_INPUT,
-    ticker: 'A'.repeat(16),
-    name: 'B'.repeat(56)
+    ticker: 'A'.repeat(8)
   });
   assertEqual(result.ok, true,
-    'a record that exactly fills the budget must be allowed: ' +
-    JSON.stringify(result.errors));
+    'an 8-character ticker must be allowed: ' + JSON.stringify(result.errors));
 });
 
-test('a multi-byte ticker is measured in bytes, not characters', () => {
-  // 'é' is two bytes in UTF-8. A wallet counting characters would let a
-  // 16-character ticker through as 32 bytes.
-  const result = planMint({ ...VALID_PLAN_INPUT, ticker: 'é'.repeat(16) });
-  assertEqual(result.ok, false, '32 bytes of ticker must not pass a 16-byte bound');
+test('a ticker with punctuation is rejected', () => {
+  const result = planMint({ ...VALID_PLAN_INPUT, ticker: 'TE-ST' });
+  assertEqual(result.ok, false, 'punctuation in a ticker must be rejected');
+});
+
+test('a lowercase ticker is folded to uppercase, not rejected', () => {
+  const result = planMint({ ...VALID_PLAN_INPUT, ticker: 'test' });
+  assertEqual(result.ok, true, 'lowercase input should fold rather than fail');
+  assertEqual(result.plan.ticker, 'TEST', 'the plan should carry the normalized (uppercase) ticker');
 });
 
 run({ banner: 'Running mint tests...\n', style: 'compact' }).catch(e => {

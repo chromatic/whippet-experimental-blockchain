@@ -567,13 +567,12 @@ func TestDecodeRealNodeAddresses(t *testing.T) {
 // TestParseMetadataHappyPath verifies valid metadata is parsed correctly.
 func TestParseMetadataHappyPath(t *testing.T) {
 	// Build a valid metadata OP_RETURN:
-	// OP_RETURN + WUAP magic + version + ticker len + ticker + name len + name + hash160 len + hash160
+	// OP_RETURN + WUAP magic + version + ticker len + ticker + hash len + hash
 	var script []byte
 	script = append(script, 0x6a) // OP_RETURN
 	script = append(script, buildPush([]byte("WUAP"))...)
-	script = append(script, buildPush([]byte{0x01})...) // version
+	script = append(script, buildPush([]byte{0x02})...) // version
 	script = append(script, buildPush([]byte("BTC"))...)
-	script = append(script, buildPush([]byte("Bitcoin"))...)
 	hashBytes := make([]byte, 32)
 	for i := 0; i < 32; i++ {
 		hashBytes[i] = byte(i)
@@ -587,9 +586,6 @@ func TestParseMetadataHappyPath(t *testing.T) {
 	if parsed.Ticker != "BTC" {
 		t.Errorf("ticker mismatch: got %q, want %q", parsed.Ticker, "BTC")
 	}
-	if parsed.Name != "Bitcoin" {
-		t.Errorf("name mismatch: got %q, want %q", parsed.Name, "Bitcoin")
-	}
 	if parsed.MetadataHash != hex.EncodeToString(hashBytes) {
 		t.Errorf("metadata_hash mismatch")
 	}
@@ -600,9 +596,8 @@ func TestParseMetadataWithoutHash(t *testing.T) {
 	var script []byte
 	script = append(script, 0x6a) // OP_RETURN
 	script = append(script, buildPush([]byte("WUAP"))...)
-	script = append(script, buildPush([]byte{0x01})...) // version
+	script = append(script, buildPush([]byte{0x02})...) // version
 	script = append(script, buildPush([]byte("DOG"))...)
-	script = append(script, buildPush([]byte("Dogecoin"))...)
 	script = append(script, buildPush([]byte{})...) // empty hash
 
 	parsed := ParseMetadata(hex.EncodeToString(script))
@@ -612,11 +607,46 @@ func TestParseMetadataWithoutHash(t *testing.T) {
 	if parsed.Ticker != "DOG" {
 		t.Errorf("ticker mismatch: got %q, want %q", parsed.Ticker, "DOG")
 	}
-	if parsed.Name != "Dogecoin" {
-		t.Errorf("name mismatch: got %q, want %q", parsed.Name, "Dogecoin")
-	}
 	if parsed.MetadataHash != "" {
 		t.Errorf("metadata_hash should be empty, got %q", parsed.MetadataHash)
+	}
+}
+
+// TestParseMetadataRejectsV1 rejects the retired five-push v1 form outright,
+// even though its bytes would otherwise be well-formed under the old rules.
+func TestParseMetadataRejectsV1(t *testing.T) {
+	var script []byte
+	script = append(script, 0x6a) // OP_RETURN
+	script = append(script, buildPush([]byte("WUAP"))...)
+	script = append(script, buildPush([]byte{0x01})...) // retired version
+	script = append(script, buildPush([]byte("BTC"))...)
+	script = append(script, buildPush([]byte("Bitcoin"))...)
+	script = append(script, buildPush(make([]byte, 32))...)
+
+	if parsed := ParseMetadata(hex.EncodeToString(script)); parsed != nil {
+		t.Errorf("expected nil for version 0x01, got %+v", parsed)
+	}
+}
+
+// TestParseMetadataRejectsUnknownVersion is what actually gives the version
+// check teeth. TestParseMetadataRejectsV1 above cannot: a v1 record has five
+// pushes, so deleting the version check entirely still leaves the push-count
+// gate to reject it, and that test stays green over a parser that accepts any
+// version at all. These records are structurally perfect v2 -- four pushes, a
+// valid ticker, a valid hash length -- and differ from an accepted one by the
+// single version byte, so nothing but the version check can reject them.
+func TestParseMetadataRejectsUnknownVersion(t *testing.T) {
+	for _, version := range []byte{0x00, 0x01, 0x03, 0xff} {
+		var script []byte
+		script = append(script, 0x6a) // OP_RETURN
+		script = append(script, buildPush([]byte("WUAP"))...)
+		script = append(script, buildPush([]byte{version})...)
+		script = append(script, buildPush([]byte("BTC"))...)
+		script = append(script, buildPush(make([]byte, 32))...)
+
+		if parsed := ParseMetadata(hex.EncodeToString(script)); parsed != nil {
+			t.Errorf("expected nil for version 0x%02x, got %+v", version, parsed)
+		}
 	}
 }
 
@@ -650,8 +680,8 @@ func TestParseMetadataRejectsTruncatedPayload(t *testing.T) {
 	var script []byte
 	script = append(script, 0x6a) // OP_RETURN
 	script = append(script, buildPush([]byte("WUAP"))...)
-	script = append(script, buildPush([]byte{0x01})...) // version
-	// Missing ticker and rest of payload
+	script = append(script, buildPush([]byte{0x02})...) // version
+	// Missing ticker and hash
 
 	parsed := ParseMetadata(hex.EncodeToString(script))
 	if parsed != nil {
@@ -659,78 +689,53 @@ func TestParseMetadataRejectsTruncatedPayload(t *testing.T) {
 	}
 }
 
-// TestParseMetadataRejectsInvalidUTF8 rejects non-UTF8 fields.
-func TestParseMetadataRejectsInvalidUTF8(t *testing.T) {
-	var script []byte
-	script = append(script, 0x6a) // OP_RETURN
-	script = append(script, buildPush([]byte("WUAP"))...)
-	script = append(script, buildPush([]byte{0x01})...) // version
-	// Invalid UTF-8 ticker
-	invalidUTF8 := []byte{0xff, 0xfe}
-	script = append(script, buildPush(invalidUTF8)...)
-
-	parsed := ParseMetadata(hex.EncodeToString(script))
-	if parsed != nil {
-		t.Error("expected nil for invalid UTF-8")
+// TestParseMetadataRejectsLowercaseTicker rejects a ticker with any
+// lowercase byte. The parser is strict about case -- folding happens only
+// in the wallet before the script is built -- so a lowercase ticker on
+// chain must not parse at all, not parse and get folded.
+func TestParseMetadataRejectsLowercaseTicker(t *testing.T) {
+	md := ParseMetadata(hex.EncodeToString(wuapPayload("whip", nil)))
+	if md != nil {
+		t.Errorf("expected nil for lowercase ticker, got %+v", md)
 	}
 }
 
-// TestParseMetadataRejectsControlCharacters rejects control chars in ticker/name.
-func TestParseMetadataRejectsControlCharacters(t *testing.T) {
-	cases := []byte{
-		0x00, // NUL
-		0x0a, // LF
-		0x0d, // CR
-		0x1f, // US
-		0x7f, // DEL
+// TestParseMetadataRejectsOversizedTicker rejects a ticker over 8 bytes.
+func TestParseMetadataRejectsOversizedTicker(t *testing.T) {
+	ticker := "NINEBYTE" // 8 bytes; add one more to cross the limit
+	if len(ticker) != 8 {
+		t.Fatalf("test fixture bug: want an 8-byte base, got %d", len(ticker))
 	}
-	for _, ctrl := range cases {
-		var script []byte
-		script = append(script, 0x6a) // OP_RETURN
-		script = append(script, buildPush([]byte("WUAP"))...)
-		script = append(script, buildPush([]byte{0x01})...) // version
-		// Ticker with control character
-		script = append(script, buildPush([]byte{'B', 'T', ctrl, 'C'})...)
+	ticker += "S" // now 9 bytes, one past the limit
 
-		parsed := ParseMetadata(hex.EncodeToString(script))
-		if parsed != nil {
-			t.Errorf("expected nil for ticker with control char 0x%02x", ctrl)
-		}
+	md := ParseMetadata(hex.EncodeToString(wuapPayload(ticker, nil)))
+	if md != nil {
+		t.Errorf("expected nil for 9-byte ticker, got %+v", md)
 	}
 }
 
-// TestParseMetadataRejectsOversizedTicket rejects ticker > 16 bytes.
-func TestParseMetadataRejectsOversizedTicket(t *testing.T) {
-	var script []byte
-	script = append(script, 0x6a) // OP_RETURN
-	script = append(script, buildPush([]byte("WUAP"))...)
-	script = append(script, buildPush([]byte{0x01})...) // version
-	// 17-byte ticker (too long)
-	script = append(script, buildPush([]byte("THISTICKERISTOLONG"))...)
-
-	parsed := ParseMetadata(hex.EncodeToString(script))
-	if parsed != nil {
-		t.Error("expected nil for oversized ticker")
+// TestParseMetadataRejectsPunctuationTicker rejects a ticker containing a
+// character outside [A-Z0-9].
+func TestParseMetadataRejectsPunctuationTicker(t *testing.T) {
+	md := ParseMetadata(hex.EncodeToString(wuapPayload("WH-P", nil)))
+	if md != nil {
+		t.Errorf("expected nil for ticker with punctuation, got %+v", md)
 	}
 }
 
-// TestParseMetadataRejectsOversizedName rejects name > 64 bytes.
-func TestParseMetadataRejectsOversizedName(t *testing.T) {
-	var script []byte
-	script = append(script, 0x6a) // OP_RETURN
-	script = append(script, buildPush([]byte("WUAP"))...)
-	script = append(script, buildPush([]byte{0x01})...) // version
-	script = append(script, buildPush([]byte("BTC"))...)
-	// 65-byte name (too long)
-	longName := make([]byte, 65)
-	for i := 0; i < 65; i++ {
-		longName[i] = 'A'
+// TestParseMetadataRejectsSpaceInTicker rejects a ticker containing a space.
+func TestParseMetadataRejectsSpaceInTicker(t *testing.T) {
+	md := ParseMetadata(hex.EncodeToString(wuapPayload("WH IP", nil)))
+	if md != nil {
+		t.Errorf("expected nil for ticker with a space, got %+v", md)
 	}
-	script = append(script, buildPush(longName)...)
+}
 
-	parsed := ParseMetadata(hex.EncodeToString(script))
-	if parsed != nil {
-		t.Error("expected nil for oversized name")
+// TestParseMetadataRejectsEmptyTicker rejects a zero-length ticker.
+func TestParseMetadataRejectsEmptyTicker(t *testing.T) {
+	md := ParseMetadata(hex.EncodeToString(wuapPayload("", nil)))
+	if md != nil {
+		t.Errorf("expected nil for empty ticker, got %+v", md)
 	}
 }
 
@@ -738,30 +743,34 @@ func TestParseMetadataRejectsOversizedName(t *testing.T) {
 func TestParseMetadataRejectsWrongHashLength(t *testing.T) {
 	cases := []int{1, 16, 31, 33, 64}
 	for _, hashLen := range cases {
-		var script []byte
-		script = append(script, 0x6a) // OP_RETURN
-		script = append(script, buildPush([]byte("WUAP"))...)
-		script = append(script, buildPush([]byte{0x01})...) // version
-		script = append(script, buildPush([]byte("BTC"))...)
-		script = append(script, buildPush([]byte("Bitcoin"))...)
-		script = append(script, buildPush(make([]byte, hashLen))...)
-
-		parsed := ParseMetadata(hex.EncodeToString(script))
-		if parsed != nil {
+		md := ParseMetadata(hex.EncodeToString(wuapPayload("BTC", make([]byte, hashLen))))
+		if md != nil {
 			t.Errorf("expected nil for hash length %d", hashLen)
 		}
 	}
 }
 
-// Exactly five pushes, nothing more. A trailing push would mean two
+// TestParseMetadataAcceptsEmptyHash verifies a 0-byte metadata_hash push is
+// accepted, distinct from an absent push.
+func TestParseMetadataAcceptsEmptyHash(t *testing.T) {
+	md := ParseMetadata(hex.EncodeToString(wuapPayload("BTC", nil)))
+	if md == nil {
+		t.Fatal("expected metadata parse with empty hash, got nil")
+	}
+	if md.MetadataHash != "" {
+		t.Errorf("metadata_hash should be empty, got %q", md.MetadataHash)
+	}
+}
+
+// Exactly four pushes, nothing more. A trailing push would mean two
 // different on-chain scripts present as the same token metadata.
 func TestParseMetadataRejectsTrailingPush(t *testing.T) {
-	base := wuapPayload("WHIP", "Whippet Token", nil)
+	base := wuapPayload("WHIP", nil)
 	if ParseMetadata(hex.EncodeToString(base)) == nil {
-		t.Fatal("setup: the five-push form must parse")
+		t.Fatal("setup: the four-push form must parse")
 	}
 	withExtra := append(append([]byte{}, base...), buildPush([]byte("extra"))...)
 	if md := ParseMetadata(hex.EncodeToString(withExtra)); md != nil {
-		t.Errorf("a sixth push must not parse, got %+v", md)
+		t.Errorf("a fifth push must not parse, got %+v", md)
 	}
 }

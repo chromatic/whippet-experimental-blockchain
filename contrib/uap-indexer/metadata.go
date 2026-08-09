@@ -2,13 +2,11 @@ package main
 
 import (
 	"encoding/hex"
-	"unicode/utf8"
 )
 
 // TokenMetadata holds the parsed metadata from an OP_RETURN output on a mint.
 type TokenMetadata struct {
 	Ticker       string `json:"ticker"`
-	Name         string `json:"name"`
 	MetadataHash string `json:"metadata_hash,omitempty"` // hex, 32 bytes
 }
 
@@ -17,8 +15,8 @@ type TokenMetadata struct {
 // - an ordinary OP_RETURN (not WUAP)
 // - wrong magic or version
 // - truncated or lying length bytes
-// - fields that violate length bounds or UTF-8 validity
-// - control characters in ticker or name
+// - a ticker outside the 1-8 byte [A-Z0-9] charset
+// - anything other than exactly four pushes
 //
 // Treat the payload as hostile (written by the minter); every field read must
 // be bounds-checked before slicing, and no field is truncated silently.
@@ -38,9 +36,18 @@ func ParseMetadata(scriptHex string) *TokenMetadata {
 		return nil
 	}
 
-	// Parse the pushes in the script
 	pushes, err := readPushes(raw[1:])
-	if err != nil || len(pushes) < 3 {
+	if err != nil {
+		return nil
+	}
+
+	// Magic and version are read before the push count, because the push
+	// count is version-specific: v1 had five pushes, v2 has four, and a
+	// future v3 may have some other number. Checking the count first would
+	// mean rejecting a v3 record as structurally malformed rather than as a
+	// version this build does not know how to read -- the same nil today,
+	// but the wrong reason to hang a diagnostic on later.
+	if len(pushes) < 2 {
 		return nil
 	}
 
@@ -52,82 +59,59 @@ func ParseMetadata(scriptHex string) *TokenMetadata {
 		return nil
 	}
 
-	// Second push must be version byte (currently 0x01)
+	// Second push must be the version byte. Version 0x01 was the retired
+	// five-push form (magic, version, ticker, name, hash) and is rejected
+	// explicitly rather than parsed: this format is 0x02 only.
 	if !pushes[1].IsPush || len(pushes[1].Data) != 1 {
 		return nil
 	}
 	version := pushes[1].Data[0]
-	if version != 0x01 {
+	if version != 0x02 {
 		return nil
 	}
 
-	// Third push is ticker
+	// Exactly four pushes: magic, version, ticker, metadata_hash -- nothing
+	// more, nothing less. A trailing push would let two different scripts
+	// parse to the same metadata, and give a minter somewhere to hide bytes
+	// that consumers never see.
+	if len(pushes) != 4 {
+		return nil
+	}
+
+	// Third push is ticker: 1-8 bytes, every byte in [A-Z0-9]. Strict, no
+	// case folding here -- folding happens only in the wallet UI before the
+	// script is built, so that a lowercase ticker on chain can never exist
+	// as a second record rendering identically to its uppercase twin.
 	if !pushes[2].IsPush {
 		return nil
 	}
 	ticker := string(pushes[2].Data)
-	if len(ticker) < 1 || len(ticker) > 16 {
+	if len(ticker) < 1 || len(ticker) > 8 {
 		return nil
 	}
-	if !utf8.ValidString(ticker) {
-		return nil
-	}
-	if hasControlChars(ticker) {
-		return nil
+	for i := 0; i < len(ticker); i++ {
+		c := ticker[i]
+		if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z')) {
+			return nil
+		}
 	}
 
-	// Fourth push is name (may be empty)
-	if len(pushes) < 4 {
-		return nil
-	}
+	// Fourth push is metadata_hash (must be 0 or 32 bytes).
 	if !pushes[3].IsPush {
 		return nil
 	}
-	name := string(pushes[3].Data)
-	if len(name) > 64 {
-		return nil
-	}
-	if !utf8.ValidString(name) {
-		return nil
-	}
-	if hasControlChars(name) {
-		return nil
-	}
-
-	// Fifth push is metadata_hash (must be 0 or 32 bytes). Require exactly
-	// five pushes and nothing after: a trailing push would let two different
-	// scripts parse to the same metadata, and give a minter somewhere to
-	// hide bytes that consumers never see.
-	if len(pushes) != 5 {
-		return nil
-	}
-	if !pushes[4].IsPush {
-		return nil
-	}
-	hashLen := len(pushes[4].Data)
+	hashLen := len(pushes[3].Data)
 	if hashLen != 0 && hashLen != 32 {
 		return nil
 	}
 
 	var metadataHash string
 	if hashLen == 32 {
-		metadataHash = hex.EncodeToString(pushes[4].Data)
+		metadataHash = hex.EncodeToString(pushes[3].Data)
 	}
 
 	return &TokenMetadata{
 		Ticker:       ticker,
-		Name:         name,
 		MetadataHash: metadataHash,
 	}
-}
-
-// hasControlChars returns true if the string contains any control characters
-// (below 0x20 or 0x7f).
-func hasControlChars(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			return true
-		}
-	}
-	return false
 }
