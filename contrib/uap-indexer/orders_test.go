@@ -741,3 +741,43 @@ func TestOrderBackingValueDerivedFromPosition(t *testing.T) {
 		t.Errorf("ListOrders: expected backing %d derived from the position, got %d", positionValue, orders[0].BackingValue)
 	}
 }
+
+// TestListOrdersPageExcludesPendingBeforePaging pins where the pending filter
+// runs. Filtering the page in Go after the query drops rows LIMIT has already
+// counted, so a page whose orders are all pending comes back EMPTY while
+// hasMore still reports true -- a client paging naively stops at that empty
+// page and never sees the open orders behind it.
+//
+// Here order "aa..:0" sorts first (OrdersOrderBy is o.key) and is pending,
+// while "bb..:0" is open. Asking for one order must yield the open one.
+func TestListOrdersPageExcludesPendingBeforePaging(t *testing.T) {
+	idx := NewIndex()
+
+	for _, txid := range []string{"aa", "bb"} {
+		pos := &Position{
+			TxID: txid, Vout: 0, PubKey: "02aa",
+			Multiplier: 1000, Value: 5000000000, Height: 10,
+		}
+		seedPosition(t, idx, pos)
+		order := &Order{
+			TxID: pos.TxID, Vout: pos.Vout, Multiplier: pos.Multiplier,
+			ScriptSig: signedPush(t), PaymentScript: "5678", PaymentValue: 700000000,
+		}
+		if err := idx.PublishOrder(order); err != nil {
+			t.Fatalf("PublishOrder(%s) failed: %v", txid, err)
+		}
+	}
+
+	idx.SetPendingSpend(positionKey("aa", 0), "fill-tx")
+
+	got, _, err := idx.ListOrdersPage(nil, Page{Limit: 1, Offset: 0})
+	if err != nil {
+		t.Fatalf("ListOrdersPage failed: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("a page of 1 should hold the one open order, got %d", len(got))
+	}
+	if got[0].TxID != "bb" {
+		t.Errorf("expected the open order bb, got %s", got[0].TxID)
+	}
+}

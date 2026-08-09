@@ -146,3 +146,19 @@ func (c *RPCClient) EstimateSmartFee(blocks int) (int64, error) {
 	// FeRate arrives as coins per kB and is decoded straight to satoshis.
 	return int64(resp.FeRate), nil
 }
+
+// GetRawMempool returns the list of txids currently in the node's mempool.
+func (c *RPCClient) GetRawMempool() ([]string, error) {
+	var txids []string
+	err := c.call("getrawmempool", []interface{}{false}, &txids)
+	return txids, err
+}
+
+// GetRawTransaction returns a single transaction from the mempool or blockchain
+// with full input/output details (verbosity 1).
+func (c *RPCClient) GetRawTransaction(txid string) (*RPCTx, error) {
+	// This will return both confirmed and unconfirmed transactions.
+	var tx RPCTx
+	err := c.call("getrawtransaction", []interface{}{txid, 1}, &tx)
+	return &tx, err
+}

@@ -109,6 +109,11 @@ type Index struct {
 	// stored order carries, so resetting to zero on load costs nothing.
 	// Guarded by mu like every other write here.
 	lastCancelNonce int64
+
+	// pendingSpends maps known position outpoints to the txids of
+	// unconfirmed transactions spending them. Rebuilt on each poll of the
+	// mempool and guarded by mu alongside every other write.
+	pendingSpends *PendingSpendSet
 }
 
 // satMul multiplies, pinning to MaxInt64 on overflow rather than wrapping.
@@ -148,9 +153,10 @@ const DefaultReorgWindow = 15000
 
 func newIndex(store *Store) *Index {
 	return &Index{
-		store:       store,
-		TipHeight:   -1,
-		ReorgWindow: DefaultReorgWindow,
+		store:         store,
+		TipHeight:     -1,
+		ReorgWindow:   DefaultReorgWindow,
+		pendingSpends: NewPendingSpendSet(),
 	}
 }
 

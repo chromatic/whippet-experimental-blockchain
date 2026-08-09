@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	_ "modernc.org/sqlite"
@@ -980,17 +981,31 @@ func scanOrders(rows *sql.Rows) ([]Order, error) {
 }
 
 func (s *Store) ListOrders(multiplier *int64) ([]Order, error) {
-	out, _, err := s.ListOrdersPage(multiplier, Unlimited)
+	out, _, err := s.ListOrdersPage(multiplier, nil, Unlimited)
 	return out, err
 }
 
 // ListOrdersPage is ListOrders over a window, oldest order first with the
 // outpoint as a tiebreak so the order is total.
-func (s *Store) ListOrdersPage(multiplier *int64, page Page) ([]Order, bool, error) {
+// excluded holds outpoints to omit -- the positions currently being spent by
+// an unconfirmed transaction. It is applied HERE, in the query, rather than by
+// filtering the returned page in Go. Filtering afterwards would drop rows the
+// LIMIT had already counted, so a page whose orders were all pending would come
+// back empty while hasMore still said true: a client paging naively stops, and
+// one paging by offset walks over a moving boundary. Doing it in SQL keeps the
+// page full and hasMore honest. The list is bounded by the mempool, not by the
+// chain, so it stays short enough to inline.
+func (s *Store) ListOrdersPage(multiplier *int64, excluded []string, page Page) ([]Order, bool, error) {
 	q, args := orderQuery, []interface{}{}
 	if multiplier != nil {
 		q += ` AND p.multiplier = ?`
 		args = append(args, *multiplier)
+	}
+	if len(excluded) > 0 {
+		q += ` AND o.key NOT IN (?` + strings.Repeat(`,?`, len(excluded)-1) + `)`
+		for _, k := range excluded {
+			args = append(args, k)
+		}
 	}
 	// o.key is the outpoint and the table's primary key: unique, so this
 	// is a total order. There is no created_at COLUMN -- created_at lives

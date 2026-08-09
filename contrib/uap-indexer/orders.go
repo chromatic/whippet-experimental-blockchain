@@ -19,12 +19,12 @@ type Order struct {
 	ScriptSig     string `json:"script_sig"`     // hex; the maker's signed push (DER sig + hashtype byte)
 	PaymentScript string `json:"payment_script"` // hex
 	PaymentValue  int64  `json:"payment_value"`  // satoshis
+	CreatedAt     int64  `json:"created_at"`     // unix seconds, for display
 
-	// BackingValue is the satoshi value locked in the position this order
-	// sells. An order's price means nothing without it: a buyer otherwise
-	// cannot tell a fully-backed position from a hollowed-out one.
+	// BackingValue is the satoshi value locked in the position this order sells.
+	// Essential for buyers to assess whether the position is fully backed.
+	// Populated at publish time from the position itself.
 	BackingValue int64 `json:"backing_value"` // satoshis
-	CreatedAt    int64 `json:"created_at"`    // unix seconds, for display
 
 	// CancelNonce is a relay-assigned value, unique to this publish, that
 	// a cancellation for this order must sign over (see cancel_auth.go).
@@ -45,6 +45,17 @@ type Order struct {
 	// signCancelOrder and contrib/uap-web's api.js both treat this field
 	// as a string for exactly this reason -- never coerce it to Number.
 	CancelNonce int64 `json:"cancel_nonce,string"`
+
+	// Status is the order's confirmation state. Empty or "confirmed" means
+	// the position is unspent on-chain. "pending_fill" means the position
+	// is being spent by an unconfirmed transaction (see PendingTxid).
+	// Only set by GetOrder when the position is in the pending set; absent
+	// from ListOrders results (which exclude pending orders).
+	Status string `json:"status,omitempty"`
+
+	// PendingTxid is the txid of the unconfirmed transaction spending this
+	// order's position, when Status is "pending_fill". Empty otherwise.
+	PendingTxid string `json:"pending_txid,omitempty"`
 }
 
 const (
@@ -202,19 +213,51 @@ func (idx *Index) nextCancelNonce() int64 {
 }
 
 // ListOrders returns all open orders (i.e. whose underlying position is
-// still unspent), optionally filtered to a specific multiplier.
+// still unspent and not pending a fill), optionally filtered to a specific
+// multiplier. Orders whose positions are in the pending spend set are excluded.
 func (idx *Index) ListOrders(multiplierFilter *int64) ([]Order, error) {
-	return idx.store.ListOrders(multiplierFilter)
+	// Goes through the paged path so "open" is defined once. Filtering here
+	// as well would be a second copy of the rule: harmless while unlimited
+	// (there is no LIMIT to miscount), and free to drift out of agreement
+	// with the real one the moment either changes.
+	orders, _, err := idx.ListOrdersPage(multiplierFilter, Unlimited)
+	return orders, err
 }
 
-// ListOrdersPage is ListOrders over one page.
+// ListOrdersPage is ListOrders over one page. Orders whose positions are
+// pending fills are excluded from the results.
 func (idx *Index) ListOrdersPage(multiplierFilter *int64, page Page) ([]Order, bool, error) {
-	return idx.store.ListOrdersPage(multiplierFilter, page)
+	// The pending outpoints go INTO the query rather than being used to filter
+	// its result, so LIMIT counts only rows that will actually be served and
+	// hasMore describes the same set the caller got back. Filtering afterwards
+	// let a page of entirely-pending orders come back empty with hasMore true.
+	idx.mu.RLock()
+	pending := idx.pendingSpends.Keys()
+	idx.mu.RUnlock()
+
+	return idx.store.ListOrdersPage(multiplierFilter, pending, page)
 }
 
 // GetOrder looks up a single open order by the outpoint it sells.
+// If the position is in the pending spend set, the returned order will have
+// Status="pending_fill" and PendingTxid set to the filling transaction's ID.
 func (idx *Index) GetOrder(txid string, vout uint32) (Order, bool, error) {
-	return idx.store.Order(positionKey(txid, vout))
+	outpoint := positionKey(txid, vout)
+	o, ok, err := idx.store.Order(outpoint)
+	if err != nil {
+		return Order{}, false, err
+	}
+	if !ok {
+		return Order{}, false, nil
+	}
+
+	// Check if the position is in the pending spend set.
+	if pendingTxid, isPending := idx.IsPendingSpend(outpoint); isPending {
+		o.Status = "pending_fill"
+		o.PendingTxid = pendingTxid
+	}
+
+	return o, true, nil
 }
 
 // CancelOrder removes a published order. The caller must supply a valid

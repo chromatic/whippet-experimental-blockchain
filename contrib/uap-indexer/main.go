@@ -223,6 +223,14 @@ pollLoop:
 			log.Printf("sync error: %v", err)
 		}
 
+		// Poll the mempool to detect unconfirmed fills and prevent double-fills.
+		if err := idx.UpdatePendingSpends(rpc); err != nil {
+			log.Printf("mempool poll error: %v", err)
+			// Non-fatal: RPC failures don't shut down the indexer,
+			// and the pending set is left unchanged to avoid silently
+			// re-opening orders that are being filled.
+		}
+
 		select {
 		case <-ctx.Done():
 			break pollLoop
