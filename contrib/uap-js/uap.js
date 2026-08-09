@@ -731,6 +731,90 @@ function buildTransferTx(secp, opts) {
 }
 
 /**
+ * Build a melt transaction: redeem a position's backing to spendable WHIP.
+ * Spends the position and produces two outputs:
+ *   1. A dust-valued OP_MINT_TRANSFER covenant with the same pubkey and multiplier
+ *      (this satisfies CheckUapOutputConservation's covenant requirement)
+ *   2. A plain output taking the remainder (input - dust - fee)
+ *
+ * A position can never be melted to zero, because a covenant output always
+ * survives; the dust remainder is permanent. A position is only "fully
+ * redeemable" to the extent of (its value - dust - fee).
+ *
+ * @param secp EC library, see signSpend.
+ * @param opts {
+ *   input: { txid, vout, scriptCode (the position being melted),
+ *            value (satoshis), privKey (spender's private key) },
+ *   toPubkey, multiplier: the pubkey and multiplier for the new covenant output,
+ *   remainderScript (optional): Uint8Array for the remainder output; if omitted,
+ *     the remainder is discarded (leaves it as miner fee), which is an error if
+ *     remainder >= DEFAULT_DUST_LIMIT,
+ *   fee: satoshis to leave as miner fee (default 50000),
+ * }
+ * @returns signed transaction with covenant output at index 0, remainder at index 1
+ * @throws if the position is too small to satisfy dust + fee
+ */
+function buildMeltTx(secp, opts) {
+  const fee = opts.fee === undefined ? 50000 : opts.fee;
+  const maxFee = opts.maxFee === undefined ? DEFAULT_TRANSACTION_MAXFEE : opts.maxFee;
+  if (fee > maxFee) {
+    throw new Error(
+      `refusing to build a melt paying ${fee} satoshis in fees, above the ` +
+      `${maxFee} satoshi cap. Pass maxFee to authorise a larger fee.`
+    );
+  }
+
+  // remainderScript is required, not optional. Melting exists to recover the
+  // backing to something spendable; a melt with nowhere to send the remainder
+  // is not a melt, it is a burn that pays the difference to the miner. Making
+  // it mandatory means that transaction cannot be built by accident.
+  if (!opts.remainderScript || opts.remainderScript.length === 0) {
+    throw new Error(
+      'buildMeltTx requires remainderScript: the recovered backing needs a ' +
+      'destination, and omitting it would pay the whole remainder to the miner'
+    );
+  }
+
+  // The covenant output is what satisfies consensus (at least one
+  // same-multiplier covenant must survive), so it is pinned at dust: it is
+  // pure overhead, and every satoshi above dust left in it is backing that
+  // did not come out.
+  const dustValue = DEFAULT_DUST_LIMIT;
+  const remainder = opts.input.value - dustValue - fee;
+
+  // The remainder must itself clear dust. Testing only for `remainder < 0`
+  // would happily build a transaction whose payout is a sub-dust output, which
+  // no node will relay -- so the melt would look successful right up until
+  // broadcast. A position therefore needs two dust limits plus the fee to be
+  // meltable at all.
+  if (remainder < DEFAULT_DUST_LIMIT) {
+    throw new Error(
+      `position value ${opts.input.value} is insufficient to melt: need at ` +
+      `least ${dustValue + fee + DEFAULT_DUST_LIMIT} satoshis (${dustValue} for ` +
+      `the surviving covenant, ${fee} fee, and ${DEFAULT_DUST_LIMIT} so the ` +
+      `remainder itself clears dust), but only ${opts.input.value} available`
+    );
+  }
+
+  // Covenant at index 0, remainder at index 1.
+  const vout = [
+    { value: dustValue, scriptPubKey: buildTransferScript(opts.toPubkey, opts.multiplier) },
+    { value: remainder, scriptPubKey: opts.remainderScript }
+  ];
+
+  const tx = {
+    version: 1,
+    locktime: 0,
+    vin: [{ txid: opts.input.txid, vout: opts.input.vout, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+    vout
+  };
+
+  // Sign the input
+  tx.vin[0].scriptSig = signSpend(secp, opts.input.scriptCode, opts.input.privKey, tx, 0);
+  return tx;
+}
+
+/**
  * Sign a standing, fillable sell order for a UAP position: "I'll give up
  * this token IF the final transaction pays me exactly this much." Uses
  * SIGHASH_SINGLE|ANYONECANPAY, which commits only to the maker's own
@@ -910,6 +994,7 @@ export {
   signP2PKHInput,
   buildPaymentTx,
   buildTransferTx,
+  buildMeltTx,
   signMakerOrder,
   fillOrder,
   cancelMessage,

@@ -1111,3 +1111,290 @@ console.log('uap.js: all tests passed');
     'a 31-byte hash must be rejected'
   );
 }
+
+// ---- buildMeltTx ----
+// Build a transaction that redeems a position's backing: spends the position
+// and produces a dust-valued transfer covenant (same pubkey, same multiplier)
+// plus a plain output taking the remainder.
+{
+  const stubSecp = createStubSecp();
+
+  // Helper: a dummy P2PKH-like script for remainder outputs in tests
+  const dummyRemainderScript = new Uint8Array([0x76, 0xa9, 0x14, ...new Array(20).fill(0xff), 0x88, 0xac]);
+
+  // Test: buildMeltTx is exported
+  {
+    assert.strictEqual(typeof UAP.buildMeltTx, 'function', 'buildMeltTx should be exported');
+  }
+
+  // Test: buildMeltTx produces a transfer covenant output
+  // The output at index 0 must be a OP_MINT_TRANSFER covenant with the given pubkey and multiplier.
+  {
+    const privKey = new Uint8Array(32).fill(0x11);
+    const pubkey = new Uint8Array(33).fill(0x22);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 1000);
+    const fee = 50000;
+
+    const tx = UAP.buildMeltTx(stubSecp, {
+      input: {
+        txid: 'aa'.repeat(32),
+        vout: 0,
+        scriptCode,
+        value: 5000000,  // dust (1000000) + fee (50000) + a remainder that itself clears dust
+        privKey
+      },
+      toPubkey: pubkey,
+      multiplier: 1000,
+      fee,
+      remainderScript: dummyRemainderScript
+    });
+
+    // Output 0 should be the covenant output (dust-valued transfer)
+    assert.strictEqual(tx.vout.length, 2, 'melt tx should have exactly 2 outputs');
+    const covenantOutput = tx.vout[0];
+
+    // The covenant output should be a transfer script (OP_MINT_TRANSFER, not OP_MINT)
+    const expectedScript = UAP.buildTransferScript(pubkey, 1000);
+    assert.deepStrictEqual(covenantOutput.scriptPubKey, expectedScript, 'covenant output must be a OP_MINT_TRANSFER script');
+  }
+
+  // Test: covenant output has dust value
+  {
+    const privKey = new Uint8Array(32).fill(0x33);
+    const pubkey = new Uint8Array(33).fill(0x44);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 500);
+    const fee = 50000;
+    const inputValue = 5000000;
+
+    const tx = UAP.buildMeltTx(stubSecp, {
+      input: { txid: 'bb'.repeat(32), vout: 1, scriptCode, value: inputValue, privKey },
+      toPubkey: pubkey,
+      multiplier: 500,
+      fee,
+      remainderScript: dummyRemainderScript
+    });
+
+    const covenantOutput = tx.vout[0];
+    assert.strictEqual(covenantOutput.value, UAP.DEFAULT_DUST_LIMIT, 'covenant output must have exactly DEFAULT_DUST_LIMIT satoshis');
+  }
+
+  // Test: remainder output has correct value (input - dust - fee)
+  {
+    const privKey = new Uint8Array(32).fill(0x55);
+    const pubkey = new Uint8Array(33).fill(0x66);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 100);
+    const fee = 50000;
+    const inputValue = 5000000;
+
+    const tx = UAP.buildMeltTx(stubSecp, {
+      input: { txid: 'cc'.repeat(32), vout: 2, scriptCode, value: inputValue, privKey },
+      toPubkey: pubkey,
+      multiplier: 100,
+      fee,
+      remainderScript: dummyRemainderScript
+    });
+
+    const remainderOutput = tx.vout[1];
+    const expectedRemainder = inputValue - UAP.DEFAULT_DUST_LIMIT - fee;
+    assert.strictEqual(remainderOutput.value, expectedRemainder, 'remainder output must be input - dust - fee');
+  }
+
+  // Test: covenant output preserves multiplier
+  {
+    const privKey = new Uint8Array(32).fill(0x77);
+    const pubkey = new Uint8Array(33).fill(0x88);
+    pubkey[0] = 0x02;
+
+    // Test with multiplier 42 (fits in one byte, will be OP_42 which is 0x50 + 42)
+    const multiplier = 42;
+    const scriptCode = UAP.buildTransferScript(pubkey, multiplier);
+
+    const tx = UAP.buildMeltTx(stubSecp, {
+      input: { txid: 'dd'.repeat(32), vout: 3, scriptCode, value: 5000000, privKey },
+      toPubkey: pubkey,
+      multiplier,
+      fee: 30000,
+      remainderScript: dummyRemainderScript
+    });
+
+    const covenantOutput = tx.vout[0];
+    const expectedScript = UAP.buildTransferScript(pubkey, multiplier);
+    assert.deepStrictEqual(covenantOutput.scriptPubKey, expectedScript, 'covenant output must preserve multiplier');
+  }
+
+  // Test: melting a position too small to leave dust + fee is rejected
+  {
+    const privKey = new Uint8Array(32).fill(0x99);
+    const pubkey = new Uint8Array(33).fill(0xaa);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 1);
+    const fee = 50000;
+    // A meltable position needs TWO dust limits plus the fee: one for the
+    // covenant that must survive the spend, and one so the remainder output
+    // is itself relayable. One satoshi short of that.
+    const tooSmallValue = UAP.DEFAULT_DUST_LIMIT + fee + UAP.DEFAULT_DUST_LIMIT - 1;
+
+    assert.throws(
+      () => UAP.buildMeltTx(stubSecp, {
+        input: { txid: 'ee'.repeat(32), vout: 4, scriptCode, value: tooSmallValue, privKey },
+        toPubkey: pubkey,
+        multiplier: 1,
+        fee,
+        remainderScript: dummyRemainderScript
+      }),
+      /insufficient|too small|must/i,
+      'should reject a position whose remainder would not itself clear dust'
+    );
+  }
+
+  // Test: buildMeltTx refuses to build without a remainderScript.
+  // This is the burn path. The earlier implementation treated remainderScript
+  // as optional and, when the remainder happened to fall below the dust limit,
+  // emitted the covenant output alone -- paying the entire recovered backing
+  // to the miner as fee, silently, in the one function whose whole purpose is
+  // recovering that backing. Nothing in the suite covered it because every
+  // other test passes a remainderScript.
+  {
+    const privKey = new Uint8Array(32).fill(0x44);
+    const pubkey = new Uint8Array(33).fill(0xbb);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 1);
+
+    // Chosen so the remainder lands BELOW the dust limit: exactly the shape
+    // the old code turned into a silent burn rather than an error.
+    const value = UAP.DEFAULT_DUST_LIMIT + 50000 + (UAP.DEFAULT_DUST_LIMIT - 1);
+
+    assert.throws(
+      () => UAP.buildMeltTx(stubSecp, {
+        input: { txid: '11'.repeat(32), vout: 0, scriptCode, value, privKey },
+        toPubkey: pubkey,
+        multiplier: 1
+      }),
+      /remainderScript/,
+      'buildMeltTx must refuse to melt with nowhere to send the backing'
+    );
+  }
+
+  // Test: covenant value does not exceed input value
+  // (This is a check that dust + fee <= input value; see above test for boundary)
+  {
+    const privKey = new Uint8Array(32).fill(0xbb);
+    const pubkey = new Uint8Array(33).fill(0xcc);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 10);
+    const fee = 50000;
+    const inputValue = 5000000;
+
+    const tx = UAP.buildMeltTx(stubSecp, {
+      input: { txid: 'ff'.repeat(32), vout: 5, scriptCode, value: inputValue, privKey },
+      toPubkey: pubkey,
+      multiplier: 10,
+      fee,
+      remainderScript: dummyRemainderScript
+    });
+
+    const covenantOutput = tx.vout[0];
+    assert(covenantOutput.value <= inputValue, 'covenant output value must not exceed input value');
+  }
+
+  // Test: default fee is applied
+  {
+    const privKey = new Uint8Array(32).fill(0xdd);
+    const pubkey = new Uint8Array(33).fill(0xee);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 5);
+    const inputValue = 5000000;
+
+    // Call without specifying fee (should use default of 50000)
+    const tx = UAP.buildMeltTx(stubSecp, {
+      input: { txid: 'aa00'.repeat(16), vout: 6, scriptCode, value: inputValue, privKey },
+      toPubkey: pubkey,
+      multiplier: 5,
+      remainderScript: dummyRemainderScript
+    });
+
+    const remainderOutput = tx.vout[1];
+    const expectedRemainder = inputValue - UAP.DEFAULT_DUST_LIMIT - 50000; // 50000 is the default fee
+    assert.strictEqual(remainderOutput.value, expectedRemainder, 'buildMeltTx should use default fee of 50000');
+  }
+
+  // Test: transaction is signed (input has scriptSig)
+  {
+    const privKey = new Uint8Array(32).fill(0xff);
+    const pubkey = new Uint8Array(33).fill(0x01);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 20);
+
+    const tx = UAP.buildMeltTx(stubSecp, {
+      input: { txid: 'bb11'.repeat(16), vout: 7, scriptCode, value: 3000000, privKey },
+      toPubkey: pubkey,
+      multiplier: 20,
+      fee: 40000,
+      remainderScript: dummyRemainderScript
+    });
+
+    assert(tx.vin[0].scriptSig.length > 0, 'input should be signed (scriptSig should not be empty)');
+  }
+
+  // Test: melting a freshly minted position uses OP_MINT_TRANSFER, not OP_MINT
+  // (This is tested by the fact that buildMeltTx always uses buildTransferScript,
+  // which produces OP_MINT_TRANSFER regardless of the input being OP_MINT or OP_MINT_TRANSFER)
+  {
+    const privKey = new Uint8Array(32).fill(0x02);
+    const pubkey = new Uint8Array(33).fill(0x03);
+    pubkey[0] = 0x02;
+    const multiplier = 777;
+    const salt = new Uint8Array(20).fill(0x04);
+
+    // Input is a fresh mint (OP_MINT script)
+    const mintScriptCode = UAP.buildMintScript(pubkey, multiplier, salt);
+
+    const tx = UAP.buildMeltTx(stubSecp, {
+      input: { txid: 'cc22'.repeat(16), vout: 8, scriptCode: mintScriptCode, value: 4000000, privKey },
+      toPubkey: pubkey,
+      multiplier,
+      fee: 45000,
+      remainderScript: dummyRemainderScript
+    });
+
+    // The output must be a OP_MINT_TRANSFER script (which uses OP_MINT_TRANSFER, not OP_MINT)
+    const covenantOutput = tx.vout[0];
+    const expectedScript = UAP.buildTransferScript(pubkey, multiplier);
+    assert.deepStrictEqual(covenantOutput.scriptPubKey, expectedScript, 'melting a mint must still emit OP_MINT_TRANSFER, not OP_MINT');
+
+    // Verify it's using OP_MINT_TRANSFER (0xba), not OP_MINT (0xb5)
+    assert.strictEqual(covenantOutput.scriptPubKey[covenantOutput.scriptPubKey.length - 1], UAP.OP_MINT_TRANSFER, 'last byte of covenant output must be OP_MINT_TRANSFER');
+  }
+
+  // Test: fee cap enforcement (refuse a fee above DEFAULT_TRANSACTION_MAXFEE unless explicitly authorized)
+  {
+    const privKey = new Uint8Array(32).fill(0x04);
+    const pubkey = new Uint8Array(33).fill(0x05);
+    pubkey[0] = 0x02;
+
+    const scriptCode = UAP.buildTransferScript(pubkey, 1);
+
+    assert.throws(
+      () => UAP.buildMeltTx(stubSecp, {
+        input: { txid: 'dd33'.repeat(16), vout: 9, scriptCode, value: 1000000000, privKey },
+        toPubkey: pubkey,
+        multiplier: 1,
+        fee: UAP.DEFAULT_TRANSACTION_MAXFEE + 1,
+        remainderScript: dummyRemainderScript
+      }),
+      /fee/i,
+      'buildMeltTx must refuse a fee above the cap'
+    );
+  }
+}
