@@ -948,20 +948,32 @@ func (s *Store) Token(origin string) (TokenInfo, bool, error) {
 // orderQuery serves only open orders: the join drops any whose position has
 // been spent or has vanished in a reorg. Doing it here rather than in Go
 // keeps "open" defined in exactly one place.
-const orderQuery = `SELECT o.data FROM orders o JOIN positions p ON p.key = o.key WHERE p.spent = 0`
+const orderQuery = `SELECT o.data, p.value FROM orders o JOIN positions p ON p.key = o.key WHERE p.spent = 0`
 
 func scanOrders(rows *sql.Rows) ([]Order, error) {
 	defer rows.Close()
 	var out []Order
 	for rows.Next() {
 		var data []byte
-		if err := rows.Scan(&data); err != nil {
+		var backing int64
+		if err := rows.Scan(&data, &backing); err != nil {
 			return nil, err
 		}
 		var o Order
 		if err := json.Unmarshal(data, &o); err != nil {
 			return nil, err
 		}
+		// BackingValue comes off the joined position, never off the stored
+		// blob -- even though publishOrder also sets it, because the publish
+		// handler echoes the order straight back and that copy has to be
+		// right too. Deriving it here is what makes it right for rows written
+		// before the field existed: those blobs carry no backing_value key,
+		// so json.Unmarshal leaves it zero, and zero renders as an unbacked
+		// position -- exactly the ambiguity the field was added to remove.
+		// The join is already here to decide whether the order is open, so
+		// this costs nothing, and it cannot drift: an outpoint's value is
+		// immutable, which makes the position the only honest source.
+		o.BackingValue = backing
 		out = append(out, o)
 	}
 	return out, rows.Err()

@@ -19,7 +19,12 @@ type Order struct {
 	ScriptSig     string `json:"script_sig"`     // hex; the maker's signed push (DER sig + hashtype byte)
 	PaymentScript string `json:"payment_script"` // hex
 	PaymentValue  int64  `json:"payment_value"`  // satoshis
-	CreatedAt     int64  `json:"created_at"`     // unix seconds, for display
+
+	// BackingValue is the satoshi value locked in the position this order
+	// sells. An order's price means nothing without it: a buyer otherwise
+	// cannot tell a fully-backed position from a hollowed-out one.
+	BackingValue int64 `json:"backing_value"` // satoshis
+	CreatedAt    int64 `json:"created_at"`    // unix seconds, for display
 
 	// CancelNonce is a relay-assigned value, unique to this publish, that
 	// a cancellation for this order must sign over (see cancel_auth.go).
@@ -162,6 +167,7 @@ func (idx *Index) publishOrder(o *Order, fromMirror bool) error {
 	}
 
 	o.PubKey = pos.PubKey
+	o.BackingValue = pos.Value
 	o.CreatedAt = time.Now().Unix()
 	o.CancelNonce = idx.nextCancelNonce()
 	if err := t.putOrder(o); err != nil {

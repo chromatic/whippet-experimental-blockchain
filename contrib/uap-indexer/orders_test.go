@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"testing"
 )
 
@@ -605,5 +606,138 @@ func TestOrderReturnsWhenItsTransactionIsReMined(t *testing.T) {
 	}
 	if got.ScriptSig != sig || got.PaymentValue != 700000000 {
 		t.Errorf("the restored order does not match the original: got %+v", got)
+	}
+}
+
+// TestOrderBackingValuePopulated verifies that when an order is published,
+// the underlying position's value is captured and returned in list and get responses.
+// This is critical for buyers to determine if a position is fully backed.
+func TestOrderBackingValuePopulated(t *testing.T) {
+	idx := NewIndex()
+
+	// Create a position with a known backing value
+	positionValue := int64(5000000000) // 50 WHIP
+	multiplier := int64(1000)
+	pos := &Position{
+		TxID: "mint1", Vout: 0, PubKey: "02aa",
+		Multiplier: multiplier, Value: positionValue, IsMint: false, Height: 10,
+	}
+	seedPosition(t, idx, pos)
+
+	// Publish an order for this position
+	order := &Order{
+		TxID:          pos.TxID,
+		Vout:          pos.Vout,
+		Multiplier:    multiplier,
+		ScriptSig:     signedPush(t),
+		PaymentScript: "5678",
+		PaymentValue:  700000000,
+	}
+
+	if err := idx.PublishOrder(order); err != nil {
+		t.Fatalf("PublishOrder failed: %v", err)
+	}
+
+	// GetOrder should return the backing value
+	got, ok := mustGetOrder(t, idx, pos.TxID, pos.Vout)
+	if !ok {
+		t.Fatal("expected to find the published order")
+	}
+	if got.BackingValue != positionValue {
+		t.Errorf("GetOrder: expected backing value %d, got %d", positionValue, got.BackingValue)
+	}
+
+	// ListOrders should also return the backing value
+	orders := mustListOrders(t, idx, nil)
+	if len(orders) != 1 {
+		t.Fatalf("expected 1 open order, got %d", len(orders))
+	}
+	if orders[0].BackingValue != positionValue {
+		t.Errorf("ListOrders: expected backing value %d, got %d", positionValue, orders[0].BackingValue)
+	}
+
+	// ListOrdersPage should also return the backing value
+	page := Page{Limit: 10, Offset: 0}
+	ordersPage, hasMore, err := idx.ListOrdersPage(nil, page)
+	if err != nil {
+		t.Fatalf("ListOrdersPage failed: %v", err)
+	}
+	if hasMore {
+		t.Fatal("expected no more pages")
+	}
+	if len(ordersPage) != 1 {
+		t.Fatalf("expected 1 open order, got %d", len(ordersPage))
+	}
+	if ordersPage[0].BackingValue != positionValue {
+		t.Errorf("ListOrdersPage: expected backing value %d, got %d", positionValue, ordersPage[0].BackingValue)
+	}
+}
+
+// TestOrderBackingValueDerivedFromPosition is the test with teeth for the
+// migration case, which TestOrderBackingValuePopulated above cannot reach:
+// publishOrder writes BackingValue into the stored blob, so that test stays
+// green even if the read path never derives it at all.
+//
+// Orders persist as a JSON blob (orders(key, data)), so every order written
+// before backing_value existed carries no such key, and json.Unmarshal leaves
+// it zero. Zero renders as an unbacked position -- precisely the ambiguity the
+// field was added to remove. This strips the key back out of a stored blob to
+// stand in for one of those rows, then reads it back: only the join in
+// scanOrders can supply the right answer.
+func TestOrderBackingValueDerivedFromPosition(t *testing.T) {
+	idx := NewIndex()
+
+	positionValue := int64(5000000000)
+	pos := &Position{
+		TxID: "mint1", Vout: 0, PubKey: "02aa",
+		Multiplier: 1000, Value: positionValue, Height: 10,
+	}
+	seedPosition(t, idx, pos)
+
+	order := &Order{
+		TxID: pos.TxID, Vout: pos.Vout, Multiplier: pos.Multiplier,
+		ScriptSig: signedPush(t), PaymentScript: "5678", PaymentValue: 700000000,
+	}
+	if err := idx.PublishOrder(order); err != nil {
+		t.Fatalf("PublishOrder failed: %v", err)
+	}
+
+	// Rewrite the stored blob without backing_value, as a pre-existing row
+	// would have been written.
+	key := positionKey(pos.TxID, pos.Vout)
+	var stored []byte
+	if err := idx.store.db.QueryRow(`SELECT data FROM orders WHERE key = ?`, key).Scan(&stored); err != nil {
+		t.Fatalf("reading stored order: %v", err)
+	}
+	var fields map[string]interface{}
+	if err := json.Unmarshal(stored, &fields); err != nil {
+		t.Fatalf("unmarshalling stored order: %v", err)
+	}
+	if _, ok := fields["backing_value"]; !ok {
+		t.Fatal("stored blob has no backing_value key; this test no longer simulates an old row")
+	}
+	delete(fields, "backing_value")
+	legacy, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("remarshalling stored order: %v", err)
+	}
+	if _, err := idx.store.db.Exec(`UPDATE orders SET data = ? WHERE key = ?`, legacy, key); err != nil {
+		t.Fatalf("rewriting stored order: %v", err)
+	}
+
+	got, ok := mustGetOrder(t, idx, pos.TxID, pos.Vout)
+	if !ok {
+		t.Fatal("expected to find the published order")
+	}
+	if got.BackingValue != positionValue {
+		t.Errorf("GetOrder: expected backing %d derived from the position, got %d", positionValue, got.BackingValue)
+	}
+
+	orders := mustListOrders(t, idx, nil)
+	if len(orders) != 1 {
+		t.Fatalf("expected 1 open order, got %d", len(orders))
+	}
+	if orders[0].BackingValue != positionValue {
+		t.Errorf("ListOrders: expected backing %d derived from the position, got %d", positionValue, orders[0].BackingValue)
 	}
 }
