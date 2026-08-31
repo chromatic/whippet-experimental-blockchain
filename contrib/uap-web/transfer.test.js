@@ -50,6 +50,9 @@ const THEIR_P2SH_ADDRESS = addr.base58checkEncode(
 const MULTIPLIER = 100;
 
 // An OP_MINT_TRANSFER position worth 100 coins, addressed to us.
+// The mint that started the lineage every fixture position belongs to.
+const LINEAGE_ORIGIN_HEX = uap.bytesToHex(uap.deriveOrigin('bb'.repeat(32), 7));
+
 function makePosition(overrides = {}) {
   return {
     txid: 'aa'.repeat(32),
@@ -60,6 +63,13 @@ function makePosition(overrides = {}) {
     is_mint: false,
     height: 500,
     spent: false,
+    // The lineage this transfer belongs to. Deliberately derived from a
+    // DIFFERENT outpoint than the position's own, because that is the real
+    // relationship: a lineage is named after the mint that began it, and a
+    // position sitting anywhere downstream carries that name unchanged. A
+    // fixture whose origin happened to equal deriveOrigin(its own outpoint)
+    // would let "derive it from the outpoint" pass and hide the bug.
+    origin: LINEAGE_ORIGIN_HEX,
     ...overrides
   };
 }
@@ -143,6 +153,13 @@ function parseOutputScript(script) {
   } else {
     return { kind: 'other' };
   }
+  // v2 format: <pubkey> <multiplier> <origin32> OP_MINT_TRANSFER
+  // The origin is a 32-byte push, so the next byte should be 0x20 (32 in OP_PUSHDATA format)
+  if (script[pc] === 0x20 && pc + 1 + 32 + 1 === script.length && script[pc + 1 + 32] === OP_MINT_TRANSFER) {
+    // This is a v2 transfer script with origin
+    return { kind: 'covenant', pubkey, multiplier };
+  }
+  // v1-like or other format: check if OP_MINT_TRANSFER follows directly
   if (script[pc] !== OP_MINT_TRANSFER || pc + 1 !== script.length) return { kind: 'other' };
   return { kind: 'covenant', pubkey, multiplier };
 }
@@ -432,19 +449,19 @@ test('an already-spent position is rejected', () => {
     'spending a spent position produces a transaction the node will reject');
 });
 
-test('a fresh mint position without its script is rejected, naming the salt', () => {
+test('a fresh mint position without its script is rejected, naming the origin', () => {
   const errors = assertRejects(
     validInput({ position: makePosition({ is_mint: true }) }),
     'position',
-    'the salt is not recoverable from the indexer, so the scriptCode is unknown'
+    'the origin is not recoverable without knowing the outpoint'
   );
-  assert(errors.some((e) => /salt/.test(e.message)),
-    `error should name the salt, got ${JSON.stringify(errors)}`);
+  assert(errors.some((e) => /origin/.test(e.message)),
+    `error should name the origin, got ${JSON.stringify(errors)}`);
 });
 
 test('a fresh mint position WITH an explicit script_hex is accepted', () => {
   const salt = new Uint8Array(20).fill(0x33);
-  const mintScript = uap.buildMintScript(MY_PUBKEY, MULTIPLIER, salt);
+  const mintScript = uap.buildMintScript(MY_PUBKEY, MULTIPLIER);
   const plan = planOrThrow(validInput({
     position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(mintScript) })
   }));
@@ -704,7 +721,9 @@ test('the recipient covenant script is exactly what uap.buildTransferScript emit
   // shared builder rather than assembling its own copy of the format.
   const plan = planOrThrow(validInput());
   const { tx } = await buildOrThrow(plan);
-  const expected = uap.buildTransferScript(THEIR_PUBKEY, MULTIPLIER);
+  // The output continues the position's lineage; it is not named after the
+  // position's own outpoint.
+  const expected = uap.buildTransferScript(THEIR_PUBKEY, MULTIPLIER, uap.hexToBytes(LINEAGE_ORIGIN_HEX));
   assertEqual(uap.bytesToHex(tx.vout[0].scriptPubKey), uap.bytesToHex(expected));
 });
 
@@ -742,8 +761,13 @@ test('the covenant input is signed with SIGHASH_ALL over the position\'s own cov
   // RFC6979 makes signing deterministic, so the correct signature can be
   // recomputed here from first principles: the position's own covenant
   // script as scriptCode, SIGHASH_ALL, input 0. Byte equality pins both.
+  // scriptCode is the position's OWN script, which carries its lineage --
+  // not one named after the position's outpoint. Signing over the latter
+  // produces a signature that verifies against nothing on chain.
   const expected = uap.signSpend(
-    secp256k1, uap.buildTransferScript(MY_PUBKEY, MULTIPLIER), MY_PRIVKEY, tx, 0, uap.SIGHASH_ALL);
+    secp256k1,
+    uap.buildTransferScript(MY_PUBKEY, MULTIPLIER, uap.hexToBytes(LINEAGE_ORIGIN_HEX)),
+    MY_PRIVKEY, tx, 0, uap.SIGHASH_ALL);
   assertEqual(uap.bytesToHex(tx.vin[0].scriptSig), uap.bytesToHex(expected),
     'the covenant input must be signed over <ownPubKey> <multiplier> OP_MINT_TRANSFER, with SIGHASH_ALL');
 });
@@ -755,10 +779,11 @@ test('the covenant signature really does depend on its scriptCode and hash type'
   const plan = planOrThrow(validInput());
   const { tx } = await buildOrThrow(plan);
   const real = uap.bytesToHex(tx.vin[0].scriptSig);
-  const ownScript = uap.buildTransferScript(MY_PUBKEY, MULTIPLIER);
+  const origin = uap.deriveOrigin(plan.position.txid, plan.position.vout);
+  const ownScript = uap.buildTransferScript(MY_PUBKEY, MULTIPLIER, origin);
 
   const wrongScriptCode = uap.bytesToHex(
-    uap.signSpend(secp256k1, uap.buildTransferScript(THEIR_PUBKEY, MULTIPLIER), MY_PRIVKEY, tx, 0, uap.SIGHASH_ALL));
+    uap.signSpend(secp256k1, uap.buildTransferScript(THEIR_PUBKEY, MULTIPLIER, origin), MY_PRIVKEY, tx, 0, uap.SIGHASH_ALL));
   assert(wrongScriptCode !== real,
     'signing over the recipient\'s script instead of the position\'s must produce a different signature');
 
@@ -779,7 +804,7 @@ test('every fee-funding input is signed with SIGHASH_ALL too', async () => {
 
 test('a fresh mint is signed over the exact script_hex given, not a reconstructed transfer script', async () => {
   const salt = new Uint8Array(20).fill(0x33);
-  const mintScript = uap.buildMintScript(MY_PUBKEY, MULTIPLIER, salt);
+  const mintScript = uap.buildMintScript(MY_PUBKEY, MULTIPLIER);
   const plan = planOrThrow(validInput({
     position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(mintScript) })
   }));
@@ -790,7 +815,7 @@ test('a fresh mint is signed over the exact script_hex given, not a reconstructe
     'the mint script -- salt and all -- is the scriptCode consensus will use');
 
   const asTransfer = uap.bytesToHex(
-    uap.signSpend(secp256k1, uap.buildTransferScript(MY_PUBKEY, MULTIPLIER), MY_PRIVKEY, tx, 0, uap.SIGHASH_ALL));
+    uap.signSpend(secp256k1, uap.buildTransferScript(MY_PUBKEY, MULTIPLIER, new Uint8Array(32).fill(0x88)), MY_PRIVKEY, tx, 0, uap.SIGHASH_ALL));
   assert(asTransfer !== uap.bytesToHex(expected),
     'negative control: a mint script and a transfer script must not sign to the same bytes');
 });
@@ -817,7 +842,7 @@ test('a script_hex that is not a UAP covenant at all is rejected', () => {
     'a P2PKH script is not a covenant and must never be used as a covenant scriptCode');
   assertRejects(withScript(new Uint8Array([0xba])), 'position', 'a bare opcode is not a covenant');
   assertRejects(withScript('not hex'), 'position', 'unparseable hex must not reach the signer');
-  assertRejects(withScript(uap.bytesToHex(uap.buildTransferScript(MY_PUBKEY, MULTIPLIER)) + 'ff'),
+  assertRejects(withScript(uap.bytesToHex(uap.buildTransferScript(MY_PUBKEY, MULTIPLIER, new Uint8Array(32).fill(0x88))) + 'ff'),
     'position', 'trailing bytes after OP_MINT_TRANSFER make it a different script');
 });
 
@@ -831,66 +856,92 @@ test('a script_hex whose "pubkey" is not 33 or 65 bytes is rejected as not-a-cov
   //
   // Nor does the re-encode check cover this: uap.buildTransferScript happily
   // emits a script around a 32-byte push, so the script round-trips to itself.
-  const shortScript = uap.buildTransferScript(MY_PUBKEY.slice(1), MULTIPLIER);
+  const shortScript = uap.buildTransferScript(MY_PUBKEY.slice(1), MULTIPLIER, new Uint8Array(32).fill(0x88));
   const errors = assertRejects(withScript(shortScript), 'position',
     'a wrong-length pubkey push is not a UAP covenant, however well-formed the rest is');
   assert(errors.some((e) => /canonically encoded UAP covenant/.test(e.message)),
     `it must be refused as an unparseable covenant, not as someone else's key, got ${JSON.stringify(errors)}`);
 
   // 66 bytes: past the uncompressed length, same rule.
-  const longScript = uap.buildTransferScript(uap.concatBytes(MY_PUBKEY, MY_PUBKEY), MULTIPLIER);
+  const longScript = uap.buildTransferScript(uap.concatBytes(MY_PUBKEY, MY_PUBKEY), MULTIPLIER, new Uint8Array(32).fill(0x88));
   const longErrors = assertRejects(withScript(longScript), 'position', 'nor is an over-long one');
   assert(longErrors.some((e) => /canonically encoded UAP covenant/.test(e.message)),
     `the same for an over-long push, got ${JSON.stringify(longErrors)}`);
 });
 
-test('the mint salt length boundary is exactly consensus\'s: 15 bytes out, 16 bytes in', () => {
-  // vch.size() < 16 in ParseUapOutputScript (script.cpp:357). uap.js will not
-  // BUILD a script below that, so the short-salt case is assembled by hand --
-  // which is also how it would arrive, off the wire from an indexer.
-  const shortSalt = new Uint8Array(15).fill(0x33);
-  const handBuilt = uap.concatBytes(
+test('the origin length boundary is exactly consensus\'s: only 32 bytes is a transfer', () => {
+  // ParseUapOutputScript (script.cpp:363) requires vch.size() ==
+  // UAP_ORIGIN_SIZE for the third push, because every lineage comparison
+  // consensus makes is a comparison of these bytes: a short or long origin
+  // would either fail to match its own lineage or collide with another.
+  // uap.js will not BUILD one, so the off-size cases are assembled by hand --
+  // which is also how they would arrive, off the wire from an indexer.
+  const handBuilt = (origin) => uap.concatBytes(
     Uint8Array.of(33), MY_PUBKEY,
     Uint8Array.of(0x01, MULTIPLIER),
-    Uint8Array.of(shortSalt.length), shortSalt,
-    Uint8Array.of(0xb5)
+    Uint8Array.of(origin.length), origin,
+    Uint8Array.of(uap.OP_MINT_TRANSFER)
+  );
+
+  for (const n of [31, 33]) {
+    const errors = assertRejects(
+      withScript(handBuilt(new Uint8Array(n).fill(0x88))), 'position',
+      `a ${n}-byte origin is not a lineage consensus will parse, so this wallet must not sign over it as one`
+    );
+    assert(errors.some((e) => /canonically encoded UAP covenant/.test(e.message)),
+      `an off-size origin makes it not-a-covenant, got ${JSON.stringify(errors)}`);
+  }
+
+  // 32 bytes exactly must be ACCEPTED. Without this half the loop above would
+  // pass just as well against a guard that refused every transfer script.
+  planOrThrow(withScript(handBuilt(new Uint8Array(32).fill(0x88))));
+});
+
+test('a mint script with a third push is rejected: v2 mints carry no extra field', () => {
+  // v1 mints were `<pubkey> <mult> <salt> OP_MINT`. v2 removed the salt, and
+  // ParseUapOutputScript now requires pc == script.end() straight after
+  // OP_MINT (script.cpp:349). A leftover v1 mint script must therefore be
+  // refused outright rather than signed over as though the trailing push were
+  // harmless -- it is attacker-chosen bytes inside the signed preimage.
+  const v1Mint = uap.concatBytes(
+    Uint8Array.of(33), MY_PUBKEY,
+    Uint8Array.of(0x01, MULTIPLIER),
+    Uint8Array.of(20), new Uint8Array(20).fill(0x33),
+    Uint8Array.of(uap.OP_MINT)
   );
   const errors = assertRejects(
-    validInput({ position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(handBuilt) }) }),
+    validInput({ position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(v1Mint) }) }),
     'position',
-    'consensus will not parse this as a covenant, so this wallet must not sign over it as one'
+    'a v1 salted mint is not a v2 covenant'
   );
   assert(errors.some((e) => /canonically encoded UAP covenant/.test(e.message)),
-    `a short salt makes it not-a-covenant, got ${JSON.stringify(errors)}`);
+    `the salted form must be refused as not-a-covenant, got ${JSON.stringify(errors)}`);
 
-  // 16 bytes exactly is the boundary and must be ACCEPTED. Without this half
-  // the test above would pass just as well against a guard that refused every
-  // mint script, or one set at any threshold above 16.
+  // The v2 form of the same mint is accepted, so the check above is about the
+  // extra push and not about mints in general.
   planOrThrow(validInput({
-    position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(uap.buildMintScript(MY_PUBKEY, MULTIPLIER, new Uint8Array(16).fill(0x33))) })
+    position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(uap.buildMintScript(MY_PUBKEY, MULTIPLIER)) })
   }));
 });
 
-test('a salt too large for uap.js to re-encode is reported, not thrown', () => {
-  // uap.js's pushData throws above 0xffff bytes; consensus does not
-  // (CheckMinimalPush returns true for data.size() > 65535, script.cpp:287).
-  // Such a script really can be served to this wallet, and planTransfer's
-  // contract is {ok:false, errors} -- app.js's planSendTx has no try/catch, so
-  // a throw here is an unhandled rejection and a UI that silently does nothing.
-  const hugeSalt = new Uint8Array(65536).fill(0x33);
-  const pubkeyPush = uap.concatBytes(Uint8Array.of(33), MY_PUBKEY);
-  const multPush = Uint8Array.of(0x01, 0x64);   // MULTIPLIER = 100
-  const saltPush = uap.concatBytes(
+test('a push too large for uap.js to re-encode is reported, not thrown', () => {
+  // Consensus tolerates enormous pushes at the parse layer (CheckMinimalPush
+  // returns true for data.size() > 65535, script.cpp:287), so a script like
+  // this really can be served to this wallet. planTransfer's contract is
+  // {ok:false, errors} -- app.js's planSendTx has no try/catch, so a throw
+  // here is an unhandled rejection and a UI that silently does nothing.
+  const huge = new Uint8Array(65536).fill(0x33);
+  const script = uap.concatBytes(
+    Uint8Array.of(33), MY_PUBKEY,
+    Uint8Array.of(0x01, 0x64),                    // MULTIPLIER = 100
     Uint8Array.of(0x4e, 0x00, 0x00, 0x01, 0x00),  // OP_PUSHDATA4, 65536
-    hugeSalt
+    huge,
+    Uint8Array.of(uap.OP_MINT_TRANSFER)
   );
-  const script = uap.concatBytes(pubkeyPush, multPush, saltPush, Uint8Array.of(0xb5));
 
   let result;
   try {
-    result = planTransfer(validInput({
-      position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(script) })
-    }));
+    result = planTransfer(withScript(script));
   } catch (e) {
     throw new Error(`planTransfer must return errors, not throw, on attacker-supplied script_hex: ${e.message}`);
   }
@@ -899,14 +950,14 @@ test('a salt too large for uap.js to re-encode is reported, not thrown', () => {
 });
 
 test('a script_hex addressed to someone else is rejected', () => {
-  const errors = assertRejects(withScript(uap.buildTransferScript(THEIR_PUBKEY, MULTIPLIER)), 'position',
+  const errors = assertRejects(withScript(uap.buildTransferScript(THEIR_PUBKEY, MULTIPLIER, new Uint8Array(32).fill(0x88))), 'position',
     'signing over a covenant that pays someone else is the signing-oracle case');
   assert(errors.some((e) => /public key/i.test(e.message)),
     `error should name the pubkey mismatch, got ${JSON.stringify(errors)}`);
 });
 
 test('a script_hex carrying a different multiplier than the position is rejected', () => {
-  const errors = assertRejects(withScript(uap.buildTransferScript(MY_PUBKEY, MULTIPLIER + 1)), 'position',
+  const errors = assertRejects(withScript(uap.buildTransferScript(MY_PUBKEY, MULTIPLIER + 1, new Uint8Array(32).fill(0x88))), 'position',
     'the multiplier the signature commits to must be the one the plan reasoned about');
   assert(errors.some((e) => /multiplier/i.test(e.message)),
     `error should name the multiplier, got ${JSON.stringify(errors)}`);
@@ -927,21 +978,20 @@ test('a script_hex with a non-canonical multiplier push is rejected', () => {
 });
 
 test('a script_hex whose form contradicts is_mint is rejected', () => {
-  const salt = new Uint8Array(20).fill(0x33);
   assertRejects(
-    validInput({ position: makePosition({ is_mint: false, script_hex: uap.bytesToHex(uap.buildMintScript(MY_PUBKEY, MULTIPLIER, salt)) }) }),
+    validInput({ position: makePosition({ is_mint: false, script_hex: uap.bytesToHex(uap.buildMintScript(MY_PUBKEY, MULTIPLIER)) }) }),
     'position',
     'a mint script under a position the indexer says is not a mint means one of the two is lying'
   );
   assertRejects(
-    validInput({ position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(uap.buildTransferScript(MY_PUBKEY, MULTIPLIER)) }) }),
+    validInput({ position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(uap.buildTransferScript(MY_PUBKEY, MULTIPLIER, new Uint8Array(32).fill(0x88))) }) }),
     'position',
     'and the same the other way round'
   );
 });
 
 test('a good script_hex is still accepted, and is what gets signed', async () => {
-  const script = uap.buildTransferScript(MY_PUBKEY, MULTIPLIER);
+  const script = uap.buildTransferScript(MY_PUBKEY, MULTIPLIER, new Uint8Array(32).fill(0x88));
   const plan = planOrThrow(withScript(script));
   const { tx } = await buildOrThrow(plan);
   const expected = uap.signSpend(secp256k1, script, MY_PRIVKEY, tx, 0, uap.SIGHASH_ALL);
@@ -954,7 +1004,7 @@ test('buildTransferTx re-validates script_hex and refuses to sign a tampered pla
   // it between plan and build gets its script signed. The signer must
   // check for itself.
   const plan = planOrThrow(validInput());
-  plan.position = { ...plan.position, script_hex: uap.bytesToHex(uap.buildTransferScript(THEIR_PUBKEY, MULTIPLIER)) };
+  plan.position = { ...plan.position, script_hex: uap.bytesToHex(uap.buildTransferScript(THEIR_PUBKEY, MULTIPLIER, new Uint8Array(32).fill(0x88))) };
   await assertThrows(
     () => buildTransferTx({ secp: secp256k1, plan, privKey: MY_PRIVKEY }),
     'refusing to sign'
@@ -964,18 +1014,17 @@ test('buildTransferTx re-validates script_hex and refuses to sign a tampered pla
 test('buildTransferTx refuses a mint-form script swapped in under a transfer position', async () => {
   // The tampered script here keeps OUR pubkey and OUR multiplier, so every
   // check except the mint/transfer form one passes. What changes is the
-  // FORM: `<pubkey> <mult> <salt> OP_MINT` instead of `<pubkey> <mult>
-  // OP_MINT_TRANSFER`. The salt is unconstrained in length and content, so
-  // skipping the form check at the point of use gets the user's key to sign
-  // a preimage containing an attacker-chosen blob -- which is the whole
-  // substitution this re-validation exists to stop. planTransfer catches it;
-  // so must the signer, because the plan only holds a reference to the
-  // caller's position object.
-  const attackerBlob = new Uint8Array(64).fill(0x41);
+  // FORM: `<pubkey> <mult> OP_MINT` instead of `<pubkey> <mult> <origin>
+  // OP_MINT_TRANSFER`. That drops the 32-byte lineage the signature would
+  // otherwise commit to, so skipping the form check at the point of use gets
+  // the user's key to sign a preimage that says nothing about which token is
+  // moving -- which is the whole substitution this re-validation exists to
+  // stop. planTransfer catches it; so must the signer, because the plan only
+  // holds a reference to the caller's position object.
   const plan = planOrThrow(validInput());
   plan.position = {
     ...plan.position,
-    script_hex: uap.bytesToHex(uap.buildMintScript(MY_PUBKEY, MULTIPLIER, attackerBlob))
+    script_hex: uap.bytesToHex(uap.buildMintScript(MY_PUBKEY, MULTIPLIER))
   };
   await assertThrows(
     () => buildTransferTx({ secp: secp256k1, plan, privKey: MY_PRIVKEY }),
@@ -987,13 +1036,12 @@ test('buildTransferTx refuses a transfer-form script swapped in under a mint pos
   // The mirror image, and not redundant: it is the branch that proves the
   // signer compares the form against THIS position rather than hard-coding
   // one form as acceptable.
-  const salt = new Uint8Array(20).fill(0x33);
   const plan = planOrThrow(validInput({
-    position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(uap.buildMintScript(MY_PUBKEY, MULTIPLIER, salt)) })
+    position: makePosition({ is_mint: true, script_hex: uap.bytesToHex(uap.buildMintScript(MY_PUBKEY, MULTIPLIER)) })
   }));
   plan.position = {
     ...plan.position,
-    script_hex: uap.bytesToHex(uap.buildTransferScript(MY_PUBKEY, MULTIPLIER))
+    script_hex: uap.bytesToHex(uap.buildTransferScript(MY_PUBKEY, MULTIPLIER, new Uint8Array(32).fill(0x88)))
   };
   await assertThrows(
     () => buildTransferTx({ secp: secp256k1, plan, privKey: MY_PRIVKEY }),

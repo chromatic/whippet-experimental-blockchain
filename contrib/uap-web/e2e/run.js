@@ -224,9 +224,16 @@ async function main() {
         `(want ${want}…, got ${wuapOut.scriptPubKey.hex})`);
     }
 
+    // The lineage a mint creates is SHA256(txid_reversed || vout_le) -- NOT
+    // the "txid:vout" string v1 used, which is what this assertion looked for
+    // until the covenant change. Deriving it here with uap.js and matching it
+    // against what the Go indexer published is the cross-implementation check
+    // that the two agree about lineage identity on real chain data.
+    const expectedOrigin = uap.bytesToHex(uap.deriveOrigin(mintTxid, mintVout ? mintVout.n : 0));
     const tokens = await st.api.get('/api/tokens');
-    const token = tokens.find((t) => t.origin === `${mintTxid}:${mintVout ? mintVout.n : 0}`);
-    check(!!token, `the indexer lists the new token (${tokens.length} token)`);
+    const token = tokens.find((t) => t.origin === expectedOrigin);
+    check(!!token, `the indexer lists the new token under the lineage uap-js derives ` +
+      `(want ${expectedOrigin}, got ${tokens.map((t) => t.origin).join(', ') || 'none'})`);
     if (token) {
       checkEqual(token.ticker, MINT_TICKER,
         `the indexer reports the ticker uppercased from the typed '${MINT_TICKER_TYPED}'`);

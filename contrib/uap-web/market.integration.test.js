@@ -111,7 +111,7 @@ async function main() {
       const mintPubKey = secp.getPublicKey(mintPrivKey, true);
       const salt = new Uint8Array(20);
       crypto.getRandomValues(salt);
-      const mintScript = UAP.buildMintScript(mintPubKey, MULTIPLIER, salt);
+      const mintScript = UAP.buildMintScript(mintPubKey, MULTIPLIER);
 
       const mintValue = 2000 * UAP.COIN; // above the 1000-coin entry fee
       const fee = UAP.RECOMMENDED_MIN_TX_FEE;
@@ -164,7 +164,7 @@ async function main() {
         pubkey: bytesToHex(makerPubKey),
         value: transferTx.vout[0].value,
         height: 0,
-        scriptPubKey: bytesToHex(UAP.buildTransferScript(makerPubKey, MULTIPLIER)),
+        scriptPubKey: bytesToHex(UAP.buildTransferScript(makerPubKey, MULTIPLIER, UAP.deriveOrigin(makerOrder.txid, makerOrder.vout))),
       };
     }
 
@@ -176,7 +176,7 @@ async function main() {
         input: {
           txid: pos.txid,
           vout: pos.vout,
-          scriptCode: UAP.buildTransferScript(makerPubKey, MULTIPLIER),
+          scriptCode: UAP.buildTransferScript(makerPubKey, MULTIPLIER, UAP.deriveOrigin(makerOrder.txid, makerOrder.vout)),
         },
         privKey: makerPrivKey,
         paymentScript: makerPaymentScript,
@@ -262,7 +262,7 @@ async function main() {
       assert(satoshisFromCoins(tokenOut.value) === position.value,
         `covenant carries ${satoshisFromCoins(tokenOut.value)}, expected the full position ${position.value}`);
       assert(
-        tokenOut.scriptPubKey.hex === bytesToHex(UAP.buildTransferScript(takerPubKey, MULTIPLIER)),
+        tokenOut.scriptPubKey.hex === bytesToHex(UAP.buildTransferScript(takerPubKey, MULTIPLIER, UAP.deriveOrigin(makerOrder.txid, makerOrder.vout))),
         'token covenant is not addressed to the taker with the same multiplier'
       );
     });

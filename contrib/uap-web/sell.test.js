@@ -17,6 +17,11 @@ const POSITION = {
   vout: 1,
   multiplier: 1000,
   value: 500000000,
+  // A transfer belongs to a lineage, and that lineage is NOT derivable from
+  // this position's own outpoint -- it was fixed at some ancestor mint's
+  // first spend. The indexer publishes it; a fixture that omits it is
+  // describing a position that cannot exist.
+  origin: uap.bytesToHex(uap.deriveOrigin('b'.repeat(64), 0)),
 };
 
 // =============================================================================
@@ -181,15 +186,17 @@ test('two sales of the same position at different prices differ', () => {
 // pinned here, where it is cheap to catch.
 // =============================================================================
 
-// A freshly minted position: `<pubkey> <multiplier> <salt> OP_MINT`, whose
-// salt exists only in the on-chain script. The indexer publishes the script
-// as script_hex for exactly this reason.
+// A freshly minted position: `<pubkey> <multiplier> OP_MINT`. Under v1 this
+// also carried a salt that existed only in the on-chain script, which is why
+// script_hex was indispensable here. v2 dropped the salt, so a mint is now
+// fully determined by published fields -- script_hex is still supplied
+// because the real indexer supplies it, and signing over the script the chain
+// actually holds beats signing over one we rebuilt.
 const MINT_POSITION = {
   ...POSITION,
   is_mint: true,
-  script_hex: uap.bytesToHex(
-    uap.buildMintScript(PUB, POSITION.multiplier, new Uint8Array(16).fill(0xab))
-  )
+  origin: undefined, // a mint has no origin in its script; its outpoint is its identity
+  script_hex: uap.bytesToHex(uap.buildMintScript(PUB, POSITION.multiplier))
 };
 
 test('a mint position is signed over its mint script, not a transfer script', () => {
@@ -208,26 +215,47 @@ test('a mint position is signed over its mint script, not a transfer script', ()
     'a mint covenant must not be signed as though it were a transfer covenant');
 });
 
-test('a mint position with no script_hex is refused, not guessed at', () => {
-  // Without the salt the script cannot be rebuilt, and guessing produces an
-  // order that looks perfect and can never be filled.
+test('a transfer position with neither script_hex nor origin is refused, not guessed at', () => {
+  // v2 inverted this test. It used to be the MINT that could not be rebuilt,
+  // because its salt lived only in the on-chain script. The salt is gone, so
+  // a mint rebuilds exactly -- and the TRANSFER became the form carrying an
+  // underivable field: its lineage origin, set at an ancestor mint's first
+  // spend and unrelated to this position's own outpoint.
+  //
+  // Guessing it (deriving from this outpoint, which is what the code did)
+  // produces an order that looks perfect, signs cleanly, and can never be
+  // filled, because the signature commits to a scriptCode that is not this
+  // position's.
+  const { origin, ...noOrigin } = POSITION;
   assertThrows(
     () => buildSellOrder({
-      secp, position: { ...POSITION, is_mint: true }, privKey: PRIV, pubKey: PUB,
+      secp, position: noOrigin, privKey: PRIV, pubKey: PUB,
       priceSats: 250000000, ownAddress: ADDRESS,
     }),
-    'salt'
+    'origin'
   );
+});
+
+test('a mint position with no script_hex rebuilds, because v2 mints hide nothing', () => {
+  // The counterpart to the test above: `<pubkey> <multiplier> OP_MINT` is
+  // fully determined by fields the indexer publishes, so there is nothing
+  // left to guess at and refusing would be pointless caution.
+  const order = buildSellOrder({
+    secp, position: { ...POSITION, origin: undefined, is_mint: true }, privKey: PRIV, pubKey: PUB,
+    priceSats: 250000000, ownAddress: ADDRESS,
+  });
+  assert(order.script_sig, 'a v2 mint position should be sellable without script_hex');
 });
 
 test('a script_hex that is not this maker\'s covenant is refused', () => {
   const someoneElse = secp.getPublicKey(new Uint8Array(32).fill(9), true);
+  const origin = new Uint8Array(32).fill(0x77);
   assertThrows(
     () => buildSellOrder({
       secp,
       position: {
         ...POSITION,
-        script_hex: uap.bytesToHex(uap.buildTransferScript(someoneElse, POSITION.multiplier))
+        script_hex: uap.bytesToHex(uap.buildTransferScript(someoneElse, POSITION.multiplier, origin))
       },
       privKey: PRIV, pubKey: PUB, priceSats: 250000000, ownAddress: ADDRESS,
     }),

@@ -171,11 +171,19 @@ export async function buildFillTx({
 }) {
   // Build the maker's order object in the format fillOrder expects:
   // { input: {txid, vout}, scriptSig, paymentScript, paymentValue }
+  if (!order.origin || !/^[0-9a-f]{64}$/.test(order.origin)) {
+    throw new Error(
+      'this order does not publish its position\'s lineage origin, so the ' +
+      'token output cannot be built: the relay must serve `origin` on every ' +
+      'order (a taker cannot derive it -- see fillOrder in uap-js)'
+    );
+  }
   const makerOrder = {
     input: {
       txid: order.txid,
       vout: order.vout
     },
+    origin: uap.hexToBytes(order.origin),
     scriptSig: uap.hexToBytes(order.script_sig),
     paymentScript: uap.hexToBytes(order.payment_script),
     paymentValue: order.payment_value

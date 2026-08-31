@@ -35,7 +35,12 @@ const TEST_ORDER = {
   script_sig: '47304402203e4516feda7f735057ce8cac3b1a50de0da3c8a7e5f77a8a7c6b5a4d9e8f7a6b02204a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f8301',
   payment_script: 'a914' + 'aa'.repeat(20) + '87',
   payment_value: 5000000,
-  created_at: 1609459200
+  created_at: 1609459200,
+  // The lineage of the position being sold. The relay reads it off the
+  // position and publishes it because a taker cannot work it out: an order
+  // carries the maker's scriptSig, never their scriptPubKey, so for a
+  // transfer the origin is simply not visible from the taker's side.
+  origin: uap.bytesToHex(uap.deriveOrigin('cc'.repeat(32), 1))
 };
 
 // A position with a matching UAP (the token for sale)
@@ -46,7 +51,7 @@ const TEST_POSITION = {
   pubkey: TEST_ORDER.pubkey,
   value: 1000 * COIN,
   height: 100,
-  scriptPubKey: Array.from(uap.buildTransferScript(TEST_PUBKEY, 100)).map(b => b.toString(16).padStart(2, '0')).join('')
+  scriptPubKey: Array.from(uap.buildTransferScript(TEST_PUBKEY, 100, uap.deriveOrigin(TEST_ORDER.txid, TEST_ORDER.vout))).map(b => b.toString(16).padStart(2, '0')).join('')
 };
 
 // Taker's UTXOs for payment. This funds payment + fee exactly

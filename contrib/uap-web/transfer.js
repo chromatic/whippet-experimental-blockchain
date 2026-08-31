@@ -195,7 +195,7 @@ function scriptNum(bytes) {
  *
  * Canonicality is enforced by re-encoding rather than by a second copy of
  * CheckMinimalPush: uap.js's builders emit exactly the one encoding
- * consensus accepts (a direct push for the pubkey and the salt, OP_0 /
+ * consensus accepts (a direct push for the pubkey and the origin, OP_0 /
  * OP_1..OP_16 / a minimal CScriptNum push for the multiplier), so a script
  * that does not re-serialize to itself was not canonically encoded and is
  * not a valid covenant. That keeps the accepted set defined by the same code
@@ -225,31 +225,23 @@ function parseUapCovenant(script) {
   }
   if (!Number.isInteger(multiplier) || multiplier < 0 || multiplier > MAX_MULTIPLIER) return null;
 
-  const tailOp = readOp(script, multOp.next);
-  if (!tailOp) return null;
+  const thirdOp = readOp(script, multOp.next);
+  if (!thirdOp) return null;
 
-  if (tailOp.opcode === OP_MINT_TRANSFER) {
-    if (tailOp.next !== script.length) return null;
-    if (!sameBytes(script, uap.buildTransferScript(pubkey, multiplier))) return null;
+  // Check for v2 transfer: <pubkey> <multiplier> <origin32> OP_MINT_TRANSFER
+  if (thirdOp.data && thirdOp.data.length === 32) {
+    // Third element is a 32-byte data push (the origin)
+    const origin = thirdOp.data;
+    const mintOp = readOp(script, thirdOp.next);
+    if (!mintOp || mintOp.opcode !== OP_MINT_TRANSFER || mintOp.next !== script.length) return null;
+    if (!sameBytes(script, uap.buildTransferScript(pubkey, multiplier, origin))) return null;
     return { pubkey, multiplier, isMint: false };
   }
 
-  // Otherwise the third element must have been the salt push, then OP_MINT.
-  if (!tailOp.data || tailOp.data.length < 16) return null;
-  const mintOp = readOp(script, tailOp.next);
-  if (!mintOp || mintOp.opcode !== OP_MINT || mintOp.next !== script.length) return null;
-  // uap.js's pushData throws above 0xffff bytes, and consensus does NOT: a
-  // PUSHDATA4 of a 64KiB+ salt is a minimal push as far as CheckMinimalPush
-  // is concerned (script.cpp), so such a script can really exist and can
-  // really be served to this wallet. A parser must answer "not a covenant I
-  // can verify" for it, not throw -- planTransfer's contract is
-  // {ok: false, errors}, and app.js's planSendTx does not catch.
-  let reencoded;
-  try {
-    reencoded = uap.buildMintScript(pubkey, multiplier, tailOp.data);
-  } catch (e) {
-    return null;
-  }
+  // Otherwise check for v2 mint: <pubkey> <multiplier> OP_MINT (no salt, no third element)
+  if (thirdOp.opcode !== uap.OP_MINT) return null;
+  if (thirdOp.next !== script.length) return null;
+  const reencoded = uap.buildMintScript(pubkey, multiplier);
   if (!sameBytes(script, reencoded)) return null;
   return { pubkey, multiplier, isMint: true };
 }
@@ -294,7 +286,7 @@ function validatePositionScript(scriptHex, expectedPubKey, expectedMultiplier, e
     return {
       ok: false,
       message: 'Position script_hex is not a canonically encoded UAP covenant ' +
-        '(<pubkey> <multiplier> OP_MINT_TRANSFER, or <pubkey> <multiplier> <salt> OP_MINT). ' +
+        '(<pubkey> <multiplier> OP_MINT for mints, or <pubkey> <multiplier> <origin32> OP_MINT_TRANSFER for transfers). ' +
         'Signing over it would authorise a script this wallet cannot verify.'
     };
   }
@@ -481,18 +473,18 @@ export function planTransfer({
       }
     }
 
-    // A fresh OP_MINT position's script is `<pubkey> <mult> <salt> OP_MINT`,
-    // and the salt is not recoverable from anything the indexer serves
-    // (see the Position struct in contrib/uap-indexer/index.go -- no salt,
-    // no script hex). The scriptCode is what the signature commits to, so
-    // without it a signature over a guessed script is simply invalid. Say
-    // so instead of building an unspendable transaction; `script_hex` is
-    // the escape hatch for a caller that does know the script.
+    // A fresh OP_MINT position's script is `<pubkey> <mult> OP_MINT` in v2 format.
+    // However, mints don't have an origin in the script itself - the origin is derived
+    // from the outpoint when the mint is first spent. Without knowing the outpoint
+    // (txid and vout), this wallet cannot reconstruct the origin for the transfer output.
+    // The scriptCode is what the signature commits to, so without it a signature over
+    // a guessed script is simply invalid. Say so instead of building an unspendable
+    // transaction; `script_hex` is the escape hatch for a caller that does know the script.
     if (position.is_mint === true && !position.script_hex) {
       errors.push({
         field: 'position',
-        message: 'This is a freshly minted position and its salt is not available from the indexer, ' +
-          'so this wallet cannot sign a spend of it. Transfer it once from a wallet that has the salt first.'
+        message: 'This is a freshly minted position and this wallet cannot derive the origin for spending it ' +
+          'without knowing the outpoint. Provide the script_hex explicitly, or transfer it once from a wallet that knows the outpoint.'
       });
     }
 
@@ -808,14 +800,22 @@ export async function buildTransferTx({ secp, plan, privKey }) {
     multiplier: plan.multiplier
   });
 
+  // Every covenant output carries the lineage of the position being spent.
+  // For a mint that is SHA256 of its outpoint (this is its first spend, where
+  // identity is created); for a transfer it is the origin already in its
+  // script, carried forward unchanged. originForSpend makes that distinction
+  // -- deriving from the outpoint in both cases silently renames a transfer
+  // into a lineage with no input here, which consensus rejects.
+  const outputOrigin = uap.originForSpend(positionScript, plan.position.txid, plan.position.vout);
+
   const vout = plan.outputs.map((out) => {
     if (out.kind === OUTPUT_WHIP_CHANGE) {
       return { value: out.value, scriptPubKey: addr.buildP2PKHScript(out.pubKey) };
     }
     // Both token outputs are the same covenant format, built by the same
-    // uap-js helper fillOrder() uses. Nothing about the script is
-    // assembled here.
-    return { value: out.value, scriptPubKey: uap.buildTransferScript(out.pubKey, out.multiplier) };
+    // uap-js helper fillOrder() uses. Each output carries the same origin as
+    // the position being spent (the lineage is preserved).
+    return { value: out.value, scriptPubKey: uap.buildTransferScript(out.pubKey, out.multiplier, outputOrigin) };
   });
 
   const tx = {
@@ -865,9 +865,9 @@ export async function buildTransferTx({ secp, plan, privKey }) {
  * For an OP_MINT_TRANSFER position this is fully determined by fields the
  * indexer publishes, and rebuilding it with the same helper that created it
  * is safer than trusting a hex string over the wire. An explicit
- * `script_hex` wins where one is supplied (the only way to spend a fresh
- * mint, whose salt is not published) -- but only after it has been proven to
- * be the covenant this plan is about.
+ * `script_hex` wins where one is supplied (the only way to spend a transfer
+ * whose lineage origin the indexer has not published) -- but only after it
+ * has been proven to be the covenant this plan is about.
  *
  * That proof is repeated here even though planTransfer already made it. The
  * plan holds a *reference* to the caller's position object, so anything that
@@ -878,12 +878,12 @@ export async function buildTransferTx({ secp, plan, privKey }) {
  * is no safe way to continue.
  *
  * It is the SAME check planTransfer makes, mint/transfer form included. That
- * last part is the whole point: a mint covenant is `<pubkey> <mult> <salt>
- * OP_MINT`, and the salt is arbitrary bytes of arbitrary length. Skipping the
- * form check here (by passing null) would let an attacker who can mutate the
- * position object swap the transfer covenant for a mint-form one carrying a
- * blob of their choosing, and get the user's key to sign a preimage over it
- * -- exactly the substitution this function exists to stop.
+ * last part is the whole point: the two forms differ by a 32-byte origin push
+ * that names the lineage. Skipping the form check here (by passing null) would
+ * let an attacker who can mutate the position object swap in a covenant of the
+ * other form -- reassigning the position to a lineage of their choosing, or
+ * stripping its lineage entirely -- and get the user's key to sign a preimage
+ * over it. That is exactly the substitution this function exists to stop.
  * @private
  * Exported because signing a transfer is not the only place a covenant's own
  * script has to be reconstructed: buildSellOrder signs over the very same
@@ -900,8 +900,26 @@ export function positionScriptOf({ position, ownPubKey, multiplier }) {
     }
     return check.script;
   }
+  // v2 INVERTED which form is reconstructable. Read this before changing it.
+  //
+  // A MINT is now `<pubkey> <multiplier> OP_MINT` -- both fields published,
+  // nothing hidden. The salt that used to make a fresh mint unspendable
+  // without its script_hex is gone, so a mint now rebuilds exactly.
   if (position.is_mint === true) {
-    throw new Error('cannot reconstruct a fresh mint position\'s script without its salt');
+    return uap.buildMintScript(ownPubKey, multiplier);
   }
-  return uap.buildTransferScript(ownPubKey, multiplier);
+  // A TRANSFER is now the form carrying a field that cannot be derived from
+  // its own outpoint: the lineage origin. It names the token, was fixed at
+  // some ancestor mint's first spend, and bears no relationship to where this
+  // particular position sits. Deriving it from this outpoint -- which is what
+  // this code did -- yields a script that is not this position's, so the
+  // signature commits to the wrong scriptCode and the spend can never verify.
+  if (!position.origin || !/^[0-9a-f]{64}$/.test(position.origin)) {
+    throw new Error(
+      "cannot reconstruct a transfer position's script: it needs the 32-byte " +
+      'lineage origin, which is not derivable from the outpoint and is not ' +
+      'present on this position (supply script_hex or origin)'
+    );
+  }
+  return uap.buildTransferScript(ownPubKey, multiplier, uap.hexToBytes(position.origin));
 }

@@ -124,9 +124,6 @@ export function planMint({
   }
 
   // ========== PLAN CREATION ==========
-  // Generate a fresh salt
-  const salt = uap.randomSalt(20);
-
   // Calculate final fee and change
   const totalUtxoValue = utxos.reduce((sum, u) => sum + u.value, 0);
   const nInputs = utxos.length;
@@ -136,7 +133,6 @@ export function planMint({
   const fee = Math.max(estimatedFee, uap.RECOMMENDED_MIN_TX_FEE);
   const change = totalUtxoValue - amountSats - fee;
 
-  // Build the mint script (we'll need pubKey from buildMintTx, but store for reference)
   // The plan carries the NORMALIZED (uppercased) ticker, so that what gets
   // reviewed on screen is exactly what gets minted.
   const plan = {
@@ -145,7 +141,6 @@ export function planMint({
     amountSats,
     fee,
     change,
-    salt,
     feeRate,
     // script will be built in buildMintTx when we have the pubKey
   };
@@ -163,7 +158,7 @@ export function planMint({
  * @param {Uint8Array} options.pubKey - public key (compressed)
  * @param {Array} options.utxos - UTXOs to spend from
  * @param {string} options.changeAddress - address for change output
- * @returns {Promise<Object>} { rawHex, txid?, mintScript, salt, value }
+ * @returns {Promise<Object>} { rawHex, txid?, mintScript, metadataScript, value }
  */
 export async function buildMintTx({
   secp,
@@ -173,7 +168,12 @@ export async function buildMintTx({
   utxos,
   changeAddress
 }) {
-  const mintScript = uap.buildMintScript(pubKey, plan.multiplier, plan.salt);
+  // v2 mint covenant: `<pubkey> <multiplier> OP_MINT`, and nothing else.
+  // The v1 format carried a random salt here, which is why a fresh mint's
+  // script could not be reconstructed from its outpoint alone. It is gone --
+  // lineage identity is now derived from the outpoint at first spend -- so
+  // this script is fully determined by the two values above.
+  const mintScript = uap.buildMintScript(pubKey, plan.multiplier);
 
   // The ticker only reaches the chain if this output is built. Without it
   // the mint confirms, the covenant is valid and the position appears in
@@ -217,7 +217,6 @@ export async function buildMintTx({
     tx,
     mintScript,
     metadataScript,
-    salt: plan.salt,
     value: plan.amountSats
   };
 }

@@ -71,8 +71,8 @@ export function planSell({ position, priceSats, ownAddress }) {
     // The position itself, carried through rather than flattened into
     // `summary`. buildSellOrder has to sign over the covenant's real script,
     // and summary's txid/vout/multiplier are not enough to rebuild it: a
-    // freshly minted position also needs script_hex, because its salt is not
-    // derivable from anything else here.
+    // transferred position also needs script_hex, because its lineage origin
+    // is not derivable from anything else here.
     position,
     summary: {
       txid: position && position.txid,
@@ -112,8 +112,8 @@ export function buildSellOrder({ secp, position, privKey, pubKey, priceSats, own
   // The scriptCode signed against is the position's own scriptPubKey.
   //
   // This used to be built unconditionally as a TRANSFER covenant, which is
-  // wrong for a freshly minted position: a mint is `<pubkey> <mult> <salt>
-  // OP_MINT`, different bytes entirely, and the salt is not derivable. The
+  // wrong for a freshly minted position: a mint is `<pubkey> <mult> OP_MINT`,
+  // with no origin push at all -- different bytes entirely. The
   // signature therefore committed to a script the output did not have, and
   // the node rejected every attempt to fill the order with NULLFAIL
   // ("Signature must be zero for failed CHECK(MULTI)SIG operation"). The

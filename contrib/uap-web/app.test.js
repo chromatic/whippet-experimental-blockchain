@@ -195,7 +195,7 @@ const MY_PUBKEY = secp256k1.getPublicKey(new Uint8Array(32).fill(0x11), true);
 function makeState(overrides = {}) {
   return {
     positions: [
-      { txid: 'aa'.repeat(32), vout: 0, value: 100 * COIN, multiplier: 100, pubkey: uap.bytesToHex(MY_PUBKEY) },
+      { txid: 'aa'.repeat(32), vout: 0, value: 100 * COIN, multiplier: 100, pubkey: uap.bytesToHex(MY_PUBKEY), origin: FIXTURE_ORIGIN },
       { txid: 'cc'.repeat(32), vout: 3, value: 10 * COIN, multiplier: 7, pubkey: uap.bytesToHex(MY_PUBKEY) }
     ],
     fundingUtxos: [],
@@ -750,7 +750,7 @@ test('the mint review screen requires an explicit confirmation, and offers a way
 function makeSellState(overrides = {}) {
   return {
     positions: [
-      { txid: 'aa'.repeat(32), vout: 0, value: 100 * COIN, multiplier: 100 },
+      { txid: 'aa'.repeat(32), vout: 0, value: 100 * COIN, multiplier: 100, origin: FIXTURE_ORIGIN },
       { txid: 'cc'.repeat(32), vout: 3, value: 10 * COIN, multiplier: 7 }
     ],
     loadError: null,
@@ -856,6 +856,12 @@ const SELL_ADDRESS = addr.pubkeyToAddress(SELL_PUBKEY, addr.VERSIONS.mainnet.PUB
 // Built by the real planner. publishSellOrder signs over the position's own
 // covenant script, so a plan carrying only a `summary` is not a plan it can
 // act on -- and a hand-written one would not have caught that.
+// The mint that began the lineage these fixture positions belong to. Named
+// after an outpoint that is deliberately NOT any position's own, because that
+// is the real relationship -- and a fixture where the two coincided would let
+// "derive the origin from the outpoint" pass unnoticed.
+const FIXTURE_ORIGIN = uap.bytesToHex(uap.deriveOrigin('bb'.repeat(32), 7));
+
 const REAL_SELL_PLAN = sell.planSell({
   position: {
     txid: 'aa'.repeat(32),
@@ -863,7 +869,8 @@ const REAL_SELL_PLAN = sell.planSell({
     multiplier: 100,
     value: 100 * COIN,
     pubkey: uap.bytesToHex(SELL_PUBKEY),
-    is_mint: false
+    is_mint: false,
+    origin: FIXTURE_ORIGIN
   },
   priceSats: 250000000,
   ownAddress: SELL_ADDRESS
@@ -1010,7 +1017,8 @@ test('the broadcast mint is the transaction that was built', async () => {
   // Equality, not `includes`: an `includes` assertion against the mint
   // script passes vacuously if the bare script is what gets broadcast,
   // since it contains itself. Signing is deterministic (RFC 6979) and the
-  // salt is fixed by the plan, so the same plan rebuilds byte-identically.
+  // v2 covenant carries no random salt, so the same plan rebuilds
+  // byte-identically.
   assertEqual(broadcast, built.rawHex, 'the built transaction is what must be broadcast');
   assert(broadcast.length > uap.bytesToHex(built.mintScript).length,
     'a whole transaction is longer than the mint script alone');
@@ -1030,10 +1038,13 @@ test('a failed mint broadcast is reported, not swallowed', async () => {
   assertEqual(result.txid, undefined, 'no txid may be reported for a mint that never landed');
 });
 
-test('the salt survives a successful mint', async () => {
-  // The salt is part of the mint output's script, so it is recoverable
-  // from the chain, but it is what makes the mint auditable. It used to
-  // exist only inside a dismissed alert() string.
+test('a mint is fully recoverable from its txid, with no secret to save', async () => {
+  // v1 salted the mint script, so a minter who lost the salt could not
+  // rebuild their own covenant and the position was unspendable. publishMint
+  // had to hand the salt back for that reason. v2 removed the salt, and this
+  // is the property that replaced it: the covenant is determined by
+  // (pubkey, multiplier) alone, both of which the wallet already holds, so
+  // the txid is the only thing the user needs to keep.
   const result = await app.publishMint({
     api: { broadcast: async () => 'bb'.repeat(32) },
     secp: secp256k1,
@@ -1042,8 +1053,18 @@ test('the salt survives a successful mint', async () => {
     address: MINT_ADDRESS,
     utxos: MINT_UTXOS
   });
-  assert(result.salt instanceof Uint8Array, 'the salt must be returned to the caller');
-  assertEqual(result.salt.length, REAL_MINT_PLAN.salt.length, 'salt length');
+  assertEqual(result.ok, true, result.error);
+  assertEqual(result.txid, 'bb'.repeat(32), 'the txid is what locates the position');
+
+  const built = await mint.buildMintTx({
+    secp: secp256k1, plan: REAL_MINT_PLAN, privKey: MINT_PRIVKEY,
+    pubKey: MINT_PUBKEY, utxos: MINT_UTXOS, changeAddress: MINT_ADDRESS
+  });
+  assertEqual(
+    uap.bytesToHex(built.mintScript),
+    uap.bytesToHex(uap.buildMintScript(MINT_PUBKEY, REAL_MINT_PLAN.multiplier)),
+    'the minted covenant must be rebuildable from the pubkey and multiplier alone'
+  );
 });
 
 // Found by driving the real app in a browser: clicking Review did nothing
@@ -1157,7 +1178,8 @@ const SEND_PLAN = (() => {
       pubkey: uap.bytesToHex(SEND_PUBKEY),
       is_mint: false,
       height: 500,
-      spent: false
+      spent: false,
+      origin: FIXTURE_ORIGIN
     },
     ownPubKey: SEND_PUBKEY,
     toPubKey: uap.bytesToHex(THEIR_PUBKEY),
@@ -1225,6 +1247,10 @@ const FILL_ORDER = {
   multiplier: 100,
   payment_value: 50 * COIN,
   payment_script: uap.bytesToHex(addr.buildP2PKHScript(THEIR_PUBKEY)),
+  // The position's lineage. A taker cannot derive this -- an order carries
+  // the maker's scriptSig, never their scriptPubKey -- so the relay publishes
+  // it alongside the rest.
+  origin: FIXTURE_ORIGIN,
   // A single 71-byte push: a DER signature ending in the SIGHASH byte 0x83
   // (SIGHASH_SINGLE|ANYONECANPAY), which is the only hashtype the relay
   // accepts for an order.

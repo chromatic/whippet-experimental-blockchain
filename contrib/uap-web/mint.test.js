@@ -58,19 +58,14 @@ test('valid plan reports exact fee and change', () => {
   assertEqual(result.plan.fee + result.plan.change, extra, 'fee + change should equal input surplus');
 });
 
-test('valid plan includes salt for building script later', () => {
+// The v1 plan carried a random 20-byte salt for the mint script. v2 dropped
+// it -- lineage identity is derived from the outpoint at first spend -- so a
+// plan that still produced one would mean mint.js was building a covenant
+// nothing else in the stack can read.
+test('a plan carries no salt: the v2 mint covenant has no room for one', () => {
   const result = planMint(VALID_PLAN_INPUT);
   assert(result.ok, 'plan should be ok');
-  assert(result.plan.salt, 'plan should have salt');
-  assert(result.plan.salt instanceof Uint8Array, 'salt should be Uint8Array');
-});
-
-test('valid plan includes salt', () => {
-  const result = planMint(VALID_PLAN_INPUT);
-  assert(result.ok, 'plan should be ok');
-  assert(result.plan.salt, 'plan should have salt');
-  assert(result.plan.salt instanceof Uint8Array, 'salt should be Uint8Array');
-  assert(result.plan.salt.length >= 16, 'salt must be at least 16 bytes');
+  assertEqual(result.plan.salt, undefined, 'the v2 plan must not carry a salt');
 });
 
 // =============================================================================
@@ -281,7 +276,7 @@ test('buildMintTx produces a transaction with correct mint output', async () => 
 
   assert(buildResult.rawHex, 'should produce rawHex');
   assert(buildResult.mintScript, 'should produce mintScript');
-  assert(buildResult.salt, 'should produce salt');
+  assert(buildResult.metadataScript, 'should produce metadataScript');
 });
 
 test('built transaction mint output value is exactly amountSats', async () => {
@@ -320,8 +315,8 @@ test('built transaction uses correct script', async () => {
     changeAddress: VALID_PLAN_INPUT.address
   });
 
-  // The script should exactly match buildMintScript(pubKey, multiplier, salt)
-  const expectedScript = uap.buildMintScript(pubKey, VALID_PLAN_INPUT.multiplier, plan.salt);
+  // The script should exactly match buildMintScript(pubKey, multiplier)
+  const expectedScript = uap.buildMintScript(pubKey, VALID_PLAN_INPUT.multiplier);
 
   // Compare as hex for better error messages
   const buildHex = Array.from(buildResult.mintScript).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -330,35 +325,29 @@ test('built transaction uses correct script', async () => {
   assertEqual(buildHex, expectedHex, 'mint script should match buildMintScript output');
 });
 
-test('two builds produce different salts', async () => {
-  const plan1Result = planMint(VALID_PLAN_INPUT);
-  const plan2Result = planMint(VALID_PLAN_INPUT);
+// The v1 mint script was salted, so two mints of the same token were
+// different bytes. v2 removed the salt, which flips the property: the mint
+// covenant is now fully determined by (pubkey, multiplier), and a build that
+// still varied run to run would mean something random had crept back into it.
+test('two builds of the same plan produce a byte-identical mint script', async () => {
+  const toHex = (b) => Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join('');
+  const build = async () => {
+    const planResult = planMint(VALID_PLAN_INPUT);
+    return buildMintTx({
+      secp: secp256k1,
+      plan: planResult.plan,
+      privKey: TEST_PRIVKEY,
+      pubKey: TEST_PUBKEY,
+      utxos: VALID_PLAN_INPUT.utxos,
+      changeAddress: VALID_PLAN_INPUT.address
+    });
+  };
 
-  const privKey = TEST_PRIVKEY;
-  const pubKey = TEST_PUBKEY;
+  const build1 = await build();
+  const build2 = await build();
 
-  const build1 = await buildMintTx({
-    secp: secp256k1,
-    plan: plan1Result.plan,
-    privKey,
-    pubKey,
-    utxos: VALID_PLAN_INPUT.utxos,
-    changeAddress: VALID_PLAN_INPUT.address
-  });
-
-  const build2 = await buildMintTx({
-    secp: secp256k1,
-    plan: plan2Result.plan,
-    privKey,
-    pubKey,
-    utxos: VALID_PLAN_INPUT.utxos,
-    changeAddress: VALID_PLAN_INPUT.address
-  });
-
-  const salt1Hex = Array.from(build1.salt).map(b => b.toString(16).padStart(2, '0')).join('');
-  const salt2Hex = Array.from(build2.salt).map(b => b.toString(16).padStart(2, '0')).join('');
-
-  assert(salt1Hex !== salt2Hex, `salts must be different: ${salt1Hex} vs ${salt2Hex}`);
+  assertEqual(toHex(build1.mintScript), toHex(build2.mintScript), 'mint script must be deterministic');
+  assertEqual(toHex(build1.metadataScript), toHex(build2.metadataScript), 'metadata script must be deterministic');
 });
 
 // =============================================================================

@@ -897,7 +897,7 @@ export async function publishMint({ api, secp, plan, privKey, address, utxos }) 
     // Resolves only on a 2xx: the node took it into its mempool. Not a
     // confirmation -- see confirmFill for the full reasoning.
     const txid = await api.broadcast(built.rawHex);
-    return { ok: true, txid, salt: built.salt };
+    return { ok: true, txid };
   } catch (e) {
     return { ok: false, error: e.message };
   }
