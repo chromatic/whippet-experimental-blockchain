@@ -29,10 +29,14 @@ import (
 func scanTokens(t testing.TB, idx *Index) []TokenInfo {
 	t.Helper()
 	positions := allPositions(t, idx)
-	byKey := make(map[string]Position, len(positions))
+	// The mint of each lineage, spent or not: metadata belongs to the
+	// lineage, and the mint is normally spent onward immediately.
+	mintByOrigin := make(map[string]Position, len(positions))
 	byOrigin := make(map[string][]Position)
 	for _, pos := range positions {
-		byKey[positionKey(pos.TxID, pos.Vout)] = pos
+		if pos.IsMint && pos.Origin != "" {
+			mintByOrigin[pos.Origin] = pos
+		}
 		if pos.Origin == "" || pos.Spent {
 			continue
 		}
@@ -61,11 +65,13 @@ func scanTokens(t testing.TB, idx *Index) []TokenInfo {
 			Holders:    holders,
 			MintHeight: mintHeight,
 		}
-		// The lineage's declared ticker comes from the mint's own
-		// row, which the origin key names by construction. Only the mint
-		// is consulted, so a later holder cannot attach metadata of their
-		// own.
-		if mint, ok := byKey[origin]; ok && mint.IsMint && mint.Metadata != nil {
+		// The lineage's declared ticker comes from the mint's own row,
+		// found by (origin, is_mint) -- NOT by treating the origin as a
+		// position key. That worked only while a v1 origin literally was
+		// the mint's outpoint key; a v2 origin is SHA256 of it. Only the
+		// mint is consulted, so a later holder cannot attach metadata of
+		// their own.
+		if mint, ok := mintByOrigin[origin]; ok && mint.Metadata != nil {
 			token.Ticker = mint.Metadata.Ticker
 			token.MetadataHash = mint.Metadata.MetadataHash
 		}
@@ -143,13 +149,18 @@ type livePos struct {
 // do so against an oracle that is itself undefined there: the old scan
 // picked positions[0].Multiplier, and positions[0] comes from Go map
 // iteration order.
-func randomChainBlock(rng *rand.Rand, height int64, live *[]livePos) *RPCBlock {
-	salt := []byte("0123456789abcdef")
+func randomChainBlock(t *testing.T, rng *rand.Rand, height int64, live *[]livePos) *RPCBlock {
+	t.Helper()
 	var txs []RPCTx
 
 	nMints := rng.Intn(3)
 	for m := 0; m < nMints; m++ {
-		txid := fmt.Sprintf("m%d_%d", height, m)
+		// Generate a valid 64-char hex txid
+		txidBytes := make([]byte, 32)
+		for j := 0; j < 32; j++ {
+			txidBytes[j] = byte(rng.Intn(256))
+		}
+		txid := fmt.Sprintf("%064x", txidBytes)
 		mult := int64(rng.Intn(2000))
 		if rng.Intn(10) == 0 {
 			mult = 0 // exercise the divide-by-zero guard
@@ -158,7 +169,7 @@ func randomChainBlock(rng *rand.Rand, height int64, live *[]livePos) *RPCBlock {
 			TxID: txid,
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
-				uapMintVout(0, fakePubKey(byte(0x02+rng.Intn(4))), mult, salt, float64(rng.Intn(5)+1)),
+				uapMintVout(0, fakePubKey(byte(0x02+rng.Intn(4))), mult, float64(rng.Intn(5)+1)),
 				opReturnVout(1, wuapPayload("TK", make([]byte, 32))),
 			},
 		})
@@ -172,12 +183,17 @@ func randomChainBlock(rng *rand.Rand, height int64, live *[]livePos) *RPCBlock {
 		parent := (*live)[i]
 		*live = append((*live)[:i], (*live)[i+1:]...)
 
-		outTxID := fmt.Sprintf("x%d_%d", height, s)
+		// Generate a valid 64-char hex txid
+		outTxIDBytes := make([]byte, 32)
+		for j := 0; j < 32; j++ {
+			outTxIDBytes[j] = byte(rng.Intn(256))
+		}
+		outTxID := fmt.Sprintf("%064x", outTxIDBytes)
 		nOuts := 1 + rng.Intn(2)
 		var vouts []RPCVout
 		for o := 0; o < nOuts; o++ {
 			vouts = append(vouts, uapTransferVout(uint32(o),
-				fakePubKey(byte(0x02+rng.Intn(4))), parent.mult, float64(rng.Intn(3)+1)))
+				fakePubKey(byte(0x02+rng.Intn(4))), parent.mult, originOfMint(t, parent.txid, parent.vout), float64(rng.Intn(3)+1)))
 			*live = append(*live, livePos{txid: outTxID, vout: uint32(o), mult: parent.mult})
 		}
 		txs = append(txs, RPCTx{
@@ -240,7 +256,7 @@ func TestLineageAggregatesMatchFullScan(t *testing.T) {
 				}
 				height := int64(len(applied))
 				snapshot := append([]livePos(nil), live...)
-				b := randomChainBlock(rng, height, &live)
+				b := randomChainBlock(t, rng, height, &live)
 				idx.ApplyBlock(b)
 				applied = append(applied, appliedBlock{block: b, live: snapshot})
 				assertTokensMatchScan(t, idx, fmt.Sprintf("after apply at step %d", step))
@@ -276,7 +292,7 @@ func TestLineageAggregatesSurviveSaveLoad(t *testing.T) {
 	}
 	var live []livePos
 	for h := 0; h < 30; h++ {
-		idx.ApplyBlock(randomChainBlock(rng, int64(h), &live))
+		idx.ApplyBlock(randomChainBlock(t, rng, int64(h), &live))
 	}
 	if err := idx.StoreErr(); err != nil {
 		t.Fatal(err)

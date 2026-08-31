@@ -314,13 +314,27 @@ Each position:
   "value": 49999999800000,
   "is_mint": false,
   "height": 104,
-  "spent": false
+  "spent": false,
+  "origin": "883abc01...",
+  "script_hex": "21...ba"
 }
 ```
 
 `value` is in satoshis. `is_mint` is true for a fresh `OP_MINT` output,
 false for an `OP_MINT_TRANSFER` covenant output. A `spent` position also
 carries `spent_txid` and `spent_height`.
+
+`origin` is the lineage identity: the hex of
+`SHA256(mint_txid_internal_bytes || vout as 4-byte LE)`, which is what makes
+two positions the same *token* rather than merely the same multiplier. It is
+read straight off a transfer's script and derived from its own outpoint for a
+mint.
+
+`script_hex` is the output's own `scriptPubKey`. A wallet spending the
+position must sign with these exact bytes as the scriptCode, so it is served
+verbatim rather than reassembled from the parsed fields: a reconstruction that
+differs by a single byte produces a signature over the wrong scriptCode and
+the spend simply fails to verify.
 
 ### Order relay (marketplace)
 

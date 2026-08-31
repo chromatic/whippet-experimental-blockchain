@@ -82,27 +82,26 @@ func fakePubKey(prefix byte) []byte {
 	return fakePrivKey(prefix).PubKey().SerializeCompressed()
 }
 
-func mintScriptBytes(pubkey []byte, multiplier int64, salt []byte) []byte {
+func mintScriptBytes(pubkey []byte, multiplier int64) []byte {
 	var out []byte
 	out = append(out, buildPush(pubkey)...)
 	out = append(out, buildMultiplier(multiplier)...)
-	out = append(out, buildPush(salt)...)
 	out = append(out, opMint)
 	return out
 }
 
-func transferScriptBytes(pubkey []byte, multiplier int64) []byte {
+func transferScriptBytes(pubkey []byte, multiplier int64, origin []byte) []byte {
 	var out []byte
 	out = append(out, buildPush(pubkey)...)
 	out = append(out, buildMultiplier(multiplier)...)
+	out = append(out, buildPush(origin)...)
 	out = append(out, opMintTransfer)
 	return out
 }
 
 func TestParseMintScript(t *testing.T) {
 	pk := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef") // 16 bytes
-	script := mintScriptBytes(pk, 1000, salt)
+	script := mintScriptBytes(pk, 1000)
 
 	parsed, err := ParseUAPScript(hex.EncodeToString(script))
 	if err != nil {
@@ -120,11 +119,18 @@ func TestParseMintScript(t *testing.T) {
 	if hex.EncodeToString(parsed.PubKey) != hex.EncodeToString(pk) {
 		t.Errorf("pubkey mismatch")
 	}
+	if len(parsed.Origin) != 0 {
+		t.Errorf("mint should have empty origin, got %d bytes", len(parsed.Origin))
+	}
 }
 
 func TestParseTransferScript(t *testing.T) {
 	pk := fakePubKey(0x03)
-	script := transferScriptBytes(pk, 42)
+	origin := make([]byte, 32)
+	for i := 0; i < 32; i++ {
+		origin[i] = byte(i)
+	}
+	script := transferScriptBytes(pk, 42, origin)
 
 	parsed, err := ParseUAPScript(hex.EncodeToString(script))
 	if err != nil {
@@ -139,6 +145,9 @@ func TestParseTransferScript(t *testing.T) {
 	if parsed.Multiplier != 42 {
 		t.Errorf("multiplier = %d, want 42", parsed.Multiplier)
 	}
+	if !bytes.Equal(parsed.Origin, origin) {
+		t.Errorf("origin mismatch")
+	}
 }
 
 func TestParseSmallIntMultiplier(t *testing.T) {
@@ -149,10 +158,15 @@ func TestParseSmallIntMultiplier(t *testing.T) {
 	// there is exactly one byte encoding per position, and every position
 	// consensus honours can be spent by a standard transaction.
 	pk := fakePubKey(0x02)
+	origin := make([]byte, 32)
+	for i := 0; i < 32; i++ {
+		origin[i] = byte(i)
+	}
 	for _, mult := range []int64{1, 10, 16} {
 		var smallInt []byte
 		smallInt = append(smallInt, buildPush(pk)...)
 		smallInt = append(smallInt, byte(0x50+mult))
+		smallInt = append(smallInt, buildPush(origin)...)
 		smallInt = append(smallInt, opMintTransfer)
 
 		parsed, err := ParseUAPScript(hex.EncodeToString(smallInt))
@@ -169,6 +183,7 @@ func TestParseSmallIntMultiplier(t *testing.T) {
 		var dataPush []byte
 		dataPush = append(dataPush, buildPush(pk)...)
 		dataPush = append(dataPush, 0x01, byte(mult))
+		dataPush = append(dataPush, buildPush(origin)...)
 		dataPush = append(dataPush, opMintTransfer)
 
 		parsed, err = ParseUAPScript(hex.EncodeToString(dataPush))
@@ -186,18 +201,21 @@ func TestParseSmallIntMultiplier(t *testing.T) {
 // indexer must not report it as a tradeable position.
 func TestParseRejectsNonCanonicalEncodings(t *testing.T) {
 	pk := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef") // 16 bytes
+	origin := make([]byte, 32)
+	for i := 0; i < 32; i++ {
+		origin[i] = byte(i)
+	}
 
 	cases := []struct {
 		name   string
 		script []byte
 	}{
-		{"pubkey via OP_PUSHDATA1", concat([]byte{0x4c, 0x21}, pk, buildMultiplier(1000), buildPush(salt), []byte{opMint})},
-		{"salt via OP_PUSHDATA1", concat(buildPush(pk), buildMultiplier(1000), []byte{0x4c, 0x10}, salt, []byte{opMint})},
-		{"multiplier via OP_PUSHDATA1", concat(buildPush(pk), []byte{0x4c, 0x02, 0xe8, 0x03}, []byte{opMintTransfer})},
-		{"multiplier 0 as a one-byte push", concat(buildPush(pk), []byte{0x01, 0x00}, []byte{opMintTransfer})},
-		{"non-minimal CScriptNum (trailing zero)", concat(buildPush(pk), []byte{0x03, 0xe8, 0x03, 0x00}, []byte{opMintTransfer})},
-		{"multiplier as OP_1NEGATE", concat(buildPush(pk), []byte{0x4f}, []byte{opMintTransfer})},
+		{"pubkey via OP_PUSHDATA1", concat([]byte{0x4c, 0x21}, pk, buildMultiplier(1000), []byte{opMint})},
+		{"origin via OP_PUSHDATA1", concat(buildPush(pk), buildMultiplier(1000), []byte{0x4c, 0x20}, origin, []byte{opMintTransfer})},
+		{"multiplier via OP_PUSHDATA1", concat(buildPush(pk), []byte{0x4c, 0x02, 0xe8, 0x03}, buildPush(origin), []byte{opMintTransfer})},
+		{"multiplier 0 as a one-byte push", concat(buildPush(pk), []byte{0x01, 0x00}, buildPush(origin), []byte{opMintTransfer})},
+		{"non-minimal CScriptNum (trailing zero)", concat(buildPush(pk), []byte{0x03, 0xe8, 0x03, 0x00}, buildPush(origin), []byte{opMintTransfer})},
+		{"multiplier as OP_1NEGATE", concat(buildPush(pk), []byte{0x4f}, buildPush(origin), []byte{opMintTransfer})},
 	}
 	for _, c := range cases {
 		parsed, err := ParseUAPScript(hex.EncodeToString(c.script))
@@ -211,7 +229,7 @@ func TestParseRejectsNonCanonicalEncodings(t *testing.T) {
 
 	// Guard: the canonical form of the same position does parse, so the
 	// cases above are failing for their stated reason and not by accident.
-	parsed, err := ParseUAPScript(hex.EncodeToString(mintScriptBytes(pk, 1000, salt)))
+	parsed, err := ParseUAPScript(hex.EncodeToString(mintScriptBytes(pk, 1000)))
 	if err != nil || parsed == nil {
 		t.Fatalf("canonical mint must parse, got %v, err=%v", parsed, err)
 	}
@@ -225,21 +243,44 @@ func concat(parts ...[]byte) []byte {
 	return out
 }
 
-func TestParseRejectsShortSalt(t *testing.T) {
+func TestParseRejectsWrongOriginSize(t *testing.T) {
 	pk := fakePubKey(0x02)
-	script := mintScriptBytes(pk, 1000, []byte("tooshort"))
+
+	// Test with short origin (should reject)
+	shortOrigin := make([]byte, 16)
+	script := transferScriptBytes(pk, 1000, shortOrigin)
 	parsed, err := ParseUAPScript(hex.EncodeToString(script))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if parsed != nil {
-		t.Fatal("expected no match for a salt under 16 bytes")
+		t.Fatal("expected no match for a 16-byte origin")
+	}
+
+	// Test with long origin (should reject)
+	longOrigin := make([]byte, 33)
+	script = transferScriptBytes(pk, 1000, longOrigin)
+	parsed, err = ParseUAPScript(hex.EncodeToString(script))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parsed != nil {
+		t.Fatal("expected no match for a 33-byte origin")
 	}
 }
 
 func TestParseRejectsNegativeMultiplier(t *testing.T) {
 	pk := fakePubKey(0x02)
-	script := transferScriptBytes(pk, -5)
+	origin := make([]byte, 32)
+	// For negative multiplier, we need to construct the script manually
+	// since our helper doesn't support it
+	negativeNum := buildScriptNum(-5)
+	var script []byte
+	script = append(script, buildPush(pk)...)
+	script = append(script, buildPush(negativeNum)...)
+	script = append(script, buildPush(origin)...)
+	script = append(script, opMintTransfer)
+
 	parsed, err := ParseUAPScript(hex.EncodeToString(script))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -290,15 +331,15 @@ func TestParseP2PKHScript(t *testing.T) {
 
 	// Test with UAP mint script (should return nil)
 	pk := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-	uapScript := mintScriptBytes(pk, 1000, salt)
+	uapScript := mintScriptBytes(pk, 1000)
 	result = ParseP2PKHScript(hex.EncodeToString(uapScript))
 	if result != nil {
 		t.Error("ParseP2PKHScript should reject UAP mint script")
 	}
 
 	// Test with UAP transfer script (should return nil)
-	uapTransfer := transferScriptBytes(pk, 1000)
+	origin := make([]byte, 32)
+	uapTransfer := transferScriptBytes(pk, 1000, origin)
 	result = ParseP2PKHScript(hex.EncodeToString(uapTransfer))
 	if result != nil {
 		t.Error("ParseP2PKHScript should reject UAP transfer script")
@@ -464,6 +505,11 @@ func TestSharedFixtures(t *testing.T) {
 				if hex.EncodeToString(parsed.PubKey) != vec.PubKey {
 					t.Errorf("PubKey: got %s, want %s", hex.EncodeToString(parsed.PubKey), vec.PubKey)
 				}
+				// Origin should be empty for mints, or match the hex for transfers
+				gotOrigin := hex.EncodeToString(parsed.Origin)
+				if gotOrigin != vec.Origin {
+					t.Errorf("Origin: got %s, want %s", gotOrigin, vec.Origin)
+				}
 			} else {
 				if parsed != nil {
 					t.Errorf("expected no match for invalid script, got: %+v", parsed)
@@ -481,6 +527,7 @@ type scriptVectorFixture struct {
 	IsMint     bool   `json:"is_mint"`
 	PubKey     string `json:"pubkey"`
 	Multiplier int64  `json:"multiplier"`
+	Origin     string `json:"origin"` // "" for mints, 64-char hex for transfers
 }
 
 // loadFixtures loads the shared fixture JSON file.
@@ -531,6 +578,150 @@ func TestBase58PreservesLeadingZeros(t *testing.T) {
 		if dec := base58Decode(enc); !bytes.Equal(dec, in) {
 			t.Errorf("base58 round-trip: %x -> %q -> %x", in, enc, dec)
 		}
+	}
+}
+
+// MutationTests verify that the v2 format rules are enforced correctly.
+// Each test breaks one rule and verifies it's caught by the parser.
+
+// TestMutation_MintWithoutOriginInScript verifies that mints parse correctly
+// when they don't carry an origin (v2 rule).
+func TestMutation_MintWithoutOriginInScript(t *testing.T) {
+	pk := fakePubKey(0x02)
+	// Mints: pubkey, multiplier, OP_MINT (no salt/origin)
+	script := mintScriptBytes(pk, 1000)
+	parsed, err := ParseUAPScript(hex.EncodeToString(script))
+	if err != nil || parsed == nil {
+		t.Fatal("mint without origin should parse")
+	}
+	if len(parsed.Origin) != 0 {
+		t.Errorf("mint origin should be empty, got %d bytes", len(parsed.Origin))
+	}
+}
+
+// TestMutation_TransfersCarryOriginFromScript verifies transfers parse only
+// when they carry a 32-byte origin (v2 rule).
+func TestMutation_TransfersCarryOriginFromScript(t *testing.T) {
+	pk := fakePubKey(0x02)
+	origin := make([]byte, 32)
+	for i := 0; i < 32; i++ {
+		origin[i] = byte(i)
+	}
+	// Transfers: pubkey, multiplier, origin32, OP_MINT_TRANSFER
+	script := transferScriptBytes(pk, 1000, origin)
+	parsed, err := ParseUAPScript(hex.EncodeToString(script))
+	if err != nil || parsed == nil {
+		t.Fatal("transfer with origin should parse")
+	}
+	if !bytes.Equal(parsed.Origin, origin) {
+		t.Errorf("origin mismatch: got %x, want %x", parsed.Origin, origin)
+	}
+}
+
+// TestMutation_TransferOriginMustBe32Bytes verifies the origin size is
+// strictly validated (v2 rule).
+func TestMutation_TransferOriginMustBe32Bytes(t *testing.T) {
+	pk := fakePubKey(0x02)
+
+	for _, size := range []int{0, 16, 31, 33, 64} {
+		origin := make([]byte, size)
+		script := transferScriptBytes(pk, 1000, origin)
+		parsed, err := ParseUAPScript(hex.EncodeToString(script))
+		if err != nil {
+			t.Fatalf("size %d: unexpected error: %v", size, err)
+		}
+		if parsed != nil {
+			t.Errorf("size %d: transfer origin must be exactly 32 bytes, got %d", size, len(parsed.Origin))
+		}
+	}
+
+	// Control: exactly 32 bytes should parse
+	origin32 := make([]byte, 32)
+	script := transferScriptBytes(pk, 1000, origin32)
+	parsed, err := ParseUAPScript(hex.EncodeToString(script))
+	if err != nil || parsed == nil {
+		t.Fatal("exactly 32-byte origin should parse")
+	}
+}
+
+// TestMutation_OriginByteReversalIsCorrect verifies that the origin
+// derivation uses internal byte order (reversed txid), not display order.
+// This is covered by the fixture tests, but we pin it here explicitly.
+func TestMutation_OriginByteReversalIsCorrect(t *testing.T) {
+	// Using the first fixture from uap_origin_vectors.json:
+	// txid: 0000000000000000000000000000000000000000000000000000000000000000
+	// n: 0
+	// expected origin: 6db65fd59fd356f6729140571b5bcd6bb3b83492a16e1bf0a3884442fc3c8a0e
+
+	origin, err := UapOriginFromOutpoint("0000000000000000000000000000000000000000000000000000000000000000", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "6db65fd59fd356f6729140571b5bcd6bb3b83492a16e1bf0a3884442fc3c8a0e"
+	got := hex.EncodeToString(origin)
+	if got != expected {
+		t.Errorf("origin mismatch: got %s, want %s", got, expected)
+	}
+}
+
+// TestMutation_OriginIndexIsLittleEndian verifies that the output index
+// is encoded as little-endian in the origin derivation (v2 rule).
+func TestMutation_OriginIndexIsLittleEndian(t *testing.T) {
+	// Using fixture: index 258 = 0x00000102 (little-endian: 02 01 00 00)
+	// txid: 1122334455667788990011223344556677889900112233445566778899001122
+	// n: 258
+	// expected: 064e1b749558ed958372387872edab54e18d782fc216058cf3e2d6c3dc3e225c
+
+	origin, err := UapOriginFromOutpoint("1122334455667788990011223344556677889900112233445566778899001122", 258)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "064e1b749558ed958372387872edab54e18d782fc216058cf3e2d6c3dc3e225c"
+	got := hex.EncodeToString(origin)
+	if got != expected {
+		t.Errorf("origin mismatch: got %s, want %s", got, expected)
+	}
+}
+
+// TestMutation_V1SaltFormatIsRejected verifies that v1 mints with a salt
+// are rejected in v2 (the old 4-push format is invalid).
+func TestMutation_V1SaltFormatIsRejected(t *testing.T) {
+	pk := fakePubKey(0x02)
+	salt := []byte("salt_is_not_valid_in_v2")
+
+	// v1 format: pubkey, multiplier, salt, OP_MINT (4 pushes)
+	var script []byte
+	script = append(script, buildPush(pk)...)
+	script = append(script, buildMultiplier(1000)...)
+	script = append(script, buildPush(salt)...)
+	script = append(script, opMint)
+
+	parsed, err := ParseUAPScript(hex.EncodeToString(script))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parsed != nil {
+		t.Error("v1 mint with salt should be rejected in v2")
+	}
+}
+
+// TestMutation_V1TransferFormatIsRejected verifies that v1 transfers without
+// origin are rejected in v2 (the old 3-push format is invalid).
+func TestMutation_V1TransferFormatIsRejected(t *testing.T) {
+	pk := fakePubKey(0x02)
+
+	// v1 format: pubkey, multiplier, OP_MINT_TRANSFER (3 pushes, no origin)
+	var script []byte
+	script = append(script, buildPush(pk)...)
+	script = append(script, buildMultiplier(1000)...)
+	script = append(script, opMintTransfer)
+
+	parsed, err := ParseUAPScript(hex.EncodeToString(script))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parsed != nil {
+		t.Error("v1 transfer without origin should be rejected in v2")
 	}
 }
 

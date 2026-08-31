@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"strings"
@@ -8,13 +9,74 @@ import (
 )
 
 // Helper: build a synthetic RPCVout with a UAP mint script.
-func uapMintVout(n uint32, pubkey []byte, multiplier int64, salt []byte, value float64) RPCVout {
-	return voutWithScript(n, value, mintScriptBytes(pubkey, multiplier, salt))
+//
+// A mint carries no lineage identity in its script -- it cannot, since that
+// identity is derived from its own outpoint. Callers that need the origin a
+// mint establishes use originOfMint below, which needs the txid the mint
+// will land in, not the mint script.
+func uapMintVout(n uint32, pubkey []byte, multiplier int64, value float64) RPCVout {
+	return voutWithScript(n, value, mintScriptBytes(pubkey, multiplier))
 }
 
 // Helper: build a synthetic RPCVout with a UAP transfer script.
-func uapTransferVout(n uint32, pubkey []byte, multiplier int64, value float64) RPCVout {
-	return voutWithScript(n, value, transferScriptBytes(pubkey, multiplier))
+//
+// origin is required and must be 32 bytes: a transfer states its lineage
+// outright rather than inheriting it from whatever it spends. Passing the
+// wrong origin here is not a formatting slip -- it puts the output in a
+// different token -- so tests should derive it with originOfMint rather than
+// inventing bytes, except where testing a foreign lineage on purpose.
+func uapTransferVout(n uint32, pubkey []byte, multiplier int64, origin []byte, value float64) RPCVout {
+	return voutWithScript(n, value, transferScriptBytes(pubkey, multiplier, origin))
+}
+
+// txid turns a readable fixture label into a valid 64-hex transaction id.
+//
+// Fixtures used to say TxID: "mint_a", which reads well and was parsed by
+// nothing. v2 changed that: a mint's lineage is SHA256 of its own outpoint,
+// so the indexer now decodes every txid it indexes, and "mint_a" is not hex.
+// The alternative to this helper was replacing every label with 64 characters
+// of noise, costing each fixture the one line of documentation it had.
+// Labels stay; the bytes become real.
+//
+// Distinct labels give distinct ids, so lineages stay distinguishable, and
+// the mapping is stable across runs, so a failing assertion quoting an id can
+// still be traced back to the fixture that produced it.
+func txid(label string) string {
+	sum := sha256.Sum256([]byte("uap-indexer test txid: " + label))
+	return hex.EncodeToString(sum[:])
+}
+
+// originOfMint is the lineage a mint at (txid, vout) establishes: the same
+// value consensus derives when that mint is first spent, and the same value
+// the indexer records when it first sees the mint output.
+//
+// Tests use this instead of literal origin bytes so that a test describing
+// "a transfer of the token minted in tx A" actually says so, and keeps
+// saying so if the fixture's txids change.
+func originOfMint(t *testing.T, txid string, vout uint32) []byte {
+	t.Helper()
+	origin, err := UapOriginFromOutpoint(txid, vout)
+	if err != nil {
+		t.Fatalf("deriving origin for %s:%d: %v", txid, vout, err)
+	}
+	return origin
+}
+
+// originOfMintHex is originOfMint as the indexer stores and serves it.
+func originOfMintHex(t *testing.T, txid string, vout uint32) string {
+	t.Helper()
+	return hex.EncodeToString(originOfMint(t, txid, vout))
+}
+
+// foreignOrigin is a well-formed 32-byte origin belonging to no mint any
+// test creates, for cases that need a lineage deliberately unrelated to
+// everything else in the fixture.
+func foreignOrigin(tag byte) []byte {
+	out := make([]byte, 32)
+	for i := range out {
+		out[i] = tag
+	}
+	return out
 }
 
 // Helper: build a WUAP metadata payload as ParseMetadata expects it --
@@ -63,11 +125,11 @@ func makeBlock(hash string, height int64, txs []RPCTx) *RPCBlock {
 func TestApplyBlockCreatesMintPositions(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-	vout := uapMintVout(0, pubkey1, 1000, salt, 5.5)
+
+	vout := uapMintVout(0, pubkey1, 1000, 5.5)
 
 	block := makeBlock("hash1", 100, []RPCTx{{
-		TxID: "tx1",
+		TxID: txid("tx1"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{vout},
 	}})
@@ -75,12 +137,12 @@ func TestApplyBlockCreatesMintPositions(t *testing.T) {
 	idx.ApplyBlock(block)
 
 	// Verify position was created with correct values.
-	pos, ok := mustPosition(t, idx, "tx1", 0)
+	pos, ok := mustPosition(t, idx, txid("tx1"), 0)
 	if !ok {
 		t.Fatal("position not found after ApplyBlock")
 	}
-	if pos.TxID != "tx1" {
-		t.Errorf("TxID mismatch: got %q, want %q", pos.TxID, "tx1")
+	if pos.TxID != txid("tx1") {
+		t.Errorf("TxID mismatch: got %q, want %q", pos.TxID, txid("tx1"))
 	}
 	if pos.Vout != 0 {
 		t.Errorf("Vout mismatch: got %d, want 0", pos.Vout)
@@ -110,17 +172,17 @@ func TestApplyBlockCreatesMintPositions(t *testing.T) {
 func TestApplyBlockCreatesTransferPositions(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x03)
-	vout := uapTransferVout(1, pubkey1, 42, 3.14)
+	vout := uapTransferVout(1, pubkey1, 42, foreignOrigin(0xCC), 3.14)
 
 	block := makeBlock("hash1", 50, []RPCTx{{
-		TxID: "tx_transfer",
+		TxID: txid("tx_transfer"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{vout},
 	}})
 
 	idx.ApplyBlock(block)
 
-	pos, ok := mustPosition(t, idx, "tx_transfer", 1)
+	pos, ok := mustPosition(t, idx, txid("tx_transfer"), 1)
 	if !ok {
 		t.Fatal("position not found")
 	}
@@ -140,7 +202,7 @@ func TestApplyBlockIgnoresNonUAPOutputs(t *testing.T) {
 	ordinaryVout2 := ordinaryVout(1, 2.0)
 
 	block := makeBlock("hash1", 1, []RPCTx{{
-		TxID: "ordinary_tx",
+		TxID: txid("ordinary_tx"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{ordinaryVout1, ordinaryVout2},
 	}})
@@ -158,18 +220,16 @@ func TestApplyBlockIgnoresNonUAPOutputs(t *testing.T) {
 func TestApplyBlockSpendsPreviousPosition(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Block 1: create a UAP position
 	block1 := makeBlock("hash1", 10, []RPCTx{{
-		TxID: "create_tx",
+		TxID: txid("create_tx"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}})
 	idx.ApplyBlock(block1)
 
 	// Verify it's unspent
-	pos, ok := mustPosition(t, idx, "create_tx", 0)
+	pos, ok := mustPosition(t, idx, txid("create_tx"), 0)
 	if !ok {
 		t.Fatal("position not created")
 	}
@@ -179,24 +239,24 @@ func TestApplyBlockSpendsPreviousPosition(t *testing.T) {
 
 	// Block 2: spend that position
 	block2 := makeBlock("hash2", 11, []RPCTx{{
-		TxID: "spend_tx",
+		TxID: txid("spend_tx"),
 		Vin: []RPCVin{
-			{TxID: "create_tx", Vout: 0},
+			{TxID: txid("create_tx"), Vout: 0},
 		},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.5)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("create_tx"), 0), 0.5)},
 	}})
 	idx.ApplyBlock(block2)
 
 	// Verify position is now marked spent with correct metadata
-	pos, ok = mustPosition(t, idx, "create_tx", 0)
+	pos, ok = mustPosition(t, idx, txid("create_tx"), 0)
 	if !ok {
 		t.Fatal("position should still exist")
 	}
 	if !pos.Spent {
 		t.Error("position should be marked spent")
 	}
-	if pos.SpentTxID != "spend_tx" {
-		t.Errorf("SpentTxID mismatch: got %q, want %q", pos.SpentTxID, "spend_tx")
+	if pos.SpentTxID != txid("spend_tx") {
+		t.Errorf("SpentTxID mismatch: got %q, want %q", pos.SpentTxID, txid("spend_tx"))
 	}
 	if pos.SpentHeight != 11 {
 		t.Errorf("SpentHeight mismatch: got %d, want 11", pos.SpentHeight)
@@ -208,26 +268,24 @@ func TestApplyBlockSpendsPreviousPosition(t *testing.T) {
 func TestApplyBlockIgnoresCoinbaseInputs(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Create a position
 	block1 := makeBlock("hash1", 1, []RPCTx{{
-		TxID: "tx1",
+		TxID: txid("tx1"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}})
 	idx.ApplyBlock(block1)
 
 	// Next block with only a coinbase input (no spending)
 	block2 := makeBlock("hash2", 2, []RPCTx{{
-		TxID: "coinbase_only",
+		TxID: txid("coinbase_only"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{ordinaryVout(0, 1.0)},
 	}})
 	idx.ApplyBlock(block2)
 
 	// Original position should still be unspent
-	pos, ok := mustPosition(t, idx, "tx1", 0)
+	pos, ok := mustPosition(t, idx, txid("tx1"), 0)
 	if !ok {
 		t.Fatal("position vanished")
 	}
@@ -257,19 +315,17 @@ func TestApplyBlockRecordsBlockHash(t *testing.T) {
 func TestApplyBlockUpdatesHeightLog(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Create two positions
 	block1 := makeBlock("hash1", 1, []RPCTx{
 		{
-			TxID: "tx1",
+			TxID: txid("tx1"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 		},
 		{
-			TxID: "tx2",
+			TxID: txid("tx2"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 2000, salt, 2.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 2000, 2.0)},
 		},
 	})
 	idx.ApplyBlock(block1)
@@ -291,18 +347,16 @@ func TestApplyBlockUpdatesHeightLog(t *testing.T) {
 func TestUndoBlockRemovesCreatedPositions(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Create a position
 	block := makeBlock("hash1", 100, []RPCTx{{
-		TxID: "tx1",
+		TxID: txid("tx1"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}})
 	idx.ApplyBlock(block)
 
 	// Verify it exists
-	if _, ok := mustPosition(t, idx, "tx1", 0); !ok {
+	if _, ok := mustPosition(t, idx, txid("tx1"), 0); !ok {
 		t.Fatal("position should exist after ApplyBlock")
 	}
 
@@ -310,7 +364,7 @@ func TestUndoBlockRemovesCreatedPositions(t *testing.T) {
 	idx.UndoBlock(100)
 
 	// Verify it's gone
-	if _, ok := mustPosition(t, idx, "tx1", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("tx1"), 0); ok {
 		t.Error("position should be removed after UndoBlock")
 	}
 }
@@ -320,26 +374,24 @@ func TestUndoBlockRemovesCreatedPositions(t *testing.T) {
 func TestUndoBlockUnmarksSpentPositions(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Block 1: create a position
 	block1 := makeBlock("hash1", 10, []RPCTx{{
-		TxID: "create_tx",
+		TxID: txid("create_tx"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}})
 	idx.ApplyBlock(block1)
 
 	// Block 2: spend it
 	block2 := makeBlock("hash2", 11, []RPCTx{{
-		TxID: "spend_tx",
-		Vin:  []RPCVin{spendVin("create_tx", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.5)},
+		TxID: txid("spend_tx"),
+		Vin:  []RPCVin{spendVin(txid("create_tx"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("create_tx"), 0), 0.5)},
 	}})
 	idx.ApplyBlock(block2)
 
 	// Verify it's marked spent
-	pos, ok := mustPosition(t, idx, "create_tx", 0)
+	pos, ok := mustPosition(t, idx, txid("create_tx"), 0)
 	if !ok || !pos.Spent {
 		t.Fatal("position should be spent")
 	}
@@ -348,7 +400,7 @@ func TestUndoBlockUnmarksSpentPositions(t *testing.T) {
 	idx.UndoBlock(11)
 
 	// Verify it's now unspent with cleared metadata
-	pos, ok = mustPosition(t, idx, "create_tx", 0)
+	pos, ok = mustPosition(t, idx, txid("create_tx"), 0)
 	if !ok {
 		t.Fatal("position should still exist")
 	}
@@ -424,29 +476,27 @@ func TestReorgSimpleChainRollback(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
 	pubkey2 := fakePubKey(0x03)
-	salt := []byte("0123456789abcdef")
-
 	// Block 1: create position A
 	block1 := makeBlock("hash1", 100, []RPCTx{{
-		TxID: "tx_a",
+		TxID: txid("tx_a"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}})
 	idx.ApplyBlock(block1)
 
 	// Block 2: create position B
 	block2 := makeBlock("hash2", 101, []RPCTx{{
-		TxID: "tx_b",
+		TxID: txid("tx_b"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey2, 2000, salt, 2.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey2, 2000, 2.0)},
 	}})
 	idx.ApplyBlock(block2)
 
 	// Block 3: create position C
 	block3 := makeBlock("hash3", 102, []RPCTx{{
-		TxID: "tx_c",
+		TxID: txid("tx_c"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 3000, salt, 3.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 3000, 3.0)},
 	}})
 	idx.ApplyBlock(block3)
 
@@ -463,13 +513,13 @@ func TestReorgSimpleChainRollback(t *testing.T) {
 	if positionCount(t, idx) != 1 {
 		t.Errorf("expected 1 position after reorg, got %d", positionCount(t, idx))
 	}
-	if _, ok := mustPosition(t, idx, "tx_a", 0); !ok {
+	if _, ok := mustPosition(t, idx, txid("tx_a"), 0); !ok {
 		t.Error("position A should still exist")
 	}
-	if _, ok := mustPosition(t, idx, "tx_b", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("tx_b"), 0); ok {
 		t.Error("position B should have been removed")
 	}
-	if _, ok := mustPosition(t, idx, "tx_c", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("tx_c"), 0); ok {
 		t.Error("position C should have been removed")
 	}
 
@@ -492,36 +542,34 @@ func TestReorgRespendingPositionFromEarlierBlock(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
 	pubkey2 := fakePubKey(0x03)
-	salt := []byte("0123456789abcdef")
-
 	// Block 1: create position
 	block1 := makeBlock("hash1", 100, []RPCTx{{
-		TxID: "tx_create",
+		TxID: txid("tx_create"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}})
 	idx.ApplyBlock(block1)
 
 	// Verify position exists and is unspent
-	pos, ok := mustPosition(t, idx, "tx_create", 0)
+	pos, ok := mustPosition(t, idx, txid("tx_create"), 0)
 	if !ok || pos.Spent {
 		t.Fatal("position should exist and be unspent after block 1")
 	}
 
 	// Block 2: spend the position from block 1
 	block2 := makeBlock("hash2", 101, []RPCTx{{
-		TxID: "tx_spend",
-		Vin:  []RPCVin{spendVin("tx_create", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey2, 1000, 0.5)},
+		TxID: txid("tx_spend"),
+		Vin:  []RPCVin{spendVin(txid("tx_create"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey2, 1000, originOfMint(t, txid("tx_create"), 0), 0.5)},
 	}})
 	idx.ApplyBlock(block2)
 
 	// Verify position is marked spent
-	pos, ok = mustPosition(t, idx, "tx_create", 0)
+	pos, ok = mustPosition(t, idx, txid("tx_create"), 0)
 	if !ok || !pos.Spent {
 		t.Fatal("position should be marked spent after block 2")
 	}
-	if pos.SpentTxID != "tx_spend" || pos.SpentHeight != 101 {
+	if pos.SpentTxID != txid("tx_spend") || pos.SpentHeight != 101 {
 		t.Fatal("spent metadata should be recorded")
 	}
 
@@ -529,7 +577,7 @@ func TestReorgRespendingPositionFromEarlierBlock(t *testing.T) {
 	idx.UndoBlock(101)
 
 	// Verify position is back to unspent with cleared metadata
-	pos, ok = mustPosition(t, idx, "tx_create", 0)
+	pos, ok = mustPosition(t, idx, txid("tx_create"), 0)
 	if !ok {
 		t.Fatal("position should still exist")
 	}
@@ -541,7 +589,7 @@ func TestReorgRespendingPositionFromEarlierBlock(t *testing.T) {
 	}
 
 	// Verify the spending position (from block 2) is gone
-	if _, ok := mustPosition(t, idx, "tx_spend", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("tx_spend"), 0); ok {
 		t.Error("position created in block 2 should be removed")
 	}
 }
@@ -587,33 +635,31 @@ func TestPositionsForPubKeyAll(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
 	pubkey2 := fakePubKey(0x03)
-	salt := []byte("0123456789abcdef")
-
 	// Create two positions for pubkey1, one for pubkey2
 	block1 := makeBlock("hash1", 1, []RPCTx{
 		{
-			TxID: "tx_1a",
+			TxID: txid("tx_1a"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 		},
 		{
-			TxID: "tx_1b",
+			TxID: txid("tx_1b"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 2000, salt, 2.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 2000, 2.0)},
 		},
 		{
-			TxID: "tx_2",
+			TxID: txid("tx_2"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey2, 3000, salt, 3.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey2, 3000, 3.0)},
 		},
 	})
 	idx.ApplyBlock(block1)
 
 	// Spend one of pubkey1's positions (the spend tx also creates a new position for pubkey1)
 	block2 := makeBlock("hash2", 2, []RPCTx{{
-		TxID: "spend",
-		Vin:  []RPCVin{spendVin("tx_1a", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.5)},
+		TxID: txid("spend"),
+		Vin:  []RPCVin{spendVin(txid("tx_1a"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("tx_1a"), 0), 0.5)},
 	}})
 	idx.ApplyBlock(block2)
 
@@ -643,27 +689,25 @@ func TestPositionsForPubKeyAll(t *testing.T) {
 func TestPositionsForPubKeyUnspentOnly(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Create two positions
 	block1 := makeBlock("hash1", 1, []RPCTx{
 		{
-			TxID: "tx1",
+			TxID: txid("tx1"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 		},
 		{
-			TxID: "tx2",
+			TxID: txid("tx2"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 2000, salt, 2.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 2000, 2.0)},
 		},
 	})
 	idx.ApplyBlock(block1)
 
 	// Spend one of them
 	block2 := makeBlock("hash2", 2, []RPCTx{{
-		TxID: "spend",
-		Vin:  []RPCVin{spendVin("tx1", 0)},
+		TxID: txid("spend"),
+		Vin:  []RPCVin{spendVin(txid("tx1"), 0)},
 		Vout: []RPCVout{},
 	}})
 	idx.ApplyBlock(block2)
@@ -699,17 +743,15 @@ func TestPositionsForPubKeyUnknownPubKey(t *testing.T) {
 func TestPositionLookup(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	block := makeBlock("hash1", 1, []RPCTx{{
-		TxID: "tx1",
+		TxID: txid("tx1"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}})
 	idx.ApplyBlock(block)
 
 	// Lookup existing position
-	pos, ok := mustPosition(t, idx, "tx1", 0)
+	pos, ok := mustPosition(t, idx, txid("tx1"), 0)
 	if !ok {
 		t.Fatal("position not found")
 	}
@@ -718,12 +760,12 @@ func TestPositionLookup(t *testing.T) {
 	}
 
 	// Lookup non-existent position
-	_, ok = mustPosition(t, idx, "tx1", 999)
+	_, ok = mustPosition(t, idx, txid("tx1"), 999)
 	if ok {
 		t.Error("expected Position to return ok=false for non-existent vout")
 	}
 
-	_, ok = mustPosition(t, idx, "nonexistent", 0)
+	_, ok = mustPosition(t, idx, txid("nonexistent"), 0)
 	if ok {
 		t.Error("expected Position to return ok=false for non-existent txid")
 	}
@@ -743,27 +785,25 @@ func TestStateRoundTripsThroughTheStore(t *testing.T) {
 	}
 	pubkey1 := fakePubKey(0x02)
 	pubkey2 := fakePubKey(0x03)
-	salt := []byte("0123456789abcdef")
-
 	// Block 1: create positions
 	block1 := makeBlock("hash1", 100, []RPCTx{
 		{
-			TxID: "tx_a",
+			TxID: txid("tx_a"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 		},
 		{
-			TxID: "tx_b",
+			TxID: txid("tx_b"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapTransferVout(0, pubkey2, 2000, 2.0)},
+			Vout: []RPCVout{uapTransferVout(0, pubkey2, 2000, foreignOrigin(0xAA), 2.0)},
 		},
 	})
 	idx1.ApplyBlock(block1)
 
 	// Block 2: spend position A
 	block2 := makeBlock("hash2", 101, []RPCTx{{
-		TxID: "tx_spend",
-		Vin:  []RPCVin{spendVin("tx_a", 0)},
+		TxID: txid("tx_spend"),
+		Vin:  []RPCVin{spendVin(txid("tx_a"), 0)},
 		Vout: []RPCVout{},
 	}})
 	idx1.ApplyBlock(block2)
@@ -772,7 +812,7 @@ func TestStateRoundTripsThroughTheStore(t *testing.T) {
 	// into the map, because it is PublishOrder that writes it to the
 	// store -- a direct map write would test nothing about persistence.
 	order := &Order{
-		TxID:          "tx_b",
+		TxID:          txid("tx_b"),
 		Vout:          0,
 		Multiplier:    2000,
 		ScriptSig:     makeOrderScriptSig(),
@@ -805,15 +845,15 @@ func TestStateRoundTripsThroughTheStore(t *testing.T) {
 		t.Errorf("expected 2 positions, got %d", positionCount(t, idx2))
 	}
 
-	pos, ok := mustPosition(t, idx2, "tx_a", 0)
+	pos, ok := mustPosition(t, idx2, txid("tx_a"), 0)
 	if !ok {
 		t.Fatal("position tx_a:0 not found after load")
 	}
-	if !pos.Spent || pos.SpentTxID != "tx_spend" || pos.SpentHeight != 101 {
+	if !pos.Spent || pos.SpentTxID != txid("tx_spend") || pos.SpentHeight != 101 {
 		t.Error("spent position metadata mismatch after load")
 	}
 
-	pos, ok = mustPosition(t, idx2, "tx_b", 0)
+	pos, ok = mustPosition(t, idx2, txid("tx_b"), 0)
 	if !ok {
 		t.Fatal("position tx_b:0 not found after load")
 	}
@@ -838,7 +878,7 @@ func TestStateRoundTripsThroughTheStore(t *testing.T) {
 	if orderCount(t, idx2) != 1 {
 		t.Errorf("expected 1 order, got %d", orderCount(t, idx2))
 	}
-	if o, ok := mustGetOrder(t, idx2, "tx_b", 0); !ok {
+	if o, ok := mustGetOrder(t, idx2, txid("tx_b"), 0); !ok {
 		t.Fatal("order not found after load")
 	} else if o.PaymentValue != 100 {
 		t.Errorf("order payment value mismatch: got %d, want 100", o.PaymentValue)
@@ -876,22 +916,20 @@ func TestByPubKeyMaintenance(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
 	pubkey2 := fakePubKey(0x03)
-	salt := []byte("0123456789abcdef")
-
 	pk1Hex := hex.EncodeToString(pubkey1)
 	pk2Hex := hex.EncodeToString(pubkey2)
 
 	// Create positions
 	block1 := makeBlock("hash1", 1, []RPCTx{
 		{
-			TxID: "tx1",
+			TxID: txid("tx1"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 		},
 		{
-			TxID: "tx2",
+			TxID: txid("tx2"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapTransferVout(0, pubkey2, 2000, 2.0)},
+			Vout: []RPCVout{uapTransferVout(0, pubkey2, 2000, foreignOrigin(0x11), 2.0)},
 		},
 	})
 	idx.ApplyBlock(block1)
@@ -919,8 +957,6 @@ func TestByPubKeyMaintenance(t *testing.T) {
 func TestStatusSnapshot(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Empty snapshot
 	status := mustStatus(t, idx)
 	if status.TipHeight != -1 || status.PositionCount != 0 || status.OrderCount != 0 {
@@ -929,9 +965,9 @@ func TestStatusSnapshot(t *testing.T) {
 
 	// After applying a block
 	block := makeBlock("hash1", 42, []RPCTx{{
-		TxID: "tx1",
+		TxID: txid("tx1"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}})
 	idx.ApplyBlock(block)
 
@@ -956,19 +992,17 @@ func TestMultipleTxsInSingleBlock(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
 	pubkey2 := fakePubKey(0x03)
-	salt := []byte("0123456789abcdef")
-
 	// First block: create two positions
 	block1 := makeBlock("hash1", 1, []RPCTx{
 		{
-			TxID: "tx1",
+			TxID: txid("tx1"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 		},
 		{
-			TxID: "tx2",
+			TxID: txid("tx2"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey2, 2000, salt, 2.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey2, 2000, 2.0)},
 		},
 	})
 	idx.ApplyBlock(block1)
@@ -976,35 +1010,35 @@ func TestMultipleTxsInSingleBlock(t *testing.T) {
 	// Second block: spend tx1:0, create new position, and leave tx2:0 unspent
 	block2 := makeBlock("hash2", 2, []RPCTx{
 		{
-			TxID: "tx3",
-			Vin:  []RPCVin{spendVin("tx1", 0)},
-			Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.5)},
+			TxID: txid("tx3"),
+			Vin:  []RPCVin{spendVin(txid("tx1"), 0)},
+			Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("tx1"), 0), 0.5)},
 		},
 		{
-			TxID: "tx4",
+			TxID: txid("tx4"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 3000, salt, 3.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 3000, 3.0)},
 		},
 	})
 	idx.ApplyBlock(block2)
 
 	// Verify state
-	pos1, ok := mustPosition(t, idx, "tx1", 0)
+	pos1, ok := mustPosition(t, idx, txid("tx1"), 0)
 	if !ok || !pos1.Spent {
 		t.Error("tx1:0 should be marked spent")
 	}
 
-	pos2, ok := mustPosition(t, idx, "tx2", 0)
+	pos2, ok := mustPosition(t, idx, txid("tx2"), 0)
 	if !ok || pos2.Spent {
 		t.Error("tx2:0 should be unspent")
 	}
 
-	pos3, ok := mustPosition(t, idx, "tx3", 0)
+	pos3, ok := mustPosition(t, idx, txid("tx3"), 0)
 	if !ok || pos3.Spent {
 		t.Error("tx3:0 should exist and be unspent")
 	}
 
-	pos4, ok := mustPosition(t, idx, "tx4", 0)
+	pos4, ok := mustPosition(t, idx, txid("tx4"), 0)
 	if !ok || pos4.Spent {
 		t.Error("tx4:0 should exist and be unspent")
 	}
@@ -1036,16 +1070,14 @@ func TestOpenStoreRejectsAFileThatIsNotADatabase(t *testing.T) {
 func TestMultipleBlocksAndVouts(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	block := makeBlock("hash1", 1, []RPCTx{{
-		TxID: "tx_mixed",
+		TxID: txid("tx_mixed"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{
 			ordinaryVout(0, 1.0),
-			uapMintVout(1, pubkey1, 1000, salt, 2.0),
+			uapMintVout(1, pubkey1, 1000, 2.0),
 			ordinaryVout(2, 3.0),
-			uapTransferVout(3, pubkey1, 2000, 4.0),
+			uapTransferVout(3, pubkey1, 2000, foreignOrigin(0x33), 4.0),
 		},
 	}})
 	idx.ApplyBlock(block)
@@ -1055,16 +1087,16 @@ func TestMultipleBlocksAndVouts(t *testing.T) {
 		t.Errorf("expected 2 positions from mixed tx, got %d", positionCount(t, idx))
 	}
 
-	if _, ok := mustPosition(t, idx, "tx_mixed", 1); !ok {
+	if _, ok := mustPosition(t, idx, txid("tx_mixed"), 1); !ok {
 		t.Error("vout 1 should be indexed")
 	}
-	if _, ok := mustPosition(t, idx, "tx_mixed", 3); !ok {
+	if _, ok := mustPosition(t, idx, txid("tx_mixed"), 3); !ok {
 		t.Error("vout 3 should be indexed")
 	}
-	if _, ok := mustPosition(t, idx, "tx_mixed", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("tx_mixed"), 0); ok {
 		t.Error("vout 0 (ordinary) should not be indexed")
 	}
-	if _, ok := mustPosition(t, idx, "tx_mixed", 2); ok {
+	if _, ok := mustPosition(t, idx, txid("tx_mixed"), 2); ok {
 		t.Error("vout 2 (ordinary) should not be indexed")
 	}
 }
@@ -1090,7 +1122,7 @@ func TestApplyBlockCreatesP2PKHUTXOs(t *testing.T) {
 	vout.ScriptPubKey.Hex = hex.EncodeToString(p2pkhScript)
 
 	block := makeBlock("hash1", 100, []RPCTx{{
-		TxID: "tx1",
+		TxID: txid("tx1"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{vout},
 	}})
@@ -1098,12 +1130,12 @@ func TestApplyBlockCreatesP2PKHUTXOs(t *testing.T) {
 	idx.ApplyBlock(block)
 
 	// Verify UTXO was created
-	utxo, ok := mustUTXO(t, idx, "tx1", 0)
+	utxo, ok := mustUTXO(t, idx, txid("tx1"), 0)
 	if !ok {
 		t.Fatal("UTXO not found after ApplyBlock")
 	}
-	if utxo.TxID != "tx1" {
-		t.Errorf("TxID mismatch: got %q, want %q", utxo.TxID, "tx1")
+	if utxo.TxID != txid("tx1") {
+		t.Errorf("TxID mismatch: got %q, want %q", utxo.TxID, txid("tx1"))
 	}
 	if utxo.Vout != 0 {
 		t.Errorf("Vout mismatch: got %d, want 0", utxo.Vout)
@@ -1124,8 +1156,6 @@ func TestApplyBlockCreatesP2PKHUTXOs(t *testing.T) {
 func TestApplyBlockIgnoresNonP2PKH(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Create a P2SH script (should be ignored)
 	p2shScript := []byte{0xa9, 0x14}
 	p2shScript = append(p2shScript, make([]byte, 20)...)
@@ -1135,23 +1165,23 @@ func TestApplyBlockIgnoresNonP2PKH(t *testing.T) {
 	p2shVout.ScriptPubKey.Hex = hex.EncodeToString(p2shScript)
 
 	block := makeBlock("hash1", 1, []RPCTx{{
-		TxID: "tx1",
+		TxID: txid("tx1"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{
 			p2shVout,
-			uapMintVout(1, pubkey1, 1000, salt, 2.0),
+			uapMintVout(1, pubkey1, 1000, 2.0),
 		},
 	}})
 
 	idx.ApplyBlock(block)
 
 	// P2SH output should not be indexed as UTXO
-	if _, ok := mustUTXO(t, idx, "tx1", 0); ok {
+	if _, ok := mustUTXO(t, idx, txid("tx1"), 0); ok {
 		t.Error("P2SH output should not be indexed as UTXO")
 	}
 
 	// But UAP output should still be indexed as Position
-	if _, ok := mustPosition(t, idx, "tx1", 1); !ok {
+	if _, ok := mustPosition(t, idx, txid("tx1"), 1); !ok {
 		t.Error("UAP output should still be indexed as Position")
 	}
 }
@@ -1175,27 +1205,27 @@ func TestApplyBlockSpendsUTXO(t *testing.T) {
 
 	// Block 1: create a UTXO
 	block1 := makeBlock("hash1", 10, []RPCTx{{
-		TxID: "create_tx",
+		TxID: txid("create_tx"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{vout},
 	}})
 	idx.ApplyBlock(block1)
 
 	// Verify UTXO exists
-	if _, ok := mustUTXO(t, idx, "create_tx", 0); !ok {
+	if _, ok := mustUTXO(t, idx, txid("create_tx"), 0); !ok {
 		t.Fatal("UTXO should exist after block 1")
 	}
 
 	// Block 2: spend the UTXO
 	block2 := makeBlock("hash2", 11, []RPCTx{{
-		TxID: "spend_tx",
-		Vin:  []RPCVin{spendVin("create_tx", 0)},
+		TxID: txid("spend_tx"),
+		Vin:  []RPCVin{spendVin(txid("create_tx"), 0)},
 		Vout: []RPCVout{},
 	}})
 	idx.ApplyBlock(block2)
 
 	// Verify UTXO is gone
-	if _, ok := mustUTXO(t, idx, "create_tx", 0); ok {
+	if _, ok := mustUTXO(t, idx, txid("create_tx"), 0); ok {
 		t.Error("UTXO should be removed when spent")
 	}
 }
@@ -1219,26 +1249,26 @@ func TestUndoBlockRestoresSpentUTXO(t *testing.T) {
 
 	// Block 1: create a UTXO
 	block1 := makeBlock("hash1", 50, []RPCTx{{
-		TxID: "create_tx",
+		TxID: txid("create_tx"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{vout},
 	}})
 	idx.ApplyBlock(block1)
 
-	utxo1, _ := mustUTXO(t, idx, "create_tx", 0)
+	utxo1, _ := mustUTXO(t, idx, txid("create_tx"), 0)
 	originalValue := utxo1.Value
 	originalHeight := utxo1.Height
 
 	// Block 2: spend the UTXO
 	block2 := makeBlock("hash2", 51, []RPCTx{{
-		TxID: "spend_tx",
-		Vin:  []RPCVin{spendVin("create_tx", 0)},
+		TxID: txid("spend_tx"),
+		Vin:  []RPCVin{spendVin(txid("create_tx"), 0)},
 		Vout: []RPCVout{},
 	}})
 	idx.ApplyBlock(block2)
 
 	// Verify UTXO is gone
-	if _, ok := mustUTXO(t, idx, "create_tx", 0); ok {
+	if _, ok := mustUTXO(t, idx, txid("create_tx"), 0); ok {
 		t.Fatal("UTXO should be removed when spent")
 	}
 
@@ -1246,7 +1276,7 @@ func TestUndoBlockRestoresSpentUTXO(t *testing.T) {
 	idx.UndoBlock(51)
 
 	// Verify UTXO is restored with original value and height
-	utxo2, ok := mustUTXO(t, idx, "create_tx", 0)
+	utxo2, ok := mustUTXO(t, idx, txid("create_tx"), 0)
 	if !ok {
 		t.Fatal("UTXO should be restored after UndoBlock")
 	}
@@ -1263,8 +1293,6 @@ func TestUndoBlockRestoresSpentUTXO(t *testing.T) {
 func TestApplyAndUndoSymmetry(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Build two P2PKH scripts for UTXOs
 	makeP2PKH := func(i byte) []byte {
 		hash160 := make([]byte, 20)
@@ -1283,11 +1311,11 @@ func TestApplyAndUndoSymmetry(t *testing.T) {
 
 	// Block 1: create both a UAP position and two P2PKH UTXOs
 	block1 := makeBlock("hash1", 100, []RPCTx{{
-		TxID: "mixed_tx",
+		TxID: txid("mixed_tx"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{
 			p2pkhVout1,
-			uapMintVout(1, pubkey1, 1000, salt, 5.5),
+			uapMintVout(1, pubkey1, 1000, 5.5),
 			p2pkhVout2,
 		},
 	}})
@@ -1298,8 +1326,8 @@ func TestApplyAndUndoSymmetry(t *testing.T) {
 
 	// Block 2: spend one UTXO
 	block2 := makeBlock("hash2", 101, []RPCTx{{
-		TxID: "spend_tx",
-		Vin:  []RPCVin{spendVin("mixed_tx", 0)},
+		TxID: txid("spend_tx"),
+		Vin:  []RPCVin{spendVin(txid("mixed_tx"), 0)},
 		Vout: []RPCVout{},
 	}})
 	idx.ApplyBlock(block2)
@@ -1355,19 +1383,19 @@ func TestTwoLineagesSameMultiplierStayDistinct(t *testing.T) {
 	// different salts and different transactions.
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "mint_lineage_a",
+			TxID: txid("mint_lineage_a"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, holder, mult, []byte("salt_for_lineage_a"), 1500.0)},
+			Vout: []RPCVout{uapMintVout(0, holder, mult, 1500.0)},
 		},
 		{
-			TxID: "mint_lineage_b",
+			TxID: txid("mint_lineage_b"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, holder, mult, []byte("salt_for_lineage_b"), 2500.0)},
+			Vout: []RPCVout{uapMintVout(0, holder, mult, 2500.0)},
 		},
 	}))
 
-	a, okA := mustPosition(t, idx, "mint_lineage_a", 0)
-	b, okB := mustPosition(t, idx, "mint_lineage_b", 0)
+	a, okA := mustPosition(t, idx, txid("mint_lineage_a"), 0)
+	b, okB := mustPosition(t, idx, txid("mint_lineage_b"), 0)
 	if !okA || !okB {
 		t.Fatal("both independent mints should be indexed")
 	}
@@ -1384,13 +1412,13 @@ func TestTwoLineagesSameMultiplierStayDistinct(t *testing.T) {
 	// Spend lineage A only, forwarding it into a transfer covenant.
 	next := fakePubKey(0x03)
 	idx.ApplyBlock(makeBlock("hashB", 101, []RPCTx{{
-		TxID: "spend_lineage_a",
-		Vin:  []RPCVin{spendVin("mint_lineage_a", 0)},
-		Vout: []RPCVout{uapTransferVout(0, next, mult, 1499.0)},
+		TxID: txid("spend_lineage_a"),
+		Vin:  []RPCVin{spendVin(txid("mint_lineage_a"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, next, mult, originOfMint(t, txid("mint_lineage_a"), 0), 1499.0)},
 	}}))
 
-	a, _ = mustPosition(t, idx, "mint_lineage_a", 0)
-	b, _ = mustPosition(t, idx, "mint_lineage_b", 0)
+	a, _ = mustPosition(t, idx, txid("mint_lineage_a"), 0)
+	b, _ = mustPosition(t, idx, txid("mint_lineage_b"), 0)
 	if !a.Spent {
 		t.Error("lineage A should be marked spent")
 	}
@@ -1402,7 +1430,7 @@ func TestTwoLineagesSameMultiplierStayDistinct(t *testing.T) {
 	}
 
 	// A's continuation is its own position, not a mutation of either mint.
-	cont, ok := mustPosition(t, idx, "spend_lineage_a", 0)
+	cont, ok := mustPosition(t, idx, txid("spend_lineage_a"), 0)
 	if !ok {
 		t.Fatal("lineage A's transfer output should be indexed")
 	}
@@ -1412,15 +1440,15 @@ func TestTwoLineagesSameMultiplierStayDistinct(t *testing.T) {
 
 	// Undoing the spend must restore A without disturbing B.
 	idx.UndoBlock(101)
-	a, _ = mustPosition(t, idx, "mint_lineage_a", 0)
-	b, _ = mustPosition(t, idx, "mint_lineage_b", 0)
+	a, _ = mustPosition(t, idx, txid("mint_lineage_a"), 0)
+	b, _ = mustPosition(t, idx, txid("mint_lineage_b"), 0)
 	if a.Spent {
 		t.Error("lineage A should be unspent again after reorg")
 	}
 	if b.Spent {
 		t.Error("lineage B should still be untouched after reorg")
 	}
-	if _, ok := mustPosition(t, idx, "spend_lineage_a", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("spend_lineage_a"), 0); ok {
 		t.Error("lineage A's transfer output should be gone after reorg")
 	}
 }
@@ -1430,34 +1458,32 @@ func TestTwoLineagesSameMultiplierStayDistinct(t *testing.T) {
 func TestMintOriginIsSelfAndTransfersInheritOrigin(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Block 1: create a mint at origin_one:0
 	idx.ApplyBlock(makeBlock("hash1", 100, []RPCTx{{
-		TxID: "origin_one",
+		TxID: txid("origin_one"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}}))
 
-	// A mint's origin is its own outpoint
-	pos1, ok := mustPosition(t, idx, "origin_one", 0)
+	// A mint's origin is its own outpoint (as SHA256 hash)
+	pos1, ok := mustPosition(t, idx, txid("origin_one"), 0)
 	if !ok {
 		t.Fatal("mint position not found")
 	}
-	expectedOrigin := "origin_one:0"
+	expectedOrigin := originOfMintHex(t, txid("origin_one"), 0)
 	if pos1.Origin != expectedOrigin {
 		t.Errorf("mint origin mismatch: got %q, want %q", pos1.Origin, expectedOrigin)
 	}
 
 	// Block 2: transfer the mint to a new output (transfer:0)
 	idx.ApplyBlock(makeBlock("hash2", 101, []RPCTx{{
-		TxID: "transfer",
-		Vin:  []RPCVin{spendVin("origin_one", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.5)},
+		TxID: txid("transfer"),
+		Vin:  []RPCVin{spendVin(txid("origin_one"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("origin_one"), 0), 0.5)},
 	}}))
 
 	// The transfer inherits the origin from the mint it spent
-	pos2, ok := mustPosition(t, idx, "transfer", 0)
+	pos2, ok := mustPosition(t, idx, txid("transfer"), 0)
 	if !ok {
 		t.Fatal("transfer position not found")
 	}
@@ -1467,13 +1493,13 @@ func TestMintOriginIsSelfAndTransfersInheritOrigin(t *testing.T) {
 
 	// Block 3: transfer again (transfer2:0 spends transfer:0)
 	idx.ApplyBlock(makeBlock("hash3", 102, []RPCTx{{
-		TxID: "transfer2",
-		Vin:  []RPCVin{spendVin("transfer", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.25)},
+		TxID: txid("transfer2"),
+		Vin:  []RPCVin{spendVin(txid("transfer"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("origin_one"), 0), 0.25)},
 	}}))
 
 	// The second transfer also inherits the original mint's origin
-	pos3, ok := mustPosition(t, idx, "transfer2", 0)
+	pos3, ok := mustPosition(t, idx, txid("transfer2"), 0)
 	if !ok {
 		t.Fatal("second transfer position not found")
 	}
@@ -1491,32 +1517,32 @@ func TestTwoIndependentMintsProduceTwoLineages(t *testing.T) {
 	// Block 1: create two independent mints at the same multiplier
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "origin_one",
+			TxID: txid("origin_one"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, holder, mult, []byte("salt_for_origin_one"), 1500.0)},
+			Vout: []RPCVout{uapMintVout(0, holder, mult, 1500.0)},
 		},
 		{
-			TxID: "origin_two",
+			TxID: txid("origin_two"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, holder, mult, []byte("salt_for_origin_two"), 2500.0)},
+			Vout: []RPCVout{uapMintVout(0, holder, mult, 2500.0)},
 		},
 	}))
 
-	pos1, ok := mustPosition(t, idx, "origin_one", 0)
+	pos1, ok := mustPosition(t, idx, txid("origin_one"), 0)
 	if !ok {
 		t.Fatal("first mint not found")
 	}
-	pos2, ok := mustPosition(t, idx, "origin_two", 0)
+	pos2, ok := mustPosition(t, idx, txid("origin_two"), 0)
 	if !ok {
 		t.Fatal("second mint not found")
 	}
 
 	// Each mint is its own origin
-	if pos1.Origin != "origin_one:0" {
-		t.Errorf("origin_one origin mismatch: got %q, want %q", pos1.Origin, "origin_one:0")
+	if pos1.Origin != originOfMintHex(t, txid("origin_one"), 0) {
+		t.Errorf("origin_one origin mismatch: got %q, want %q", pos1.Origin, originOfMintHex(t, txid("origin_one"), 0))
 	}
-	if pos2.Origin != "origin_two:0" {
-		t.Errorf("origin_two origin mismatch: got %q, want %q", pos2.Origin, "origin_two:0")
+	if pos2.Origin != originOfMintHex(t, txid("origin_two"), 0) {
+		t.Errorf("origin_two origin mismatch: got %q, want %q", pos2.Origin, originOfMintHex(t, txid("origin_two"), 0))
 	}
 
 	// They must be two distinct lineages, not merged
@@ -1525,28 +1551,29 @@ func TestTwoIndependentMintsProduceTwoLineages(t *testing.T) {
 	}
 }
 
-// TestOrphanTransferHasEmptyOrigin verifies that a transfer whose parent
-// was never indexed (or is below the start height) gets an empty origin
-// and is excluded from the tokens index.
-func TestOrphanTransferHasEmptyOrigin(t *testing.T) {
+// TestTransferWithUnknownParentUsesScriptOrigin verifies that a transfer whose parent
+// was never indexed (or is below the start height) still carries the origin specified
+// in its script (v2 semantics: a transfer's origin is whatever its SCRIPT says).
+func TestTransferWithUnknownParentUsesScriptOrigin(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
 
 	// Block 1: Create a transfer that spends a non-existent position
 	// (simulating indexing starting mid-chain, or missing history)
+	scriptOrigin := foreignOrigin(0x22)
 	idx.ApplyBlock(makeBlock("hash1", 100, []RPCTx{{
-		TxID: "orphan_transfer",
-		Vin:  []RPCVin{spendVin("never_indexed", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 1.0)},
+		TxID: txid("orphan_transfer"),
+		Vin:  []RPCVin{spendVin(txid("never_indexed"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, scriptOrigin, 1.0)},
 	}}))
 
-	// The orphan position should exist but have empty origin
-	pos, ok := mustPosition(t, idx, "orphan_transfer", 0)
+	// The transfer position should exist and have the origin from its script
+	pos, ok := mustPosition(t, idx, txid("orphan_transfer"), 0)
 	if !ok {
-		t.Fatal("orphan transfer position should be created even with unknown parent")
+		t.Fatal("transfer position should be created even with unknown parent")
 	}
-	if pos.Origin != "" {
-		t.Errorf("orphan transfer origin should be empty, got %q", pos.Origin)
+	if pos.Origin != hex.EncodeToString(scriptOrigin) {
+		t.Errorf("transfer origin should be from script, got %q, want %q", pos.Origin, hex.EncodeToString(scriptOrigin))
 	}
 }
 
@@ -1556,83 +1583,81 @@ func TestOrphanTransferHasEmptyOrigin(t *testing.T) {
 func TestUndoBlockRestoresLineageCorrectly(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	// Block 1: mint
 	idx.ApplyBlock(makeBlock("hash1", 100, []RPCTx{{
-		TxID: "mint_tx",
+		TxID: txid("mint_tx"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 1.0)},
 	}}))
 
 	// Block 2: transfer
 	idx.ApplyBlock(makeBlock("hash2", 101, []RPCTx{{
-		TxID: "transfer_tx",
-		Vin:  []RPCVin{spendVin("mint_tx", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.5)},
+		TxID: txid("transfer_tx"),
+		Vin:  []RPCVin{spendVin(txid("mint_tx"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("mint_tx"), 0), 0.5)},
 	}}))
 
 	// Record state after block 2 (before block 3 was applied)
-	mintPosAfter2, _ := mustPosition(t, idx, "mint_tx", 0)
-	transferPosAfter2, _ := mustPosition(t, idx, "transfer_tx", 0)
+	mintPosAfter2, _ := mustPosition(t, idx, txid("mint_tx"), 0)
+	transferPosAfter2, _ := mustPosition(t, idx, txid("transfer_tx"), 0)
 
 	// Block 3: another transfer
 	idx.ApplyBlock(makeBlock("hash3", 102, []RPCTx{{
-		TxID: "transfer2_tx",
-		Vin:  []RPCVin{spendVin("transfer_tx", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.25)},
+		TxID: txid("transfer2_tx"),
+		Vin:  []RPCVin{spendVin(txid("transfer_tx"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("mint_tx"), 0), 0.25)},
 	}}))
 
 	// Verify lineage before undo
-	pos3, _ := mustPosition(t, idx, "transfer2_tx", 0)
-	if pos3.Origin != "mint_tx:0" {
-		t.Fatalf("before undo: transfer2 origin should be mint_tx:0, got %q", pos3.Origin)
+	pos3, _ := mustPosition(t, idx, txid("transfer2_tx"), 0)
+	if pos3.Origin != originOfMintHex(t, txid("mint_tx"), 0) {
+		t.Fatalf("before undo: transfer2 origin should match mint_tx:0, got %q", pos3.Origin)
 	}
 
 	// Undo block 3
 	idx.UndoBlock(102)
 
 	// After undo, transfer2_tx should be gone
-	if _, ok := mustPosition(t, idx, "transfer2_tx", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("transfer2_tx"), 0); ok {
 		t.Error("after undo block 3: transfer2_tx should be removed")
 	}
 
 	// transfer_tx should still exist with correct origin
-	pos2, ok := mustPosition(t, idx, "transfer_tx", 0)
+	pos2, ok := mustPosition(t, idx, txid("transfer_tx"), 0)
 	if !ok {
 		t.Fatal("after undo block 3: transfer_tx should still exist")
 	}
-	if pos2.Origin != "mint_tx:0" {
-		t.Errorf("after undo block 3: transfer origin should be mint_tx:0, got %q", pos2.Origin)
+	if pos2.Origin != originOfMintHex(t, txid("mint_tx"), 0) {
+		t.Errorf("after undo block 3: transfer origin should match mint_tx:0, got %q", pos2.Origin)
 	}
 
 	// Undo block 2
 	idx.UndoBlock(101)
 
 	// After undo, transfer_tx should be gone
-	if _, ok := mustPosition(t, idx, "transfer_tx", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("transfer_tx"), 0); ok {
 		t.Error("after undo block 2: transfer_tx should be removed")
 	}
 
 	// mint_tx should still exist with its own origin
-	pos1, ok := mustPosition(t, idx, "mint_tx", 0)
+	pos1, ok := mustPosition(t, idx, txid("mint_tx"), 0)
 	if !ok {
 		t.Fatal("after undo block 2: mint_tx should still exist")
 	}
-	if pos1.Origin != "mint_tx:0" {
-		t.Errorf("after undo block 2: mint origin should be mint_tx:0, got %q", pos1.Origin)
+	if pos1.Origin != originOfMintHex(t, txid("mint_tx"), 0) {
+		t.Errorf("after undo block 2: mint origin should match mint_tx:0, got %q", pos1.Origin)
 	}
 
 	// Re-apply block 2 and verify the positions match what they were before
 	idx.ApplyBlock(makeBlock("hash2", 101, []RPCTx{{
-		TxID: "transfer_tx",
-		Vin:  []RPCVin{spendVin("mint_tx", 0)},
-		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 0.5)},
+		TxID: txid("transfer_tx"),
+		Vin:  []RPCVin{spendVin(txid("mint_tx"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("mint_tx"), 0), 0.5)},
 	}}))
 
 	// Verify the positions match
-	mintPosRe, _ := mustPosition(t, idx, "mint_tx", 0)
-	transferPosRe, _ := mustPosition(t, idx, "transfer_tx", 0)
+	mintPosRe, _ := mustPosition(t, idx, txid("mint_tx"), 0)
+	transferPosRe, _ := mustPosition(t, idx, txid("transfer_tx"), 0)
 
 	// Compare key fields (don't compare entire struct as it might have ordering differences)
 	if mintPosRe.Spent != mintPosAfter2.Spent || mintPosRe.Origin != mintPosAfter2.Origin {
@@ -1657,17 +1682,15 @@ func TestUndoBlockRestoresLineageCorrectly(t *testing.T) {
 func TestUndoBlockRollsBackTip(t *testing.T) {
 	idx := NewIndex()
 	pubkey := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	idx.ApplyBlock(makeBlock("hashA", 10, []RPCTx{{
-		TxID: "txA",
+		TxID: txid("txA"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey, 5, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey, 5, 1.0)},
 	}}))
 	idx.ApplyBlock(makeBlock("hashB", 11, []RPCTx{{
-		TxID: "txB",
+		TxID: txid("txB"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey, 6, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey, 6, 1.0)},
 	}}))
 
 	idx.UndoBlock(11)
@@ -1688,7 +1711,7 @@ func TestUndoBlockRollsBackTip(t *testing.T) {
 func TestUndoBlockToEmptyResetsTip(t *testing.T) {
 	idx := NewIndex()
 	idx.ApplyBlock(makeBlock("hashA", 0, []RPCTx{{
-		TxID: "txA",
+		TxID: txid("txA"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{ordinaryVout(0, 1.0)},
 	}}))
@@ -1711,7 +1734,7 @@ func TestUndoBlockToEmptyResetsTip(t *testing.T) {
 func TestUndoBlockWithGapDoesNotInventATip(t *testing.T) {
 	idx := NewIndex()
 	idx.ApplyBlock(makeBlock("hash500", 500, []RPCTx{{
-		TxID: "tx500",
+		TxID: txid("tx500"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{ordinaryVout(0, 1.0)},
 	}}))
@@ -1747,7 +1770,7 @@ func TestUndoDoesNotResurrectAUTXOTheSameBlockCreated(t *testing.T) {
 	// Block 0 establishes a UTXO that outlives the reorg, so the test can
 	// tell "restored nothing" apart from "restored correctly".
 	idx.ApplyBlock(makeBlock("hash0", 0, []RPCTx{{
-		TxID: "old",
+		TxID: txid("old"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{p2pkhVoutFor(0, 0x11, 3.0)},
 	}}))
@@ -1755,23 +1778,23 @@ func TestUndoDoesNotResurrectAUTXOTheSameBlockCreated(t *testing.T) {
 	// Block 1 creates a UTXO and spends it, plus spends the older one.
 	idx.ApplyBlock(makeBlock("hash1", 1, []RPCTx{
 		{
-			TxID: "payer",
+			TxID: txid("payer"),
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{p2pkhVoutFor(0, 0x22, 1.0)},
 		},
 		{
-			TxID: "spender",
-			Vin:  []RPCVin{spendVin("payer", 0), spendVin("old", 0)},
+			TxID: txid("spender"),
+			Vin:  []RPCVin{spendVin(txid("payer"), 0), spendVin(txid("old"), 0)},
 			Vout: []RPCVout{p2pkhVoutFor(0, 0x33, 3.5)},
 		},
 	}))
-	if _, ok := mustUTXO(t, idx, "payer", 0); ok {
+	if _, ok := mustUTXO(t, idx, txid("payer"), 0); ok {
 		t.Fatal("setup: payer:0 should already be spent within block 1")
 	}
 
 	idx.UndoBlock(1)
 
-	if _, ok := mustUTXO(t, idx, "payer", 0); ok {
+	if _, ok := mustUTXO(t, idx, txid("payer"), 0); ok {
 		t.Error("undo restored a UTXO that the undone block itself created; " +
 			"it now names a transaction the index no longer has")
 	}
@@ -1779,7 +1802,7 @@ func TestUndoDoesNotResurrectAUTXOTheSameBlockCreated(t *testing.T) {
 		t.Errorf("hash160 index still lists %d UTXO(s) for the resurrected output", len(got))
 	}
 	// The genuinely older UTXO must come back.
-	if _, ok := mustUTXO(t, idx, "old", 0); !ok {
+	if _, ok := mustUTXO(t, idx, txid("old"), 0); !ok {
 		t.Error("undo failed to restore a UTXO created by an earlier block")
 	}
 	if got := mustUTXOsForHash160(t, idx, hash160Hex(0x11)); len(got) != 1 {
@@ -1799,12 +1822,10 @@ func TestUndoDoesNotResurrectAUTXOTheSameBlockCreated(t *testing.T) {
 func TestPositionCarriesItsScript(t *testing.T) {
 	idx := NewIndex()
 	pubkey := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
-	mintVout := uapMintVout(0, pubkey, 100, salt, 1.0)
-	transferVout := uapTransferVout(1, pubkey, 100, 1.0)
+	mintVout := uapMintVout(0, pubkey, 100, 1.0)
+	transferVout := uapTransferVout(1, pubkey, 100, foreignOrigin(0x44), 1.0)
 	idx.ApplyBlock(makeBlock("hash0", 0, []RPCTx{{
-		TxID: "tx0",
+		TxID: txid("tx0"),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{mintVout, transferVout},
 	}}))
@@ -1812,21 +1833,20 @@ func TestPositionCarriesItsScript(t *testing.T) {
 		t.Fatalf("store error: %v", err)
 	}
 
-	mint, ok, err := idx.store.Position("tx0:0")
+	mint, ok, err := idx.store.Position(positionKey(txid("tx0"), 0))
 	if err != nil || !ok {
 		t.Fatalf("mint position missing: ok=%v err=%v", ok, err)
 	}
 	if mint.Script != mintVout.ScriptPubKey.Hex {
 		t.Errorf("mint script not preserved:\n got %q\nwant %q", mint.Script, mintVout.ScriptPubKey.Hex)
 	}
-	// The salt is the part that cannot be reconstructed, so say so directly:
-	// a script that has lost it would still contain the pubkey and the
-	// multiplier and could pass a laxer check.
-	if !strings.Contains(mint.Script, hex.EncodeToString(salt)) {
-		t.Errorf("the mint script does not carry its salt: %q", mint.Script)
+	// In v2, the mint script is just pubkey and multiplier (no salt).
+	// Verify it contains the pubkey we passed in, as proof the script survived.
+	if !strings.Contains(mint.Script, hex.EncodeToString(pubkey)) {
+		t.Errorf("the mint script does not carry its pubkey: %q", mint.Script)
 	}
 
-	transfer, ok, err := idx.store.Position("tx0:1")
+	transfer, ok, err := idx.store.Position(positionKey(txid("tx0"), 1))
 	if err != nil || !ok {
 		t.Fatalf("transfer position missing: ok=%v err=%v", ok, err)
 	}

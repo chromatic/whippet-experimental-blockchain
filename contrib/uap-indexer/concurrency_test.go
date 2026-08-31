@@ -50,13 +50,13 @@ func hash160Hex(seed byte) string {
 // lineage origin, plain P2PKH UTXOs, and spends of both positions and
 // UTXOs. Heights start at 0 so the whole chain can be applied and undone
 // as a unit.
-func buildChain(n int) []chainBlock {
-	salt := []byte("0123456789abcdef")
+func buildChain(t *testing.T, n int) []chainBlock {
+	t.Helper()
 	out := make([]chainBlock, 0, n)
 
 	for i := 0; i < n; i++ {
 		height := int64(i)
-		mintTxID := fmt.Sprintf("mint%d", i)
+		mintTxID := txid(fmt.Sprintf("mint%d", i))
 		payTxID := fmt.Sprintf("pay%d", i)
 		pubkey := fakePubKey(byte(0x02 + i%2))
 
@@ -67,7 +67,7 @@ func buildChain(n int) []chainBlock {
 				TxID: mintTxID,
 				Vin:  []RPCVin{coinbaseVin()},
 				Vout: []RPCVout{
-					uapMintVout(0, pubkey, int64(10+i), salt, 1.0),
+					uapMintVout(0, pubkey, int64(10+i), 1.0),
 					opReturnVout(1, wuapPayload(
 						fmt.Sprintf("TK%d", i),
 						make([]byte, 32),
@@ -81,7 +81,7 @@ func buildChain(n int) []chainBlock {
 				TxID: payTxID,
 				Vin:  []RPCVin{spendVin(mintTxID, 0)},
 				Vout: []RPCVout{
-					uapTransferVout(0, fakePubKey(0x03), int64(10+i), 1.0),
+					uapTransferVout(0, fakePubKey(0x03), int64(10+i), originOfMint(t, mintTxID, 0), 1.0),
 				},
 			},
 		}
@@ -91,7 +91,7 @@ func buildChain(n int) []chainBlock {
 		if i > 0 {
 			txs = append(txs, RPCTx{
 				TxID: fmt.Sprintf("spend%d", i),
-				Vin:  []RPCVin{spendVin(fmt.Sprintf("mint%d", i-1), 2)},
+				Vin:  []RPCVin{spendVin(txid(fmt.Sprintf("mint%d", i-1)), 2)},
 				Vout: []RPCVout{p2pkhVoutFor(0, byte(100+i), 1.0)},
 			})
 		}
@@ -147,7 +147,7 @@ func TestConcurrentReadsDuringApplyAndUndo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadIndex: %v", err)
 	}
-	chain := buildChain(chainLen)
+	chain := buildChain(t, chainLen)
 
 	// Prime the index once so readers have something to look at from the
 	// very first iteration, and so PublishOrder below has a live position.
@@ -208,8 +208,8 @@ func TestConcurrentReadsDuringApplyAndUndo(t *testing.T) {
 				}
 
 				for i := 0; i < chainLen; i++ {
-					_, _, _ = idx.Position(fmt.Sprintf("mint%d", i), 0)
-					_, _, _ = idx.UTXO(fmt.Sprintf("mint%d", i), 2)
+					_, _, _ = idx.Position(txid(fmt.Sprintf("mint%d", i)), 0)
+					_, _, _ = idx.UTXO(txid(fmt.Sprintf("mint%d", i)), 2)
 					idx.HashAtHeight(int64(i))
 					utxos, _ := idx.UTXOsForHash160(hash160Hex(byte(i + 1)))
 					for _, u := range utxos {
@@ -233,7 +233,7 @@ func TestConcurrentReadsDuringApplyAndUndo(t *testing.T) {
 				_, _ = idx.ListOrders(nil)
 				m := int64(10)
 				_, _ = idx.ListOrders(&m)
-				_, _, _ = idx.GetOrder("mint0", 0)
+				_, _, _ = idx.GetOrder(txid("mint0"), 0)
 			}
 		}(i)
 	}
@@ -255,7 +255,7 @@ func TestConcurrentReadsDuringApplyAndUndo(t *testing.T) {
 			}
 			for i := 0; i < chainLen; i++ {
 				o := &Order{
-					TxID:          fmt.Sprintf("mint%d", i),
+					TxID:          txid(fmt.Sprintf("mint%d", i)),
 					Vout:          0,
 					Multiplier:    int64(10 + i),
 					ScriptSig:     scriptSig,
@@ -348,12 +348,12 @@ func TestConcurrentReorgWithExtendedState(t *testing.T) {
 	const readers = 6
 
 	idx := NewIndex()
-	common := buildChain(4)
+	common := buildChain(t, 4)
 	applyAll(idx, common)
 
 	// Two continuations from height 4, differing in every indexed field.
-	branchA := forkAt(4, "A")
-	branchB := forkAt(4, "B")
+	branchA := forkAt(t, 4, "A")
+	branchB := forkAt(t, 4, "B")
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -423,15 +423,15 @@ func TestConcurrentReorgWithExtendedState(t *testing.T) {
 	if _, ok := mustUTXO(t, idx, "mintB0", 2); ok {
 		t.Error("branch B UTXO survived a reorg onto branch A")
 	}
-	if _, ok := mustUTXO(t, idx, "mint3", 2); !ok {
+	if _, ok := mustUTXO(t, idx, txid("mint3"), 2); !ok {
 		t.Error("common-chain UTXO spent by branch B was not restored when branch B was rolled back")
 	}
 }
 
 // forkAt builds a two-block continuation starting at the given height,
 // tagged so the two branches share no txids, hashes or scripts.
-func forkAt(height int64, tag string) []chainBlock {
-	salt := []byte("0123456789abcdef")
+func forkAt(t *testing.T, height int64, tag string) []chainBlock {
+	t.Helper()
 	seed := byte(0x10)
 	if tag == "B" {
 		seed = byte(0x40)
@@ -440,13 +440,13 @@ func forkAt(height int64, tag string) []chainBlock {
 	var out []chainBlock
 	for i := 0; i < 2; i++ {
 		h := height + int64(i)
-		mintTxID := fmt.Sprintf("mint%s%d", tag, i)
+		mintTxID := txid(fmt.Sprintf("mint%s%d", tag, i))
 		txs := []RPCTx{
 			{
 				TxID: mintTxID,
 				Vin:  []RPCVin{coinbaseVin()},
 				Vout: []RPCVout{
-					uapMintVout(0, fakePubKey(0x02), int64(500+i), salt, 3.0),
+					uapMintVout(0, fakePubKey(0x02), int64(500+i), 3.0),
 					opReturnVout(1, wuapPayload(tag+"TK", make([]byte, 32))),
 					p2pkhVoutFor(2, seed+byte(i), 4.0),
 				},
@@ -454,7 +454,7 @@ func forkAt(height int64, tag string) []chainBlock {
 			{
 				TxID: fmt.Sprintf("xfer%s%d", tag, i),
 				Vin:  []RPCVin{spendVin(mintTxID, 0)},
-				Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x03), int64(500+i), 3.0)},
+				Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x03), int64(500+i), originOfMint(t, mintTxID, 0), 3.0)},
 			},
 		}
 
@@ -467,8 +467,8 @@ func forkAt(height int64, tag string) []chainBlock {
 		// anything, and the assertion would be decorative.
 		if tag == "B" && i == 0 {
 			txs = append(txs, RPCTx{
-				TxID: "spendCommonB",
-				Vin:  []RPCVin{spendVin("mint3", 2)},
+				TxID: txid("spendCommonB"),
+				Vin:  []RPCVin{spendVin(txid("mint3"), 2)},
 				Vout: []RPCVout{p2pkhVoutFor(0, 0x70, 1.0)},
 			})
 		}

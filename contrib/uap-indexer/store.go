@@ -190,7 +190,18 @@ CREATE TABLE IF NOT EXISTS lineage_holders (
 // failure and the only mechanism that forces an operator to reindex, so
 // bump here whenever a persisted value's validity rules or meaning change,
 // not only when a column does.
-const CurrentSchemaVersion = 3
+//
+// Version 4 is the UAP covenant v2 change -- the same reasoning a second
+// time, which is why the paragraph above was worth writing down. positions.
+// origin is PERSISTED. Under v1 it held "txid:vout" of the originating mint,
+// reconstructed by walking the spend graph and left empty whenever that walk
+// could not reach a mint. Under v2 it holds the hex SHA256 of that outpoint,
+// read straight off the covenant script. Both are non-empty strings in the
+// same TEXT column, so nothing would fail to load: an old database would
+// simply go on serving "abc123:0" as a lineage identity that no v2 script
+// can ever contain, and /api/tokens would advertise lineages no wallet can
+// match a position to. Bumping forces the reindex that recomputes them.
+const CurrentSchemaVersion = 4
 
 // schemaVersionKey is the meta row that records CurrentSchemaVersion at the
 // time a database was created or last confirmed compatible.
@@ -610,7 +621,6 @@ type storeMeta struct {
 	tipHeight   int64
 	tipHash     string
 	prunedBelow int64
-	ambiguous   int64
 }
 
 func (t *storeTx) putMeta(m storeMeta) error {
@@ -618,7 +628,6 @@ func (t *storeTx) putMeta(m storeMeta) error {
 		{"tip_height", m.tipHeight},
 		{"tip_hash", m.tipHash},
 		{"pruned_below", m.prunedBelow},
-		{"ambiguous_lineage_count", m.ambiguous},
 	} {
 		if err := t.exec(t.s.stmts.putMeta, kv[0], fmt.Sprint(kv[1])); err != nil {
 			return err
@@ -866,14 +875,22 @@ func (s *Store) UTXOsForHash160Page(hash160 string, page Page) ([]UTXO, bool, er
 }
 
 // tokenQuery renders the maintained aggregate as the API's TokenInfo. The
-// join reaches back to the mint's own row for the token's declared
-// ticker: a lineage's origin is by construction the mint's outpoint
-// key, so this finds it even once the mint has been spent onward, which it
-// normally is immediately. Only the mint is consulted, so a later holder
-// cannot attach metadata of their own.
+// join reaches back to the mint's own row for the token's declared ticker,
+// which it finds even once the mint has been spent onward -- as it normally
+// is, immediately. Only the mint is consulted, so a later holder cannot
+// attach metadata of their own.
+//
+// The join is on (origin, is_mint), NOT on p.key = l.origin. That older form
+// worked only because a v1 origin literally WAS the mint's outpoint key
+// ("txid:vout"), so the lineage's identity doubled as a foreign key into
+// positions. A v2 origin is SHA256 of that outpoint, which is never a
+// position key, so the old join silently matched nothing and every token
+// served with an empty ticker. Exactly one position per lineage has
+// is_mint = 1 (an origin names a single outpoint), so this picks out the
+// same row the old join meant to.
 const tokenQuery = `SELECT l.origin, l.multiplier, l.unspent_value, l.holder_count,
 		l.mint_height, l.has_mint, p.is_mint, p.metadata
-	FROM lineages l LEFT JOIN positions p ON p.key = l.origin`
+	FROM lineages l LEFT JOIN positions p ON p.origin = l.origin AND p.is_mint = 1`
 
 func scanToken(row scanner) (TokenInfo, error) {
 	var (
@@ -949,7 +966,11 @@ func (s *Store) Token(origin string) (TokenInfo, bool, error) {
 // orderQuery serves only open orders: the join drops any whose position has
 // been spent or has vanished in a reorg. Doing it here rather than in Go
 // keeps "open" defined in exactly one place.
-const orderQuery = `SELECT o.data, p.value FROM orders o JOIN positions p ON p.key = o.key WHERE p.spent = 0`
+// Backing value and lineage origin both come from the position on every
+// read, never from the stored order blob: a blob written before either field
+// existed would unmarshal them as zero/empty and the order would render as
+// unbacked, or as unfillable.
+const orderQuery = `SELECT o.data, p.value, p.origin FROM orders o JOIN positions p ON p.key = o.key WHERE p.spent = 0`
 
 func scanOrders(rows *sql.Rows) ([]Order, error) {
 	defer rows.Close()
@@ -957,7 +978,8 @@ func scanOrders(rows *sql.Rows) ([]Order, error) {
 	for rows.Next() {
 		var data []byte
 		var backing int64
-		if err := rows.Scan(&data, &backing); err != nil {
+		var origin string
+		if err := rows.Scan(&data, &backing, &origin); err != nil {
 			return nil, err
 		}
 		var o Order
@@ -975,6 +997,7 @@ func scanOrders(rows *sql.Rows) ([]Order, error) {
 		// this costs nothing, and it cannot drift: an outpoint's value is
 		// immutable, which makes the position the only honest source.
 		o.BackingValue = backing
+		o.Origin = origin
 		out = append(out, o)
 	}
 	return out, rows.Err()
@@ -1119,8 +1142,6 @@ func (s *Store) loadMeta() (storeMeta, error) {
 			m.tipHash = value
 		case "pruned_below":
 			fmt.Sscan(value, &m.prunedBelow)
-		case "ambiguous_lineage_count":
-			fmt.Sscan(value, &m.ambiguous)
 		}
 	}
 	return m, rows.Err()
@@ -1176,6 +1197,5 @@ func (s *Store) LoadIndex() (*Index, error) {
 	idx.TipHeight = meta.tipHeight
 	idx.TipHash = meta.tipHash
 	idx.PrunedBelow = meta.prunedBelow
-	idx.AmbiguousLineageCount = meta.ambiguous
 	return idx, nil
 }

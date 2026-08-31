@@ -26,6 +26,20 @@ type Order struct {
 	// Populated at publish time from the position itself.
 	BackingValue int64 `json:"backing_value"` // satoshis
 
+	// Origin is the lineage of the position being sold: which token this is.
+	//
+	// The taker cannot work it out for themselves, and this is not a
+	// convenience. An order carries the maker's scriptSig, never their
+	// scriptPubKey, so for a transfer the origin is simply not visible from
+	// the taker's side -- and deriving it from the maker's outpoint is
+	// correct only when the position is a fresh mint being sold for the
+	// first time. A taker who guessed would build a transaction that looks
+	// well-formed, signs cleanly, and is rejected by consensus, because its
+	// covenant output would name a lineage with no input in the transaction.
+	//
+	// Read off the position, like BackingValue, so it cannot drift.
+	Origin string `json:"origin"` // hex, 32 bytes
+
 	// CancelNonce is a relay-assigned value, unique to this publish, that
 	// a cancellation for this order must sign over (see cancel_auth.go).
 	// It exists because CreatedAt's one-second resolution is not fine
@@ -179,6 +193,7 @@ func (idx *Index) publishOrder(o *Order, fromMirror bool) error {
 
 	o.PubKey = pos.PubKey
 	o.BackingValue = pos.Value
+	o.Origin = pos.Origin
 	o.CreatedAt = time.Now().Unix()
 	o.CancelNonce = idx.nextCancelNonce()
 	if err := t.putOrder(o); err != nil {

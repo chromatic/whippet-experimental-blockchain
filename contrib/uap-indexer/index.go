@@ -19,22 +19,26 @@ type Position struct {
 	Spent       bool   `json:"spent"`
 	SpentTxID   string `json:"spent_txid,omitempty"`
 	SpentHeight int64  `json:"spent_height,omitempty"`
-	Origin      string `json:"origin,omitempty"` // "txid:vout" of the originating mint, empty for orphans
+	// Origin is the lineage identity: hex SHA256 of the originating mint's
+	// outpoint, the same 32 bytes every transfer covenant in the lineage
+	// carries in its script. Read straight off a transfer's script; derived
+	// from its own outpoint for a mint. Never empty for a parsed position --
+	// there is no orphan case any more, because identity no longer has to be
+	// reconstructed by following the spend graph.
+	Origin string `json:"origin,omitempty"`
 
 	// Script is this output's own scriptPubKey, hex-encoded.
 	//
 	// A wallet spending this position must sign with this exact script as
-	// the scriptCode. For a transfer covenant it could rebuild it from
-	// PubKey and Multiplier, but a MINT is `<pubkey> <multiplier> <salt>
-	// OP_MINT`, and the salt is arbitrary bytes recorded nowhere else.
-	// Without this field a freshly minted position can neither be
-	// transferred nor sold -- which is where the lifecycle of every token
-	// starts -- unless the wallet kept the salt from the moment it minted
-	// and never lost it. Publishing the script costs one column and removes
-	// that requirement entirely.
+	// the scriptCode, so it is kept verbatim rather than reassembled from
+	// the parsed fields -- the only safe version is the one the chain has.
+	// The salt that once made this field indispensable is gone, but the
+	// reasoning has not changed: a reassembled script that differs from the
+	// real one by a single byte produces a signature over the wrong
+	// scriptCode, and the spend simply fails to verify.
 	Script string `json:"script_hex,omitempty"`
 
-	// Metadata is the token's ticker/name/hash, declared by an OP_RETURN in
+	// Metadata is the token's ticker and metadata hash, declared by an OP_RETURN in
 	// the mint's own transaction. Set only on mints: it belongs to the
 	// lineage, and a transfer must not be able to rewrite it (see
 	// ApplyBlock). Stored on the position rather than in a side table so
@@ -84,9 +88,8 @@ type Index struct {
 	store    *Store
 	storeErr error
 
-	TipHeight             int64
-	TipHash               string
-	AmbiguousLineageCount int64
+	TipHeight int64
+	TipHash   string
 
 	// ReorgWindow is how many blocks below the tip keep their undo log.
 	// Config rather than data, so it is not persisted: the operator's
@@ -220,7 +223,6 @@ func (idx *Index) write(fn func(t *storeTx) (storeMeta, error)) {
 	idx.TipHeight = meta.tipHeight
 	idx.TipHash = meta.tipHash
 	idx.PrunedBelow = meta.prunedBelow
-	idx.AmbiguousLineageCount = meta.ambiguous
 }
 
 // meta snapshots the in-memory fields as the starting point for a write.
@@ -230,7 +232,6 @@ func (idx *Index) meta() storeMeta {
 		tipHeight:   idx.TipHeight,
 		tipHash:     idx.TipHash,
 		prunedBelow: idx.PrunedBelow,
-		ambiguous:   idx.AmbiguousLineageCount,
 	}
 }
 
@@ -276,7 +277,6 @@ func (idx *Index) Reset() {
 	idx.TipHeight = -1
 	idx.TipHash = ""
 	idx.PrunedBelow = 0
-	idx.AmbiguousLineageCount = 0
 }
 
 // HashAtHeight returns what the indexer currently believes the block hash
@@ -312,11 +312,6 @@ func (idx *Index) applyBlock(t *storeTx, block *RPCBlock) (storeMeta, error) {
 	change := &heightChange{}
 
 	for _, tx := range block.Tx {
-		// Collect the origin(s) of any UAP position(s) this transaction
-		// spends. This must happen before processing vouts, so origins can
-		// be assigned to the new outputs.
-		spentOrigins := make(map[string]bool)
-
 		for _, vin := range tx.Vin {
 			if vin.Coinbase != "" {
 				continue
@@ -355,9 +350,6 @@ func (idx *Index) applyBlock(t *storeTx, block *RPCBlock) (storeMeta, error) {
 					change.OrdersPruned = append(change.OrdersPruned, &order)
 				}
 
-				if pos.Origin != "" {
-					spentOrigins[pos.Origin] = true
-				}
 			}
 
 			utxo, err := t.utxo(k)
@@ -375,21 +367,6 @@ func (idx *Index) applyBlock(t *storeTx, block *RPCBlock) (storeMeta, error) {
 		}
 
 		// Determine the lineage origin for outputs created by this
-		// transaction:
-		//   - exactly one UAP input with a known origin: all outputs
-		//     inherit it;
-		//   - no UAP input: origin is empty (orphan, parent unknown);
-		//   - several distinct origins: unreachable if consensus holds,
-		//     so count it and leave the origin empty rather than guess.
-		var txOrigin string
-		if len(spentOrigins) == 1 {
-			for origin := range spentOrigins {
-				txOrigin = origin
-			}
-		} else if len(spentOrigins) > 1 {
-			meta.ambiguous++
-		}
-
 		// A mint may declare its token's ticker/metadata hash in an
 		// OP_RETURN output of the same transaction. Found once per
 		// transaction; applied only to mints below, so a transfer carrying
@@ -424,12 +401,26 @@ func (idx *Index) applyBlock(t *storeTx, block *RPCBlock) (storeMeta, error) {
 					Script: vout.ScriptPubKey.Hex,
 				}
 				if parsed.IsMint {
-					// A mint's origin is its own outpoint.
-					pos.Origin = k
+					// A mint's lineage is SHA256 of its own outpoint. The
+					// mint script cannot carry that value -- it depends on
+					// the txid, which depends on the script -- so consensus
+					// only checks it when the mint is first spent. The
+					// indexer is under no such constraint: it can see the
+					// outpoint the moment the output is indexed, and the
+					// derivation is deterministic, so a freshly minted token
+					// has a lineage here before anyone spends it.
+					origin, err := UapOriginFromOutpoint(tx.TxID, vout.N)
+					if err != nil {
+						return meta, err
+					}
+					pos.Origin = hex.EncodeToString(origin)
 					pos.Metadata = txMetadata
 				} else {
-					// A transfer inherits the origin of the input it spent.
-					pos.Origin = txOrigin
+					// A transfer states its lineage outright. This used to be
+					// reconstructed by following the spend graph, guessing
+					// when a transaction spent several positions; the origin
+					// being in the script is what retired all of that.
+					pos.Origin = hex.EncodeToString(parsed.Origin)
 				}
 				if err := t.putPosition(pos); err != nil {
 					return meta, err
@@ -687,11 +678,10 @@ func (idx *Index) Token(origin string) (TokenInfo, bool, error) {
 
 // Status is a snapshot of indexer progress for the /status endpoint.
 type Status struct {
-	TipHeight             int64  `json:"tip_height"`
-	TipHash               string `json:"tip_hash"`
-	PositionCount         int    `json:"position_count"`
-	OrderCount            int    `json:"order_count"`
-	AmbiguousLineageCount int64  `json:"ambiguous_lineage_count,omitempty"`
+	TipHeight     int64  `json:"tip_height"`
+	TipHash       string `json:"tip_hash"`
+	PositionCount int    `json:"position_count"`
+	OrderCount    int    `json:"order_count"`
 
 	// Healthy is false once the store has latched a persistent write error
 	// (see StoreErr) and stopped indexing new blocks. TipHeight/TipHash
@@ -709,7 +699,7 @@ type Status struct {
 
 // TokenInfo represents a UAP lineage aggregated across its unspent positions.
 type TokenInfo struct {
-	Origin       string `json:"origin"` // txid:vout of the originating mint
+	Origin       string `json:"origin"` // hex SHA256 of the originating mint's outpoint
 	Multiplier   int64  `json:"multiplier"`
 	Ticker       string `json:"ticker,omitempty"`
 	MetadataHash string `json:"metadata_hash,omitempty"`
@@ -721,10 +711,9 @@ type TokenInfo struct {
 func (idx *Index) StatusSnapshot() (Status, error) {
 	idx.mu.RLock()
 	s := Status{
-		TipHeight:             idx.TipHeight,
-		TipHash:               idx.TipHash,
-		AmbiguousLineageCount: idx.AmbiguousLineageCount,
-		Healthy:               idx.storeErr == nil,
+		TipHeight: idx.TipHeight,
+		TipHash:   idx.TipHash,
+		Healthy:   idx.storeErr == nil,
 	}
 	if idx.storeErr != nil {
 		s.StoreErr = idx.storeErr.Error()

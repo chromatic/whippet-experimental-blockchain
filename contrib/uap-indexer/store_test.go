@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -62,19 +63,18 @@ func reopen(t *testing.T, store *Store, path string) (*Index, *Store) {
 // output, and every block after the first spends the previous block's
 // P2PKH output so undo has restorable state to work with.
 func storeChain(n int) []*RPCBlock {
-	salt := []byte("0123456789abcdef")
 	var out []*RPCBlock
 	for h := 0; h < n; h++ {
 		tx := RPCTx{
-			TxID: fmt.Sprintf("tx%d", h),
+			TxID: txid(fmt.Sprintf("tx%d", h)),
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
-				uapMintVout(0, fakePubKey(byte(0x02+h%3)), int64(100+h), salt, 1.0),
+				uapMintVout(0, fakePubKey(byte(0x02+h%3)), int64(100+h), 1.0),
 				p2pkhVoutFor(1, byte(0x40+h), 2.0),
 			},
 		}
 		if h > 0 {
-			tx.Vin = append(tx.Vin, spendVin(fmt.Sprintf("tx%d", h-1), 1))
+			tx.Vin = append(tx.Vin, spendVin(txid(fmt.Sprintf("tx%d", h-1)), 1))
 		}
 		out = append(out, makeBlock(fmt.Sprintf("hash%d", h), int64(h), []RPCTx{tx}))
 	}
@@ -135,7 +135,7 @@ func TestStorePersistsWithoutAnExplicitSave(t *testing.T) {
 	if h, _ := loaded.Tip(); h != 2 {
 		t.Errorf("tip after unclean restart: got %d, want 2", h)
 	}
-	if _, ok := mustPosition(t, loaded, "tx2", 0); !ok {
+	if _, ok := mustPosition(t, loaded, txid("tx2"), 0); !ok {
 		t.Error("position from the last applied block did not survive: the block was not committed as it was applied")
 	}
 }
@@ -196,11 +196,11 @@ func TestStoreReflectsUndo(t *testing.T) {
 	if h, hash := loaded.Tip(); h != 2 || hash != "hash2" {
 		t.Errorf("tip after undo+reload: got %d/%s, want 2/hash2", h, hash)
 	}
-	if _, ok := mustPosition(t, loaded, "tx4", 0); ok {
+	if _, ok := mustPosition(t, loaded, txid("tx4"), 0); ok {
 		t.Error("position from an undone block survived the reload: undo is not reaching the store")
 	}
 	// tx2's P2PKH output was spent by block 3 and must be restored.
-	if _, ok := mustUTXO(t, loaded, "tx2", 1); !ok {
+	if _, ok := mustUTXO(t, loaded, txid("tx2"), 1); !ok {
 		t.Error("UTXO restored by undo is missing after reload: the restore was not persisted")
 	}
 	assertSamePositions(t, loaded, idx)
@@ -250,12 +250,12 @@ func TestStoreOrdersSurviveRestart(t *testing.T) {
 	for _, b := range chain {
 		idx.ApplyBlock(b)
 	}
-	pos, ok := mustPosition(t, idx, "tx1", 0)
+	pos, ok := mustPosition(t, idx, txid("tx1"), 0)
 	if !ok {
 		t.Fatal("expected a position to sell")
 	}
 	order := &Order{
-		TxID: "tx1", Vout: 0, Multiplier: pos.Multiplier,
+		TxID: txid("tx1"), Vout: 0, Multiplier: pos.Multiplier,
 		ScriptSig: makeOrderScriptSig(), PaymentScript: "76a914" + hash160Hex(0x11) + "88ac",
 		PaymentValue: 700000000,
 	}
@@ -264,7 +264,7 @@ func TestStoreOrdersSurviveRestart(t *testing.T) {
 	}
 
 	loaded, store2 := reopen(t, store, path)
-	got, ok := mustGetOrder(t, loaded, "tx1", 0)
+	got, ok := mustGetOrder(t, loaded, txid("tx1"), 0)
 	if !ok {
 		t.Fatal("published order did not survive a restart")
 	}
@@ -275,12 +275,12 @@ func TestStoreOrdersSurviveRestart(t *testing.T) {
 	// storeChain assigns tx1's position the key from fakePrivKey(0x03) (h=1,
 	// prefix 0x02+h%3); CancelOrder now verifies a real signature against
 	// it (see cancel_auth.go), not the order's own public script_sig.
-	cancelSig := signCancel(t, fakePrivKey(0x03), "tx1", 0, order.ScriptSig, order.CancelNonce)
-	if err := loaded.CancelOrder("tx1", 0, cancelSig); err != nil {
+	cancelSig := signCancel(t, fakePrivKey(0x03), txid("tx1"), 0, order.ScriptSig, order.CancelNonce)
+	if err := loaded.CancelOrder(txid("tx1"), 0, cancelSig); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	again, _ := reopen(t, store2, path)
-	if _, ok := mustGetOrder(t, again, "tx1", 0); ok {
+	if _, ok := mustGetOrder(t, again, txid("tx1"), 0); ok {
 		t.Error("cancelled order came back after a restart: the delete was not persisted")
 	}
 }
@@ -292,15 +292,13 @@ func TestStoreOrdersSurviveRestart(t *testing.T) {
 // unfillable, since the position behind it is gone.
 func TestStoreOrderIsPrunedOnDiskWhenPositionIsSpent(t *testing.T) {
 	idx, store, path := storeTestIndex(t)
-
-	salt := []byte("0123456789abcdef")
 	pk := fakePubKey(0x02)
 	idx.ApplyBlock(makeBlock("hash0", 0, []RPCTx{{
-		TxID: "mint", Vin: []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pk, 1000, salt, 1.0)},
+		TxID: txid("mint"), Vin: []RPCVin{coinbaseVin()},
+		Vout: []RPCVout{uapMintVout(0, pk, 1000, 1.0)},
 	}}))
 	if err := idx.PublishOrder(&Order{
-		TxID: "mint", Vout: 0, Multiplier: 1000,
+		TxID: txid("mint"), Vout: 0, Multiplier: 1000,
 		ScriptSig: makeOrderScriptSig(), PaymentScript: "76a914" + hash160Hex(0x11) + "88ac",
 		PaymentValue: 700000000,
 	}); err != nil {
@@ -308,8 +306,8 @@ func TestStoreOrderIsPrunedOnDiskWhenPositionIsSpent(t *testing.T) {
 	}
 	// A taker fills it: the position is spent into a transfer.
 	idx.ApplyBlock(makeBlock("hash1", 1, []RPCTx{{
-		TxID: "fill", Vin: []RPCVin{spendVin("mint", 0)},
-		Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x03), 1000, 1.0)},
+		TxID: txid("fill"), Vin: []RPCVin{spendVin(txid("mint"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x03), 1000, originOfMint(t, txid("mint"), 0), 1.0)},
 	}}))
 
 	loaded, store2 := reopen(t, store, path)
@@ -429,7 +427,7 @@ func TestStoreWriteFailureIsStickyAndStopsWriting(t *testing.T) {
 	if h, _ := loaded.Tip(); h != 1 {
 		t.Errorf("stored tip after a write failure: got %d, want 1 (the last block that fully committed)", h)
 	}
-	if _, ok := mustPosition(t, loaded, "tx4", 0); ok {
+	if _, ok := mustPosition(t, loaded, txid("tx4"), 0); ok {
 		t.Error("a block applied after the store failed was written anyway; the disk state has a hole in it")
 	}
 }
@@ -472,7 +470,7 @@ func TestStoreBatchIsAllOrNothing(t *testing.T) {
 	if h, _ := loaded.Tip(); h != 1 {
 		t.Errorf("stored tip after a partial write: got %d, want 1", h)
 	}
-	if _, ok := mustPosition(t, loaded, "tx2", 0); ok {
+	if _, ok := mustPosition(t, loaded, txid("tx2"), 0); ok {
 		t.Error("the failed block's position survived the restart")
 	}
 }
@@ -483,28 +481,26 @@ func TestStoreBatchIsAllOrNothing(t *testing.T) {
 // must round-trip as an orphan rather than as a lineage named "".
 func TestStoreSurvivesMetadataAndOrphans(t *testing.T) {
 	idx, store, path := storeTestIndex(t)
-
-	salt := []byte("0123456789abcdef")
 	idx.ApplyBlock(makeBlock("hash0", 0, []RPCTx{{
-		TxID: "named", Vin: []RPCVin{coinbaseVin()},
+		TxID: txid("named"), Vin: []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{
-			uapMintVout(0, fakePubKey(0x02), 1000, salt, 1.0),
+			uapMintVout(0, fakePubKey(0x02), 1000, 1.0),
 			opReturnVout(1, wuapPayload("WHIP", make([]byte, 32))),
 		},
 	}, {
-		TxID: "plain", Vin: []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x03), 500, salt, 1.0)},
+		TxID: txid("plain"), Vin: []RPCVin{coinbaseVin()},
+		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x03), 500, 1.0)},
 	}}))
 	// An orphan: a transfer whose input the index never saw, so it
 	// belongs to no lineage.
 	idx.ApplyBlock(makeBlock("hash1", 1, []RPCTx{{
-		TxID: "orphan", Vin: []RPCVin{spendVin("unknown", 7)},
-		Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x04), 42, 1.0)},
+		TxID: txid("orphan"), Vin: []RPCVin{spendVin(txid("unknown"), 7)},
+		Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x04), 42, foreignOrigin(0xEE), 1.0)},
 	}}))
 
 	loaded, _ := reopen(t, store, path)
 
-	named, ok := mustPosition(t, loaded, "named", 0)
+	named, ok := mustPosition(t, loaded, txid("named"), 0)
 	if !ok {
 		t.Fatal("named mint missing after reload")
 	}
@@ -514,19 +510,22 @@ func TestStoreSurvivesMetadataAndOrphans(t *testing.T) {
 	if named.Metadata.Ticker != "WHIP" {
 		t.Errorf("metadata changed across reload: %+v", *named.Metadata)
 	}
-	plain, ok := mustPosition(t, loaded, "plain", 0)
+	plain, ok := mustPosition(t, loaded, txid("plain"), 0)
 	if !ok {
 		t.Fatal("plain mint missing after reload")
 	}
 	if plain.Metadata != nil {
 		t.Errorf("a mint with no metadata came back with %+v; NULL is not round-tripping as nil", *plain.Metadata)
 	}
-	orphan, ok := mustPosition(t, loaded, "orphan", 0)
+	orphan, ok := mustPosition(t, loaded, txid("orphan"), 0)
 	if !ok {
 		t.Fatal("orphan transfer missing after reload")
 	}
-	if orphan.Origin != "" {
-		t.Errorf("orphan came back with origin %q, want empty", orphan.Origin)
+	// In v2, a transfer's origin is whatever its SCRIPT says, not empty
+	// because its parent was never indexed. The script says foreignOrigin(0xEE).
+	expectedOrphanOrigin := hex.EncodeToString(foreignOrigin(0xEE))
+	if orphan.Origin != expectedOrphanOrigin {
+		t.Errorf("orphan transfer origin mismatch: got %q, want %q", orphan.Origin, expectedOrphanOrigin)
 	}
 	for _, tok := range mustAllTokens(t, loaded) {
 		if tok.Origin == "" {

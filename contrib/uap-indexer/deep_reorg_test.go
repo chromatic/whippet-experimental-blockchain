@@ -74,14 +74,13 @@ func (f *fakeNode) handler(w http.ResponseWriter, r *http.Request) {
 // chainOf builds `n` blocks tagged so two chains are distinguishable by
 // hash, txid and minted pubkey.
 func chainOf(tag string, n int, forkFrom []*RPCBlock, forkAt int) []*RPCBlock {
-	salt := []byte("0123456789abcdef")
 	var out []*RPCBlock
 	out = append(out, forkFrom[:forkAt]...)
 	for h := forkAt; h < n; h++ {
 		out = append(out, makeBlock(fmt.Sprintf("%shash%d", tag, h), int64(h), []RPCTx{{
-			TxID: fmt.Sprintf("%stx%d", tag, h),
+			TxID: txid(fmt.Sprintf("%stx%d", tag, h)),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, fakePubKey(byte(0x02)), int64(h+1), salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, fakePubKey(byte(0x02)), int64(h+1), 1.0)},
 		}}))
 	}
 	return out
@@ -117,7 +116,7 @@ func TestSyncRecoversFromReorgDeeperThanWindow(t *testing.T) {
 	if tip, hash := idx.Tip(); tip != 39 || hash != "Ahash39" {
 		t.Fatalf("after initial sync: tip %d/%s, want 39/Ahash39", tip, hash)
 	}
-	if _, ok := mustPosition(t, idx, "Atx20", 0); !ok {
+	if _, ok := mustPosition(t, idx, txid("Atx20"), 0); !ok {
 		t.Fatal("chain A position missing after initial sync")
 	}
 
@@ -133,14 +132,14 @@ func TestSyncRecoversFromReorgDeeperThanWindow(t *testing.T) {
 	if tip, hash := idx.Tip(); tip != 39 || hash != "Bhash39" {
 		t.Errorf("after deep reorg: tip %d/%s, want 39/Bhash39", tip, hash)
 	}
-	if _, ok := mustPosition(t, idx, "Btx20", 0); !ok {
+	if _, ok := mustPosition(t, idx, txid("Btx20"), 0); !ok {
 		t.Error("chain B position missing after rebuild")
 	}
-	if _, ok := mustPosition(t, idx, "Atx20", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("Atx20"), 0); ok {
 		t.Error("chain A position survived a rebuild; the index is mixing two chains")
 	}
 	// The shared prefix must be re-indexed too, not merely retained.
-	if _, ok := mustPosition(t, idx, "Atx5", 0); !ok {
+	if _, ok := mustPosition(t, idx, txid("Atx5"), 0); !ok {
 		t.Error("shared-prefix position missing: the rebuild did not resync from the start")
 	}
 }
@@ -179,10 +178,10 @@ func TestSyncHandlesShallowReorgWithoutRebuilding(t *testing.T) {
 	if tip, hash := idx.Tip(); tip != 39 || hash != "Bhash39" {
 		t.Errorf("after shallow reorg: tip %d/%s, want 39/Bhash39", tip, hash)
 	}
-	if _, ok := mustPosition(t, idx, "Btx38", 0); !ok {
+	if _, ok := mustPosition(t, idx, txid("Btx38"), 0); !ok {
 		t.Error("new-branch position missing after shallow reorg")
 	}
-	if _, ok := mustPosition(t, idx, "Atx38", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("Atx38"), 0); ok {
 		t.Error("orphaned position survived a shallow reorg")
 	}
 	// The decisive check: how many blocks were actually applied. A

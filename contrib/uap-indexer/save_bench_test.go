@@ -9,9 +9,9 @@ import (
 
 // buildScaleIndex creates an index with n mint positions, n transfer
 // positions and n UTXOs, roughly what n blocks of steady activity gives.
-func buildScaleIndex(n int) *Index {
+func buildScaleIndex(t testing.TB, n int) *Index {
 	idx := NewIndex()
-	for _, blk := range scaleBlocks(n) {
+	for _, blk := range scaleBlocks(t, n) {
 		idx.ApplyBlock(blk)
 	}
 	return idx
@@ -19,26 +19,34 @@ func buildScaleIndex(n int) *Index {
 
 // scaleBlocks builds the same n blocks buildScaleIndex applies, so a
 // benchmark can hand them to an index one at a time and time only that.
-func scaleBlocks(n int) []*RPCBlock {
-	salt := []byte("0123456789abcdef")
+func scaleBlocks(t testing.TB, n int) []*RPCBlock {
 	out := make([]*RPCBlock, 0, n)
 	for i := 0; i < n; i++ {
 		pk := fakePubKey(byte(0x02 + i%2))
+		// Generate valid 64-char hex txids
+		mintTxIDBytes := make([]byte, 32)
+		for j := 0; j < 32; j++ {
+			mintTxIDBytes[j] = byte((i*256 + j) & 0xff)
+		}
+		mintTxID := fmt.Sprintf("%064x", mintTxIDBytes)
 		out = append(out, makeBlock(fmt.Sprintf("h%d", i), int64(i), []RPCTx{
 			{
-				TxID: fmt.Sprintf("m%d", i),
+				TxID: mintTxID,
 				Vin:  []RPCVin{coinbaseVin()},
 				Vout: []RPCVout{
-					uapMintVout(0, pk, int64(10+i), salt, 1.0),
+					uapMintVout(0, pk, int64(10+i), 1.0),
 					opReturnVout(1, wuapPayload("TK", make([]byte, 32))),
 					p2pkhVoutFor(2, byte(i), 2.0),
 				},
 			},
-			{
-				TxID: fmt.Sprintf("x%d", i),
-				Vin:  []RPCVin{spendVin(fmt.Sprintf("m%d", i), 0)},
-				Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x03), int64(10+i), 1.0)},
-			},
+			func() RPCTx {
+				origin, _ := UapOriginFromOutpoint(mintTxID, 0)
+				return RPCTx{
+					TxID: fmt.Sprintf("%064x", []byte{byte((i*256 + 1) & 0xff)}),
+					Vin:  []RPCVin{spendVin(mintTxID, 0)},
+					Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x03), int64(10+i), origin, 1.0)},
+				}
+			}(),
 		}))
 	}
 	return out
@@ -66,13 +74,13 @@ func BenchmarkStoreApplyBlock(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			for _, blk := range scaleBlocks(n) {
+			for _, blk := range scaleBlocks(b, n) {
 				idx.ApplyBlock(blk)
 			}
 			if err := idx.StoreErr(); err != nil {
 				b.Fatal(err)
 			}
-			extra := scaleBlocks(n + b.N)[n:]
+			extra := scaleBlocks(b, n+b.N)[n:]
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				idx.ApplyBlock(extra[i])
@@ -100,7 +108,7 @@ func BenchmarkStoreLoadIndex(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			for _, blk := range scaleBlocks(n) {
+			for _, blk := range scaleBlocks(b, n) {
 				idx.ApplyBlock(blk)
 			}
 			if err := idx.StoreErr(); err != nil {
@@ -122,7 +130,7 @@ func BenchmarkStoreLoadIndex(b *testing.B) {
 func BenchmarkAllTokensFromStore(b *testing.B) {
 	for _, n := range []int{50000, 200000} {
 		b.Run(fmt.Sprintf("blocks=%d", n), func(b *testing.B) {
-			idx := buildScaleIndex(n)
+			idx := buildScaleIndex(b, n)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				if got := len(mustAllTokens(b, idx)); got == 0 {
@@ -140,13 +148,12 @@ func BenchmarkAllTokensFromStore(b *testing.B) {
 // possible case for a per-lineage aggregate, and not a realistic one.
 func buildRealisticIndex(blocks, lineages int) *Index {
 	idx := NewIndex()
-	salt := []byte("0123456789abcdef")
 	var txs []RPCTx
 	for i := 0; i < lineages; i++ {
 		txs = append(txs, RPCTx{
-			TxID: fmt.Sprintf("mint%d", i),
+			TxID: txid(fmt.Sprintf("mint%d", i)),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), int64(10+i), salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), int64(10+i), 1.0)},
 		})
 	}
 	idx.ApplyBlock(makeBlock("h0", 0, txs))
@@ -154,15 +161,16 @@ func buildRealisticIndex(blocks, lineages int) *Index {
 	// Each later block transfers one token onward to a new holder.
 	prev := make([]string, lineages)
 	for i := range prev {
-		prev[i] = fmt.Sprintf("mint%d", i)
+		prev[i] = txid(fmt.Sprintf("mint%d", i))
 	}
 	for h := 1; h < blocks; h++ {
 		i := h % lineages
 		txid := fmt.Sprintf("x%d", h)
+		origin, _ := UapOriginFromOutpoint(prev[i], 0)
 		idx.ApplyBlock(makeBlock(fmt.Sprintf("h%d", h), int64(h), []RPCTx{{
 			TxID: txid,
 			Vin:  []RPCVin{spendVin(prev[i], 0)},
-			Vout: []RPCVout{uapTransferVout(0, fakePubKey(byte(h%200)), int64(10+i), 1.0)},
+			Vout: []RPCVout{uapTransferVout(0, fakePubKey(byte(h%200)), int64(10+i), origin, 1.0)},
 		}}))
 		prev[i] = txid
 	}

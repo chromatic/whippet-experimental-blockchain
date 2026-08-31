@@ -79,7 +79,7 @@ func TestOrderLifecycle(t *testing.T) {
 	// fakePubKey) because this test also exercises CancelOrder, which
 	// verifies a real signature against the position's pubkey.
 	priv, pubKeyHex := testMakerKey(t)
-	pos := &Position{TxID: "abc123", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 5000000000, IsMint: false, Height: 10}
+	pos := &Position{TxID: txid("abc123"), Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 5000000000, IsMint: false, Height: 10}
 	seedPosition(t, idx, pos)
 
 	scriptSig := signedPush(t)
@@ -118,7 +118,7 @@ func TestOrderLifecycle(t *testing.T) {
 	}
 
 	// Publishing against an unknown position must fail.
-	badOrder := &Order{TxID: "doesnotexist", Vout: 0, Multiplier: 1000, ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 1}
+	badOrder := &Order{TxID: txid("doesnotexist"), Vout: 0, Multiplier: 1000, ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 1}
 	if err := idx.PublishOrder(badOrder); err == nil {
 		t.Error("expected PublishOrder to reject an order on an unknown position")
 	}
@@ -145,7 +145,7 @@ func TestOrderLifecycle(t *testing.T) {
 
 func TestOrderRejectedForSpentPosition(t *testing.T) {
 	idx := NewIndex()
-	pos := &Position{TxID: "spent1", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 1, Spent: true}
+	pos := &Position{TxID: txid("spent1"), Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 1, Spent: true}
 	seedPosition(t, idx, pos)
 
 	order := &Order{TxID: pos.TxID, Vout: pos.Vout, Multiplier: 1000, ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 1}
@@ -156,14 +156,14 @@ func TestOrderRejectedForSpentPosition(t *testing.T) {
 
 func TestOrderPrunedWhenPositionSpent(t *testing.T) {
 	idx := NewIndex()
-	pos := &Position{TxID: "prune1", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 1}
+	pos := &Position{TxID: txid("prune1"), Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 1}
 	seedPosition(t, idx, pos)
 	seedOrder(t, idx, &Order{TxID: pos.TxID, Vout: pos.Vout, Multiplier: 1000})
 
 	block := &RPCBlock{
 		Hash: "blockhash", Height: 1,
 		Tx: []RPCTx{{
-			TxID: "filltx",
+			TxID: txid("filltx"),
 			Vin:  []RPCVin{{TxID: pos.TxID, Vout: pos.Vout}},
 			Vout: []RPCVout{},
 		}},
@@ -191,14 +191,12 @@ func TestOrderPrunedWhenPositionSpent(t *testing.T) {
 // the only path that exercises it.
 func TestOrderForAPositionLostToAReorgIsNotServed(t *testing.T) {
 	idx := NewIndex()
-	salt := []byte("0123456789abcdef")
-
 	idx.ApplyBlock(makeBlock("hash1", 1, []RPCTx{{
-		TxID: "mint", Vin: []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), 1000, salt, 1.0)},
+		TxID: txid("mint"), Vin: []RPCVin{coinbaseVin()},
+		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), 1000, 1.0)},
 	}}))
 	if err := idx.PublishOrder(&Order{
-		TxID: "mint", Vout: 0, Multiplier: 1000,
+		TxID: txid("mint"), Vout: 0, Multiplier: 1000,
 		ScriptSig: makeOrderScriptSig(), PaymentScript: "5678", PaymentValue: 100,
 	}); err != nil {
 		t.Fatalf("PublishOrder: %v", err)
@@ -209,11 +207,11 @@ func TestOrderForAPositionLostToAReorgIsNotServed(t *testing.T) {
 	if err := idx.StoreErr(); err != nil {
 		t.Fatalf("store error: %v", err)
 	}
-	if _, ok := mustPosition(t, idx, "mint", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("mint"), 0); ok {
 		t.Fatal("precondition: the position should be gone after the undo")
 	}
 
-	if _, ok := mustGetOrder(t, idx, "mint", 0); ok {
+	if _, ok := mustGetOrder(t, idx, txid("mint"), 0); ok {
 		t.Error("an order was served for a position the chain no longer contains")
 	}
 	if got := mustListOrders(t, idx, nil); len(got) != 0 {
@@ -232,21 +230,21 @@ func TestCancelWithGarbageSignatureChangesNothing(t *testing.T) {
 	idx := NewIndex()
 	_, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
+		TxID: txid("known"), Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	real := signedPush(t)
 	if err := idx.PublishOrder(&Order{
-		TxID: "known", Vout: 0, Multiplier: 1000,
+		TxID: txid("known"), Vout: 0, Multiplier: 1000,
 		ScriptSig: real, PaymentScript: "00", PaymentValue: 100,
 	}); err != nil {
 		t.Fatalf("PublishOrder: %v", err)
 	}
 
-	if err := idx.CancelOrder("known", 0, "48"+real[2:]); err == nil {
+	if err := idx.CancelOrder(txid("known"), 0, "48"+real[2:]); err == nil {
 		t.Error("expected a cancel with a garbage signature to be rejected")
 	}
 
-	if _, ok := mustGetOrder(t, idx, "known", 0); !ok {
+	if _, ok := mustGetOrder(t, idx, txid("known"), 0); !ok {
 		t.Error("a rejected cancel removed the order anyway")
 	}
 	n, err := idx.store.CountTombstones()
@@ -271,10 +269,10 @@ func TestCancelSignedByWrongKeyIsRejected(t *testing.T) {
 	_, ownerPubKeyHex := testMakerKey(t)
 	attackerPriv, _ := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: ownerPubKeyHex, Multiplier: 1000, Value: 500000000,
+		TxID: txid("known"), Vout: 0, PubKey: ownerPubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	order := &Order{
-		TxID: "known", Vout: 0, Multiplier: 1000,
+		TxID: txid("known"), Vout: 0, Multiplier: 1000,
 		ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 100,
 	}
 	if err := idx.PublishOrder(order); err != nil {
@@ -283,11 +281,11 @@ func TestCancelSignedByWrongKeyIsRejected(t *testing.T) {
 
 	// A signature that is perfectly valid, but made by a different key
 	// than the one that owns the position.
-	forged := signCancel(t, attackerPriv, "known", 0, order.ScriptSig, order.CancelNonce)
-	if err := idx.CancelOrder("known", 0, forged); err == nil {
+	forged := signCancel(t, attackerPriv, txid("known"), 0, order.ScriptSig, order.CancelNonce)
+	if err := idx.CancelOrder(txid("known"), 0, forged); err == nil {
 		t.Fatal("expected a cancel signed by the wrong key to be rejected")
 	}
-	if _, ok := mustGetOrder(t, idx, "known", 0); !ok {
+	if _, ok := mustGetOrder(t, idx, txid("known"), 0); !ok {
 		t.Error("an order was cancelled by a signature from the wrong key")
 	}
 }
@@ -301,13 +299,13 @@ func TestCancelSignedForADifferentOrderIsRejected(t *testing.T) {
 	idx := NewIndex()
 	priv, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "orderA", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
+		TxID: txid("orderA"), Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	seedPosition(t, idx, &Position{
-		TxID: "orderB", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
+		TxID: txid("orderB"), Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
-	orderA := &Order{TxID: "orderA", Vout: 0, Multiplier: 1000, ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 100}
-	orderB := &Order{TxID: "orderB", Vout: 0, Multiplier: 1000, ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 200}
+	orderA := &Order{TxID: txid("orderA"), Vout: 0, Multiplier: 1000, ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 100}
+	orderB := &Order{TxID: txid("orderB"), Vout: 0, Multiplier: 1000, ScriptSig: signedPush(t), PaymentScript: "00", PaymentValue: 200}
 	if err := idx.PublishOrder(orderA); err != nil {
 		t.Fatalf("PublishOrder A: %v", err)
 	}
@@ -316,16 +314,16 @@ func TestCancelSignedForADifferentOrderIsRejected(t *testing.T) {
 	}
 
 	// A real signature by the right key, but over order A's identity.
-	sigForA := signCancel(t, priv, "orderA", 0, orderA.ScriptSig, orderA.CancelNonce)
-	if err := idx.CancelOrder("orderB", 0, sigForA); err == nil {
+	sigForA := signCancel(t, priv, txid("orderA"), 0, orderA.ScriptSig, orderA.CancelNonce)
+	if err := idx.CancelOrder(txid("orderB"), 0, sigForA); err == nil {
 		t.Fatal("expected a cancel signature captured for a different order to be rejected")
 	}
-	if _, ok := mustGetOrder(t, idx, "orderB", 0); !ok {
+	if _, ok := mustGetOrder(t, idx, txid("orderB"), 0); !ok {
 		t.Error("order B was cancelled by a signature that authorized order A")
 	}
 	// The legitimate signature for A still works, proving the rejection
 	// above was about identity binding and not some unrelated breakage.
-	if err := idx.CancelOrder("orderA", 0, sigForA); err != nil {
+	if err := idx.CancelOrder(txid("orderA"), 0, sigForA); err != nil {
 		t.Errorf("expected the correctly-targeted signature to succeed, got: %v", err)
 	}
 }
@@ -343,19 +341,19 @@ func TestCapturedCancelSignatureDoesNotReplayAfterRepublish(t *testing.T) {
 	idx := NewIndex()
 	priv, pubKeyHex := testMakerKey(t)
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
+		TxID: txid("known"), Vout: 0, PubKey: pubKeyHex, Multiplier: 1000, Value: 500000000,
 	})
 	scriptSig := signedPush(t)
 	mk := func() *Order {
-		return &Order{TxID: "known", Vout: 0, Multiplier: 1000, ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 100}
+		return &Order{TxID: txid("known"), Vout: 0, Multiplier: 1000, ScriptSig: scriptSig, PaymentScript: "00", PaymentValue: 100}
 	}
 
 	first := mk()
 	if err := idx.PublishOrder(first); err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
-	captured := signCancel(t, priv, "known", 0, scriptSig, first.CancelNonce)
-	if err := idx.CancelOrder("known", 0, captured); err != nil {
+	captured := signCancel(t, priv, txid("known"), 0, scriptSig, first.CancelNonce)
+	if err := idx.CancelOrder(txid("known"), 0, captured); err != nil {
 		t.Fatalf("first cancel: %v", err)
 	}
 
@@ -375,10 +373,10 @@ func TestCapturedCancelSignatureDoesNotReplayAfterRepublish(t *testing.T) {
 
 	// The signature captured for the first cancellation must not cancel
 	// the second listing.
-	if err := idx.CancelOrder("known", 0, captured); err == nil {
+	if err := idx.CancelOrder(txid("known"), 0, captured); err == nil {
 		t.Fatal("a captured cancel signature replayed successfully against a republished order")
 	}
-	if _, ok := mustGetOrder(t, idx, "known", 0); !ok {
+	if _, ok := mustGetOrder(t, idx, txid("known"), 0); !ok {
 		t.Error("the republished order was cancelled by a replayed signature")
 	}
 }
@@ -415,11 +413,11 @@ func TestCancelUnknownOrderIsRejected(t *testing.T) {
 func TestPublishReplacesAnExistingOrderForTheSamePosition(t *testing.T) {
 	idx := NewIndex()
 	seedPosition(t, idx, &Position{
-		TxID: "known", Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
+		TxID: txid("known"), Vout: 0, PubKey: "02aa", Multiplier: 1000, Value: 500000000,
 	})
 	first := signedPush(t)
 	if err := idx.PublishOrder(&Order{
-		TxID: "known", Vout: 0, Multiplier: 1000,
+		TxID: txid("known"), Vout: 0, Multiplier: 1000,
 		ScriptSig: first, PaymentScript: "00", PaymentValue: 100,
 	}); err != nil {
 		t.Fatalf("first publish: %v", err)
@@ -429,13 +427,13 @@ func TestPublishReplacesAnExistingOrderForTheSamePosition(t *testing.T) {
 	sig := append(der, sighashOrderType)
 	second := hex.EncodeToString(append([]byte{byte(len(sig))}, sig...))
 	if err := idx.PublishOrder(&Order{
-		TxID: "known", Vout: 0, Multiplier: 1000,
+		TxID: txid("known"), Vout: 0, Multiplier: 1000,
 		ScriptSig: second, PaymentScript: "00", PaymentValue: 999,
 	}); err != nil {
 		t.Fatalf("second publish: %v", err)
 	}
 
-	o, ok := mustGetOrder(t, idx, "known", 0)
+	o, ok := mustGetOrder(t, idx, txid("known"), 0)
 	if !ok {
 		t.Fatal("no order served after the replacement")
 	}
@@ -462,14 +460,13 @@ func TestPublishReplacesAnExistingOrderForTheSamePosition(t *testing.T) {
 // quietly delists the maker" is a recurring loss, not a rare one.
 func TestOrphanedFillRestoresTheOrder(t *testing.T) {
 	idx := NewIndex()
-	salt := []byte("0123456789abcdef")
 	sig := signedPush(t)
 
 	idx.ApplyBlock(makeBlock("h1", 1, []RPCTx{{
-		TxID: "mint", Vin: []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), 1000, salt, 1.0)},
+		TxID: txid("mint"), Vin: []RPCVin{coinbaseVin()},
+		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), 1000, 1.0)},
 	}}))
-	order := &Order{TxID: "mint", Vout: 0, Multiplier: 1000,
+	order := &Order{TxID: txid("mint"), Vout: 0, Multiplier: 1000,
 		ScriptSig: sig, PaymentScript: "76a914", PaymentValue: 700000000}
 	if err := idx.PublishOrder(order); err != nil {
 		t.Fatalf("PublishOrder: %v", err)
@@ -477,10 +474,10 @@ func TestOrphanedFillRestoresTheOrder(t *testing.T) {
 
 	// A taker fills it.
 	idx.ApplyBlock(makeBlock("h2", 2, []RPCTx{{
-		TxID: "fill", Vin: []RPCVin{spendVin("mint", 0)},
-		Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x03), 1000, 1.0)},
+		TxID: txid("fill"), Vin: []RPCVin{spendVin(txid("mint"), 0)},
+		Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x03), 1000, originOfMint(t, txid("mint"), 0), 1.0)},
 	}}))
-	if _, ok := mustGetOrder(t, idx, "mint", 0); ok {
+	if _, ok := mustGetOrder(t, idx, txid("mint"), 0); ok {
 		t.Fatal("precondition: a filled order should not still be listed")
 	}
 
@@ -489,12 +486,12 @@ func TestOrphanedFillRestoresTheOrder(t *testing.T) {
 	if err := idx.StoreErr(); err != nil {
 		t.Fatalf("store error: %v", err)
 	}
-	pos, ok := mustPosition(t, idx, "mint", 0)
+	pos, ok := mustPosition(t, idx, txid("mint"), 0)
 	if !ok || pos.Spent {
 		t.Fatalf("precondition: the position should be back and unspent, got ok=%v spent=%v", ok, pos.Spent)
 	}
 
-	got, ok := mustGetOrder(t, idx, "mint", 0)
+	got, ok := mustGetOrder(t, idx, txid("mint"), 0)
 	if !ok {
 		t.Fatal("the maker's order was not restored when the fill was orphaned; " +
 			"an offer nobody withdrew has been silently retired")
@@ -521,26 +518,25 @@ func TestOrphanedFillRestoresTheOrder(t *testing.T) {
 // this code, and the row it would leave behind would be dead forever.
 func TestUndoOfASameBlockCreateAndSpendLeavesOtherOrdersAlone(t *testing.T) {
 	idx := NewIndex()
-	salt := []byte("0123456789abcdef")
 	sig := signedPush(t)
 
 	// One block both creates the position and spends it.
 	idx.ApplyBlock(makeBlock("h1", 1, []RPCTx{{
-		TxID: "mint", Vin: []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), 1000, salt, 1.0)},
+		TxID: txid("mint"), Vin: []RPCVin{coinbaseVin()},
+		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), 1000, 1.0)},
 	}}))
-	if err := idx.PublishOrder(&Order{TxID: "mint", Vout: 0, Multiplier: 1000,
+	if err := idx.PublishOrder(&Order{TxID: txid("mint"), Vout: 0, Multiplier: 1000,
 		ScriptSig: sig, PaymentScript: "00", PaymentValue: 100}); err != nil {
 		t.Fatalf("PublishOrder: %v", err)
 	}
 	idx.ApplyBlock(makeBlock("h2", 2, []RPCTx{
 		{
-			TxID: "mint2", Vin: []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, fakePubKey(0x04), 500, salt, 1.0)},
+			TxID: txid("mint2"), Vin: []RPCVin{coinbaseVin()},
+			Vout: []RPCVout{uapMintVout(0, fakePubKey(0x04), 500, 1.0)},
 		},
 		{
-			TxID: "spend2", Vin: []RPCVin{spendVin("mint2", 0)},
-			Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x05), 500, 1.0)},
+			TxID: txid("spend2"), Vin: []RPCVin{spendVin(txid("mint2"), 0)},
+			Vout: []RPCVout{uapTransferVout(0, fakePubKey(0x05), 500, originOfMint(t, txid("mint2"), 0), 1.0)},
 		},
 	}))
 
@@ -548,11 +544,11 @@ func TestUndoOfASameBlockCreateAndSpendLeavesOtherOrdersAlone(t *testing.T) {
 	if err := idx.StoreErr(); err != nil {
 		t.Fatalf("store error: %v", err)
 	}
-	if _, ok := mustPosition(t, idx, "mint2", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("mint2"), 0); ok {
 		t.Fatal("precondition: mint2 should have been removed by the undo")
 	}
 	// The order for the position that survived is untouched.
-	if _, ok := mustGetOrder(t, idx, "mint", 0); !ok {
+	if _, ok := mustGetOrder(t, idx, txid("mint"), 0); !ok {
 		t.Error("an unrelated order was lost")
 	}
 	if n := orderCount(t, idx); n != 1 {
@@ -575,22 +571,21 @@ func TestUndoOfASameBlockCreateAndSpendLeavesOtherOrdersAlone(t *testing.T) {
 // silently retire the maker's offer in the far commoner case where it is.
 func TestOrderReturnsWhenItsTransactionIsReMined(t *testing.T) {
 	idx := NewIndex()
-	salt := []byte("0123456789abcdef")
 	sig := signedPush(t)
 
 	mintTx := RPCTx{
-		TxID: "mint", Vin: []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), 1000, salt, 1.0)},
+		TxID: txid("mint"), Vin: []RPCVin{coinbaseVin()},
+		Vout: []RPCVout{uapMintVout(0, fakePubKey(0x02), 1000, 1.0)},
 	}
 	idx.ApplyBlock(makeBlock("h1-orphaned", 1, []RPCTx{mintTx}))
-	if err := idx.PublishOrder(&Order{TxID: "mint", Vout: 0, Multiplier: 1000,
+	if err := idx.PublishOrder(&Order{TxID: txid("mint"), Vout: 0, Multiplier: 1000,
 		ScriptSig: sig, PaymentScript: "76a914", PaymentValue: 700000000}); err != nil {
 		t.Fatalf("PublishOrder: %v", err)
 	}
 
 	// The block is orphaned; while the position is absent, nothing is served.
 	idx.UndoBlock(1)
-	if _, ok := mustGetOrder(t, idx, "mint", 0); ok {
+	if _, ok := mustGetOrder(t, idx, txid("mint"), 0); ok {
 		t.Fatal("an order was served while its position did not exist")
 	}
 
@@ -600,7 +595,7 @@ func TestOrderReturnsWhenItsTransactionIsReMined(t *testing.T) {
 		t.Fatalf("store error: %v", err)
 	}
 
-	got, ok := mustGetOrder(t, idx, "mint", 0)
+	got, ok := mustGetOrder(t, idx, txid("mint"), 0)
 	if !ok {
 		t.Fatal("the maker's order did not come back when its transaction was re-mined")
 	}
@@ -619,7 +614,7 @@ func TestOrderBackingValuePopulated(t *testing.T) {
 	positionValue := int64(5000000000) // 50 WHIP
 	multiplier := int64(1000)
 	pos := &Position{
-		TxID: "mint1", Vout: 0, PubKey: "02aa",
+		TxID: txid("mint1"), Vout: 0, PubKey: "02aa",
 		Multiplier: multiplier, Value: positionValue, IsMint: false, Height: 10,
 	}
 	seedPosition(t, idx, pos)
@@ -689,7 +684,7 @@ func TestOrderBackingValueDerivedFromPosition(t *testing.T) {
 
 	positionValue := int64(5000000000)
 	pos := &Position{
-		TxID: "mint1", Vout: 0, PubKey: "02aa",
+		TxID: txid("mint1"), Vout: 0, PubKey: "02aa",
 		Multiplier: 1000, Value: positionValue, Height: 10,
 	}
 	seedPosition(t, idx, pos)
@@ -779,5 +774,82 @@ func TestListOrdersPageExcludesPendingBeforePaging(t *testing.T) {
 	}
 	if got[0].TxID != "bb" {
 		t.Errorf("expected the open order bb, got %s", got[0].TxID)
+	}
+}
+
+// An order must publish the lineage of the position it sells.
+//
+// A taker cannot derive it. The order carries the maker's scriptSig, never
+// their scriptPubKey, so for a transfer the origin is invisible from the
+// taker's side; and deriving it from the maker's outpoint is right only for a
+// fresh mint's first sale. Without this field a taker builds a transaction
+// that looks correct, signs cleanly, and is rejected by consensus for naming
+// a lineage with no input in the transaction.
+//
+// Derived from the position on read, like BackingValue, so an order stored
+// before the field existed cannot serve an empty one.
+func TestOrderPublishesItsPositionsLineage(t *testing.T) {
+	idx := NewIndex()
+	pubkey := fakePubKey(0x02)
+	lineage := hex.EncodeToString(foreignOrigin(0x5e))
+
+	// A transfer: the case where the origin is genuinely underivable.
+	idx.ApplyBlock(makeBlock("h1", 1, []RPCTx{{
+		TxID: txid("sale"),
+		Vin:  []RPCVin{coinbaseVin()},
+		Vout: []RPCVout{uapTransferVout(0, pubkey, 1000, foreignOrigin(0x5e), 1.0)},
+	}}))
+
+	if err := idx.PublishOrder(&Order{
+		TxID: txid("sale"), Vout: 0, Multiplier: 1000,
+		ScriptSig: signedPush(t), PaymentScript: "76a914", PaymentValue: 700000000,
+	}); err != nil {
+		t.Fatalf("PublishOrder: %v", err)
+	}
+
+	got, ok := mustGetOrder(t, idx, txid("sale"), 0)
+	if !ok {
+		t.Fatal("the order was not served")
+	}
+	if got.Origin != lineage {
+		t.Errorf("order origin = %q, want the position's lineage %q", got.Origin, lineage)
+	}
+
+	// ...and the listing carries it too, which is where a taker reads it.
+	listed := mustListOrders(t, idx, nil)
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 listed order, got %d", len(listed))
+	}
+	if listed[0].Origin != lineage {
+		t.Errorf("listed order origin = %q, want %q", listed[0].Origin, lineage)
+	}
+
+	// The part that publishing alone does not prove: an order row written
+	// before this field existed holds a blob with no origin in it. Reads must
+	// fill it in from the position rather than serve the empty string, or
+	// every order stored by an older build becomes quietly unfillable.
+	// Simulated by rewriting the stored blob with the field cleared.
+	stale := got
+	stale.Origin = ""
+	blob, err := json.Marshal(&stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.store.db.Exec(`UPDATE orders SET data = ? WHERE key = ?`,
+		blob, positionKey(txid("sale"), 0)); err != nil {
+		t.Fatalf("rewriting the stored order: %v", err)
+	}
+
+	reread, ok := mustGetOrder(t, idx, txid("sale"), 0)
+	if !ok {
+		t.Fatal("the order vanished after its blob was rewritten")
+	}
+	if reread.Origin != lineage {
+		t.Errorf("an order stored without an origin served %q; it must be "+
+			"derived from the position on read, not trusted from the blob", reread.Origin)
+	}
+	relisted := mustListOrders(t, idx, nil)
+	if len(relisted) != 1 || relisted[0].Origin != lineage {
+		t.Errorf("listing served origin %q for a blob that carried none", relisted[0].Origin)
 	}
 }

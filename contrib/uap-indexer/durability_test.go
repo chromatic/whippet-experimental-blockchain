@@ -2,10 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,31 +38,157 @@ func walConnDSN(path string) string {
 	return "file:" + path + "?_txlock=immediate" + storePragmas
 }
 
-// TestWALTailCorruptionFailsLoudlyRatherThanServingGarbage covers the
-// scenario every other durability test here assumes doesn't happen: the
-// state file's write-ahead log has a damaged tail when the indexer starts
-// up. That can come from a torn write extending further than a single
-// frame, a bad sector, or any other partial corruption -- the dangerous
-// case is not that the corruption exists, it's an indexer that opens the
-// damaged file anyway and quietly starts serving whatever was in the
-// pages it *could* read as if it were the complete, correct chain state.
-// A market maker or taker acting on that would be trading against
+// The two tests below cover the scenario every other durability test here
+// assumes doesn't happen: the state file's write-ahead log is damaged when
+// the indexer starts up. That can come from a torn write extending further
+// than a single frame, a bad sector, or any other partial corruption. The
+// dangerous outcome is not that the corruption exists, it's an indexer that
+// opens the damaged file anyway and quietly starts serving whatever was in
+// the pages it *could* read as if it were the complete, correct chain
+// state. A market maker or taker acting on that would be trading against
 // numbers nobody can vouch for.
 //
-// Getting a WAL file to actually corrupt is less trivial than it sounds:
+// Which of the two behaviours SQLite gives you is decided by one thing:
+// whether a WAL-index (the "-shm" file) is live at the moment the database
+// is opened.
+//
+//   - No live WAL-index -- the ordinary cold start, and the case an
+//     operator restarting a crashed indexer actually hits. SQLite runs WAL
+//     recovery, which validates the checksum chain frame by frame, stops at
+//     the first frame that fails, and discards it and everything after it.
+//     The database opens at the last commit before the damage. This is
+//     correct, designed behaviour, and the property worth asserting is that
+//     what survives is a clean *prefix* of the chain and never a mixture:
+//     TestWALDamageRecoversToAConsistentPrefix.
+//
+//   - A live WAL-index, because a concurrent reader still has the file
+//     open. Recovery does not re-run; SQLite trusts the index and reads
+//     pages straight from the frame offsets it names, checksums unexamined.
+//     A corrupt frame is therefore served as page content, and the store
+//     must refuse rather than pass it off as state:
+//     TestCorruptFrameUnderALiveWALIndexIsRefused.
+//
+// Getting a WAL file to corrupt at all is less trivial than it sounds:
 // SQLite auto-checkpoints (folds the WAL into the main database file and
 // truncates it) when the *last* connection to a database closes, and
 // Store.Close() closes the store's entire connection pool, so a literal
 // "write data, Close(), corrupt the file" sequence finds nothing left to
-// corrupt -- the checkpoint already ran and the WAL is empty. That
-// checkpoint is suppressed here by holding open a second, independent
-// connection to the same file for the lifetime of the test, standing in
-// for the concurrent readers this store is explicitly designed to allow
-// (see the "Reads go straight to the database" comment on Store) that may
-// still be attached when the writer side shuts down. Store.Close() itself
-// still returns nil -- this is what "closed cleanly" looks like from the
-// caller's side, not a crash.
-func TestWALTailCorruptionFailsLoudlyRatherThanServingGarbage(t *testing.T) {
+// corrupt. Both tests suppress that checkpoint the same way, via
+// seedWALState below.
+//
+// LAYOUT INDEPENDENCE -- the point of the parsing helpers here, and the
+// reason not to go back to something shorter. An earlier version of this
+// test garbled "the last quarter of the WAL file" at a fixed RNG seed and
+// asserted a loud failure. That passed, but for a reason nobody chose: it
+// happened to land on the frame holding the newest image of page 1, the
+// schema page, so the very first read failed. Whether the last quarter
+// contains that frame is a function of how many pages the schema touches
+// and in what order -- adding one index to store.go moved it and flipped
+// the test to failing, with nothing about durability having changed. A test
+// whose verdict tracks incidental file layout is not testing what its name
+// says. So each test below locates its target by parsing the WAL's own
+// frame structure, and asserts the behaviour that structure actually
+// determines.
+
+// walFrames describes the live frame layout of a WAL file. Format per
+// https://sqlite.org/walformat.html: a 32-byte file header holding the page
+// size big-endian at bytes 8..11 and the salt at bytes 16..23, followed by
+// frames of a 24-byte header (page number big-endian at 0..3, a copy of the
+// salt at 8..15) plus one page of data.
+//
+// `live` is the count of frames at the front of the file that belong to the
+// *current* WAL, and it is the only region worth corrupting. SQLite
+// auto-checkpoints once the WAL passes wal_autocheckpoint pages (1000 by
+// default -- fewer than the frames a 150-block seed writes), and after a
+// checkpoint it restarts the WAL: the next frame is written back at offset
+// zero under a freshly generated salt, without the file being truncated.
+// Everything past the new write position is therefore a stale frame from
+// before the restart. Recovery ignores those, because their salt no longer
+// matches the header's, so corrupting one changes nothing -- and where the
+// boundary falls moves with how many pages the schema dirties per block.
+// That is exactly the incidental-layout trap described above, in its second
+// form: the first version of this rewrite corrupted "50% of the way through
+// the file", which landed past the boundary the moment an index was added
+// to store.go and silently stopped damaging anything.
+type walFrames struct {
+	data     []byte
+	pageSize int
+	count    int
+	live     int
+}
+
+func parseWAL(t testing.TB, path string) walFrames {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v (the WAL was checkpointed away -- the reader "+
+			"connection in seedWALState should have prevented that)", path, err)
+	}
+	if len(data) <= 32 {
+		t.Fatalf("WAL file is %d bytes; no frames to work with", len(data))
+	}
+	pageSize := int(binary.BigEndian.Uint32(data[8:12]))
+	if pageSize <= 0 {
+		t.Fatalf("WAL header reports a page size of %d", pageSize)
+	}
+	w := walFrames{data: data, pageSize: pageSize, count: (len(data) - 32) / (pageSize + 24)}
+
+	salt := data[16:24]
+	for w.live = 0; w.live < w.count; w.live++ {
+		off := 32 + w.live*(pageSize+24)
+		if !bytes.Equal(data[off+8:off+16], salt) {
+			break
+		}
+	}
+	if w.live < 4 {
+		t.Fatalf("WAL holds only %d live frames (of %d in the file); too few to "+
+			"corrupt a middle one meaningfully", w.live, w.count)
+	}
+	return w
+}
+
+// corruptFrame flips every bit of frame i's page payload, leaving the frame
+// header alone so the frame still parses as a frame and it is the checksum
+// that rejects it -- which is what a bad sector or a torn write looks like,
+// as opposed to a truncated file.
+func (w walFrames) corruptFrame(i int) {
+	off := 32 + i*(w.pageSize+24) + 24
+	for j := off; j < off+w.pageSize; j++ {
+		w.data[j] ^= 0xff
+	}
+}
+
+// lastFrameFor returns the index of the last frame carrying page pgno --
+// the image of that page a reader following the WAL-index would actually
+// get. Page 1 is the schema page, so it is the one page every open must
+// read before it can do anything at all.
+func (w walFrames) lastFrameFor(t testing.TB, pgno uint32) int {
+	t.Helper()
+	found := -1
+	for i := 0; i < w.live; i++ {
+		off := 32 + i*(w.pageSize+24)
+		if binary.BigEndian.Uint32(w.data[off:off+4]) == pgno {
+			found = i
+		}
+	}
+	if found < 0 {
+		t.Fatalf("no WAL frame carries page %d", pgno)
+	}
+	return found
+}
+
+// seedWALState writes seedBlocks blocks to a fresh store and returns the
+// path to a state file with a populated, un-checkpointed WAL beside it.
+//
+// The checkpoint on close is suppressed by holding open a second,
+// independent connection to the same file for the lifetime of the test,
+// standing in for the concurrent readers this store is explicitly designed
+// to allow (see the "Reads go straight to the database" comment on Store)
+// that may still be attached when the writer side shuts down. Store.Close()
+// itself still returns nil -- this is what "closed cleanly" looks like from
+// the caller's side, not a crash.
+func seedWALState(t testing.TB, seedBlocks int) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	store, err := OpenStore(path)
 	if err != nil {
@@ -71,16 +198,13 @@ func TestWALTailCorruptionFailsLoudlyRatherThanServingGarbage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadIndex: %v", err)
 	}
-	for _, b := range storeChain(150) {
+	for _, b := range storeChain(seedBlocks) {
 		idx.ApplyBlock(b)
 	}
 	if err := idx.StoreErr(); err != nil {
 		t.Fatalf("applying the seed chain: %v", err)
 	}
 
-	// A second connection, held open for the rest of the test, so that
-	// Store.Close() below is not the last connection to the file and
-	// does not get to auto-checkpoint the WAL away.
 	reader, err := sql.Open("sqlite", walConnDSN(path))
 	if err != nil {
 		t.Fatalf("opening reader connection: %v", err)
@@ -94,41 +218,124 @@ func TestWALTailCorruptionFailsLoudlyRatherThanServingGarbage(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatalf("Store.Close: %v", err)
 	}
+	return path
+}
 
-	walPath := path + "-wal"
-	data, err := os.ReadFile(walPath)
-	if err != nil {
-		t.Fatalf("reading %s: %v (the WAL was checkpointed away -- "+
-			"the reader connection above should have prevented that)", walPath, err)
+// copyStateAside copies the database and its WAL to a new directory,
+// deliberately leaving the "-shm" file behind. That is what makes the copy
+// a *cold* open: with no WAL-index to trust, SQLite must run recovery and
+// validate the checksum chain, which is the code path an operator
+// restarting a crashed indexer takes. Copying rather than corrupting in
+// place also keeps the live reader connection -- which is only there to
+// stop the checkpoint -- from having any say in what the reopen sees.
+func copyStateAside(t testing.TB, src string) string {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), "recovered.sqlite")
+	for _, suffix := range []string{"", "-wal"} {
+		b, err := os.ReadFile(src + suffix)
+		if err != nil {
+			t.Fatalf("reading %s: %v", src+suffix, err)
+		}
+		if err := os.WriteFile(dst+suffix, b, 0o644); err != nil {
+			t.Fatalf("writing %s: %v", dst+suffix, err)
+		}
 	}
-	if len(data) == 0 {
-		t.Fatal("WAL file is empty; nothing to corrupt")
+	return dst
+}
+
+// TestWALDamageRecoversToAConsistentPrefix is the cold-start case. Damage a
+// committed frame partway through the WAL, open with no WAL-index present,
+// and SQLite's recovery discards that frame and every frame after it. The
+// store comes up at an earlier height -- and the assertion is that what it
+// comes up holding is byte-identical to a fresh store replayed to that same
+// height. That is the same "consistent prefix" standard
+// TestCrashMidWriteRecoversToAConsistentPrefix holds the SIGKILL path to,
+// and it is the honest guarantee here: every block commits in a single
+// transaction, so losing the tail of the WAL may only ever cost whole
+// blocks, never leave half of one behind.
+//
+// The subtests corrupt at several depths rather than one. A single depth
+// would prove the property at one point and quietly stop covering the
+// others; the whole reason this test was rewritten is that a single
+// arbitrary offset had been standing in for a general claim.
+func TestWALDamageRecoversToAConsistentPrefix(t *testing.T) {
+	const seedBlocks = 150
+	for _, pct := range []int{10, 50, 90} {
+		t.Run(fmt.Sprintf("frame_%d_percent_in", pct), func(t *testing.T) {
+			path := seedWALState(t, seedBlocks)
+			wal := parseWAL(t, path+"-wal")
+			target := wal.live * pct / 100
+			wal.corruptFrame(target)
+
+			cold := copyStateAside(t, path)
+			if err := os.WriteFile(cold+"-wal", wal.data, 0o644); err != nil {
+				t.Fatalf("writing corrupted WAL: %v", err)
+			}
+
+			store, err := OpenStore(cold)
+			if err != nil {
+				t.Fatalf("OpenStore after WAL damage: %v (recovery should have "+
+					"truncated to the last valid commit, not refused the file)", err)
+			}
+			defer store.Close()
+			recovered, err := store.LoadIndex()
+			if err != nil {
+				t.Fatalf("LoadIndex after WAL damage: %v", err)
+			}
+
+			tip, _ := recovered.Tip()
+			if tip < 0 {
+				t.Fatalf("corrupting frame %d of %d left no blocks at all", target, wal.live)
+			}
+			// Teeth: if recovery reached the full seed height the damage
+			// cost nothing, and everything below would pass without
+			// having exercised truncation at all.
+			if tip >= seedBlocks-1 {
+				t.Fatalf("recovered at tip %d after corrupting frame %d of %d: the "+
+					"damaged frames were not actually load-bearing, so this test "+
+					"proved nothing about recovery", tip, target, wal.live)
+			}
+			t.Logf("corrupted live frame %d of %d (%d frames in the file); recovery landed at tip %d of %d",
+				target, wal.live, wal.count, tip, seedBlocks-1)
+
+			fresh, _, _ := storeTestIndex(t)
+			for _, b := range storeChain(int(tip) + 1) {
+				fresh.ApplyBlock(b)
+			}
+			if err := fresh.StoreErr(); err != nil {
+				t.Fatalf("replaying the reference chain: %v", err)
+			}
+			if got, want := snapshotIndex(t, recovered), snapshotIndex(t, fresh); got != want {
+				t.Errorf("state recovered from a damaged WAL is not a clean prefix of the chain:\n got %s\nwant %s", got, want)
+			}
+		})
 	}
-	// Garble the last quarter of the file. A real torn write usually
-	// damages only the final, in-progress frame, but going further back
-	// is the more demanding version of this test: it corrupts frames
-	// that were genuinely committed, not just one that was mid-flight.
-	// A fixed seed keeps the corrupted bytes -- and therefore whether
-	// this reliably reproduces a failure -- the same on every run.
-	n := len(data)
-	tail := n / 4
-	rng := rand.New(rand.NewSource(42))
-	for i := n - tail; i < n; i++ {
-		data[i] = byte(rng.Intn(256))
-	}
-	if err := os.WriteFile(walPath, data, 0o644); err != nil {
+}
+
+// TestCorruptFrameUnderALiveWALIndexIsRefused is the other half: a reader
+// still holds the database open, so its WAL-index survives and recovery
+// does not re-run. SQLite reads pages from the offsets that index names
+// without revalidating them, so a corrupt frame is handed back as page
+// content and the checksum that would have caught it is never consulted.
+//
+// Targeting the newest frame for page 1 -- the schema page -- is what makes
+// the outcome deterministic instead of incidental. Page 1 is read before
+// any query can be planned, so this cannot degrade into "some later query
+// might notice": the failure is forced into the open at the first read.
+// The store must surface it. Observed behaviour on this driver is "file is
+// not a database" out of the schema bootstrap; the assertion deliberately
+// does not pin the message, only that opening the store or loading the
+// index reports *some* error rather than returning a usable handle.
+func TestCorruptFrameUnderALiveWALIndexIsRefused(t *testing.T) {
+	path := seedWALState(t, 150)
+	wal := parseWAL(t, path+"-wal")
+	target := wal.lastFrameFor(t, 1)
+	wal.corruptFrame(target)
+	if err := os.WriteFile(path+"-wal", wal.data, 0o644); err != nil {
 		t.Fatalf("writing corrupted WAL: %v", err)
 	}
+	t.Logf("corrupted live frame %d of %d, the newest image of page 1", target, wal.live)
 
-	// The actual assertion: reopening must not end in a store that
-	// silently serves whatever it managed to read. Either OpenStore (or
-	// the LoadIndex that follows it) reports an error -- observed
-	// behaviour on this driver/config is "file is not a database" or
-	// "database disk image is malformed", surfaced from the schema
-	// bootstrap or the first meta-table read -- or, if it were to open
-	// without error, none of the corrupted region's data content must be
-	// wrong. This test doesn't need to pick which; a corrupted WAL tail
-	// must not open successfully, full stop.
 	reopened, err := OpenStore(path)
 	if err != nil {
 		t.Logf("OpenStore correctly refused a corrupted state file: %v", err)
@@ -139,8 +346,8 @@ func TestWALTailCorruptionFailsLoudlyRatherThanServingGarbage(t *testing.T) {
 		t.Logf("LoadIndex correctly refused a corrupted state file: %v", err)
 		return
 	}
-	t.Fatal("a corrupted WAL tail opened without error: the indexer would start " +
-		"serving state from a database it never validated")
+	t.Fatal("a database whose schema page is corrupt opened without error: the " +
+		"indexer would start serving state from pages it never validated")
 }
 
 // ---------------------------------------------------------------------
@@ -225,7 +432,7 @@ func TestDiskFullRollsBackAndKeepsServingReads(t *testing.T) {
 	if h, _ := idx.Tip(); h != lastGoodTip {
 		t.Errorf("tip after a full-disk write: got %d, want %d", h, lastGoodTip)
 	}
-	if _, ok, _ := idx.Position(fmt.Sprintf("tx%d", failedHeight), 0); ok {
+	if _, ok, _ := idx.Position(txid(fmt.Sprintf("tx%d", failedHeight)), 0); ok {
 		t.Errorf("the position from the block that failed to write (height %d) "+
 			"is visible anyway", failedHeight)
 	}
@@ -241,7 +448,7 @@ func TestDiskFullRollsBackAndKeepsServingReads(t *testing.T) {
 	if len(toks) == 0 {
 		t.Error("AllTokens returned nothing while full, want the tokens minted before the disk filled")
 	}
-	if _, ok, err := idx.Position("tx0", 0); err != nil || !ok {
+	if _, ok, err := idx.Position(txid("tx0"), 0); err != nil || !ok {
 		t.Errorf("Position(tx0:0) while full: ok=%v err=%v, want a hit with no error", ok, err)
 	}
 }
@@ -294,17 +501,16 @@ const (
 // pins the two generators against each other so this duplication can't
 // silently drift from storeChain's definition.
 func crashChainBlockAt(h int) *RPCBlock {
-	salt := []byte("0123456789abcdef")
 	tx := RPCTx{
-		TxID: fmt.Sprintf("tx%d", h),
+		TxID: txid(fmt.Sprintf("tx%d", h)),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{
-			uapMintVout(0, fakePubKey(byte(0x02+h%3)), int64(100+h), salt, 1.0),
+			uapMintVout(0, fakePubKey(byte(0x02+h%3)), int64(100+h), 1.0),
 			p2pkhVoutFor(1, byte(0x40+h), 2.0),
 		},
 	}
 	if h > 0 {
-		tx.Vin = append(tx.Vin, spendVin(fmt.Sprintf("tx%d", h-1), 1))
+		tx.Vin = append(tx.Vin, spendVin(txid(fmt.Sprintf("tx%d", h-1)), 1))
 	}
 	return makeBlock(fmt.Sprintf("hash%d", h), int64(h), []RPCTx{tx})
 }

@@ -21,7 +21,7 @@ import (
 
 func applyEmptyBlockAt(idx *Index, height int64) *RPCBlock {
 	b := makeBlock(fmt.Sprintf("h%d", height), height, []RPCTx{{
-		TxID: fmt.Sprintf("tx%d", height),
+		TxID: txid(fmt.Sprintf("tx%d", height)),
 		Vin:  []RPCVin{coinbaseVin()},
 		Vout: []RPCVout{ordinaryVout(0, 1.0)},
 	}})
@@ -56,16 +56,14 @@ func TestUndoStillWorksInsideTheWindow(t *testing.T) {
 	idx := NewIndex()
 	idx.ReorgWindow = 10
 	pubkey := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	for h := int64(0); h < 50; h++ {
 		applyEmptyBlockAt(idx, h)
 	}
 	// A block well inside the window, carrying real state to roll back.
 	idx.ApplyBlock(makeBlock("h50", 50, []RPCTx{{
-		TxID: "mint50",
+		TxID: txid("mint50"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey, 7, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey, 7, 1.0)},
 	}}))
 	for h := int64(51); h < 55; h++ {
 		applyEmptyBlockAt(idx, h)
@@ -79,7 +77,7 @@ func TestUndoStillWorksInsideTheWindow(t *testing.T) {
 		idx.UndoBlock(h)
 	}
 
-	if _, ok := mustPosition(t, idx, "mint50", 0); ok {
+	if _, ok := mustPosition(t, idx, txid("mint50"), 0); ok {
 		t.Error("position from an undone block survived")
 	}
 	if tip, _ := idx.Tip(); tip != 49 {
@@ -117,12 +115,10 @@ func TestUndoBeyondWindowDoesNotSilentlySucceed(t *testing.T) {
 	idx := NewIndex()
 	idx.ReorgWindow = 10
 	pubkey := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
-
 	idx.ApplyBlock(makeBlock("h0", 0, []RPCTx{{
-		TxID: "mint0",
+		TxID: txid("mint0"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey, 7, salt, 1.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey, 7, 1.0)},
 	}}))
 	for h := int64(1); h < 100; h++ {
 		applyEmptyBlockAt(idx, h)
@@ -134,7 +130,7 @@ func TestUndoBeyondWindowDoesNotSilentlySucceed(t *testing.T) {
 	// The position from the pruned block must still be there afterwards:
 	// the caller has to learn it cannot roll back, not be told it did.
 	idx.UndoBlock(0)
-	if _, ok := mustPosition(t, idx, "mint0", 0); !ok {
+	if _, ok := mustPosition(t, idx, txid("mint0"), 0); !ok {
 		t.Error("UndoBlock past the window removed state it had no undo log for")
 	}
 }
@@ -146,14 +142,13 @@ func TestUndoBeyondWindowDoesNotSilentlySucceed(t *testing.T) {
 func TestResetClearsEverything(t *testing.T) {
 	idx := NewIndex()
 	pubkey := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
 	idx.ApplyBlock(makeBlock("h0", 0, []RPCTx{{
-		TxID: "mint0",
+		TxID: txid("mint0"),
 		Vin:  []RPCVin{coinbaseVin()},
-		Vout: []RPCVout{uapMintVout(0, pubkey, 7, salt, 1.0), p2pkhVoutFor(1, 0x05, 2.0)},
+		Vout: []RPCVout{uapMintVout(0, pubkey, 7, 1.0), p2pkhVoutFor(1, 0x05, 2.0)},
 	}}))
 	if err := idx.PublishOrder(&Order{
-		TxID: "mint0", Vout: 0, Multiplier: 7,
+		TxID: txid("mint0"), Vout: 0, Multiplier: 7,
 		ScriptSig: makeOrderScriptSig(), PaymentScript: "76a914" + hash160Hex(1) + "88ac",
 		PaymentValue: 5000000,
 	}); err != nil {
@@ -175,7 +170,7 @@ func TestResetClearsEverything(t *testing.T) {
 	if got := mustAllTokens(t, idx); len(got) != 0 {
 		t.Errorf("lineages after Reset: got %d, want 0", len(got))
 	}
-	if _, ok := mustUTXO(t, idx, "mint0", 1); ok {
+	if _, ok := mustUTXO(t, idx, txid("mint0"), 1); ok {
 		t.Error("UTXO survived Reset")
 	}
 	idx.mu.RLock()

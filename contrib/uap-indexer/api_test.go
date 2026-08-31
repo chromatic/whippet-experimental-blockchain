@@ -571,19 +571,18 @@ func TestGetUTXOsBadAddressReturnsBadRequest(t *testing.T) {
 func TestGetTokensReturnsLineagesAggregated(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
 
 	// Block 1: create two independent mints
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "mint_a",
+			TxID: txid("mint_a"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 100.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 100.0)},
 		},
 		{
-			TxID: "mint_b",
+			TxID: txid("mint_b"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 200.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 200.0)},
 		},
 	}))
 
@@ -610,8 +609,10 @@ func TestGetTokensReturnsLineagesAggregated(t *testing.T) {
 	}
 
 	// Check that supplies are correct
+	mintAOrigin := originOfMintHex(t, txid("mint_a"), 0)
+	mintBOrigin := originOfMintHex(t, txid("mint_b"), 0)
 	for i, token := range tokens {
-		if token.Origin != "mint_a:0" && token.Origin != "mint_b:0" {
+		if token.Origin != mintAOrigin && token.Origin != mintBOrigin {
 			t.Errorf("unexpected origin at index %d: %q", i, token.Origin)
 		}
 		if token.Supply != 100*1e8*1000 && token.Supply != 200*1e8*1000 {
@@ -625,23 +626,22 @@ func TestGetTokenSingleOrigin(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
 	pubkey2 := fakePubKey(0x03)
-	salt := []byte("0123456789abcdef")
 
 	// Block 1: create two mints
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "mint_a",
+			TxID: txid("mint_a"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, salt, 100.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 1000, 100.0)},
 		},
 	}))
 
 	// Block 2: create a transfer from mint_a
 	idx.ApplyBlock(makeBlock("hashB", 101, []RPCTx{
 		{
-			TxID: "transfer_a",
-			Vin:  []RPCVin{spendVin("mint_a", 0)},
-			Vout: []RPCVout{uapTransferVout(0, pubkey2, 1000, 50.0)},
+			TxID: txid("transfer_a"),
+			Vin:  []RPCVin{spendVin(txid("mint_a"), 0)},
+			Vout: []RPCVout{uapTransferVout(0, pubkey2, 1000, originOfMint(t, txid("mint_a"), 0), 50.0)},
 		},
 	}))
 
@@ -649,7 +649,8 @@ func TestGetTokenSingleOrigin(t *testing.T) {
 	server := newAPIServer(idx, nil, readRL, false, nil)
 
 	// Request the specific origin
-	req := httptest.NewRequest(http.MethodGet, "/token/mint_a:0", nil)
+	originHex := originOfMintHex(t, txid("mint_a"), 0)
+	req := httptest.NewRequest(http.MethodGet, "/token/"+originHex, nil)
 	req.RemoteAddr = "1.2.3.4:5555"
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -663,8 +664,8 @@ func TestGetTokenSingleOrigin(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if token.Origin != "mint_a:0" {
-		t.Errorf("origin mismatch: got %q, want %q", token.Origin, "mint_a:0")
+	if token.Origin != originHex {
+		t.Errorf("origin mismatch: got %q, want %q", token.Origin, originHex)
 	}
 
 	// Supply is the sum of unspent positions' values * multipliers.
@@ -701,18 +702,31 @@ func TestGetTokenUnknownOriginReturns404(t *testing.T) {
 	}
 }
 
-// TestGetTokensExcludesOrphans verifies that positions with empty Origin
-// (orphans) are excluded from /tokens output.
-func TestGetTokensExcludesOrphans(t *testing.T) {
+// A transfer whose parent this indexer never saw still names its own
+// lineage, and is served as one.
+//
+// This test used to be TestGetTokensExcludesOrphans, and it asserted the
+// opposite. Under v1 a lineage had no on-chain identity: the indexer
+// reconstructed it by walking the spend graph, and a transfer whose parent
+// it had not indexed was an "orphan" with an empty Origin and no lineage to
+// belong to. Excluding those was the only honest option.
+//
+// v2 retired the whole category. The origin is in the covenant script, so a
+// transfer states its lineage whether or not this indexer happens to have
+// seen the mint -- which it may legitimately not have, having started mid
+// chain or pruned below it. Hiding such a position would hide real, spendable
+// supply. It is served with the lineage it declares, and simply without the
+// mint-derived fields (ticker, metadata) that are genuinely unknown here.
+func TestTransferWithAnUnseenParentStillFormsALineage(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
 
-	// Block 1: create an orphan transfer (no parent in index)
+	// A transfer spending a position this index never saw.
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "orphan_tx",
-			Vin:  []RPCVin{spendVin("never_indexed", 0)},
-			Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, 50.0)},
+			TxID: txid("orphan_tx"),
+			Vin:  []RPCVin{spendVin(txid("never_indexed"), 0)},
+			Vout: []RPCVout{uapTransferVout(0, pubkey1, 1000, foreignOrigin(0xDD), 50.0)},
 		},
 	}))
 
@@ -733,9 +747,16 @@ func TestGetTokensExcludesOrphans(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// Should be empty (no valid lineages)
-	if len(tokens) != 0 {
-		t.Errorf("expected 0 tokens (orphans excluded), got %d", len(tokens))
+	if len(tokens) != 1 {
+		t.Fatalf("expected the declared lineage to be served, got %d tokens", len(tokens))
+	}
+	if got, want := tokens[0].Origin, hex.EncodeToString(foreignOrigin(0xDD)); got != want {
+		t.Errorf("lineage origin = %q, want the origin its script declares (%q)", got, want)
+	}
+	// The mint is genuinely unknown to this index, so the fields that come
+	// from it are empty -- absent, not guessed at.
+	if tokens[0].Ticker != "" {
+		t.Errorf("ticker = %q, want empty: this index has never seen the mint", tokens[0].Ticker)
 	}
 }
 
@@ -744,14 +765,13 @@ func TestGetTokensExcludesOrphans(t *testing.T) {
 func TestGetTokensSupplyOverflowGuard(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
 
 	// Block 1: create a mint with large value and multiplier
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "mint_large",
+			TxID: txid("mint_large"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 2147483647, salt, 1000000.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 2147483647, 1000000.0)},
 		},
 	}))
 
@@ -790,13 +810,12 @@ func TestGetTokensSupplyOverflowGuard(t *testing.T) {
 func TestGetTokensZeroMultiplierDoesNotPanic(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
 
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "mint_zero_mult",
+			TxID: txid("mint_zero_mult"),
 			Vin:  []RPCVin{coinbaseVin()},
-			Vout: []RPCVout{uapMintVout(0, pubkey1, 0, salt, 1.0)},
+			Vout: []RPCVout{uapMintVout(0, pubkey1, 0, 1.0)},
 		},
 	}))
 
@@ -826,7 +845,10 @@ func TestGetTokensZeroMultiplierDoesNotPanic(t *testing.T) {
 	}
 
 	// The single-lineage endpoint divides the same way.
-	req2 := httptest.NewRequest(http.MethodGet, "/token/mint_zero_mult:0", nil)
+	// The lineage is addressed by its origin -- a 32-byte hash -- not by the
+	// mint's outpoint. Under v1 the two were the same string.
+	req2 := httptest.NewRequest(http.MethodGet,
+		"/token/"+originOfMintHex(t, txid("mint_zero_mult"), 0), nil)
 	req2.RemoteAddr = "1.2.3.4:5555"
 	w2 := httptest.NewRecorder()
 	server.ServeHTTP(w2, req2)
@@ -841,7 +863,6 @@ func TestGetTokensZeroMultiplierDoesNotPanic(t *testing.T) {
 func TestGetTokensSupplyDoesNotWrapAcrossManyPositions(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
 
 	// Each value*multiplier product fits comfortably in an int64 (6e18 of a
 	// 9.22e18 ceiling), so the per-position guard never trips -- but three of
@@ -850,18 +871,18 @@ func TestGetTokensSupplyDoesNotWrapAcrossManyPositions(t *testing.T) {
 	const mult = 2
 	const bigCoins = 30000000000.0 // 3e18 satoshis; 3e18 * 2 = 6e18
 
-	vouts := []RPCVout{uapMintVout(0, pubkey1, mult, salt, bigCoins)}
+	vouts := []RPCVout{uapMintVout(0, pubkey1, mult, bigCoins)}
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
-		{TxID: "mint_big", Vin: []RPCVin{coinbaseVin()}, Vout: vouts},
+		{TxID: txid("mint_big"), Vin: []RPCVin{coinbaseVin()}, Vout: vouts},
 	}))
 	// Two sibling covenants in the same lineage.
 	idx.ApplyBlock(makeBlock("hashB", 101, []RPCTx{
 		{
-			TxID: "spend_big",
-			Vin:  []RPCVin{{TxID: "mint_big", Vout: 0}},
+			TxID: txid("spend_big"),
+			Vin:  []RPCVin{{TxID: txid("mint_big"), Vout: 0}},
 			Vout: []RPCVout{
-				uapTransferVout(0, pubkey1, mult, bigCoins),
-				uapTransferVout(1, pubkey1, mult, bigCoins),
+				uapTransferVout(0, pubkey1, mult, originOfMint(t, txid("mint_big"), 0), bigCoins),
+				uapTransferVout(1, pubkey1, mult, originOfMint(t, txid("mint_big"), 0), bigCoins),
 			},
 		},
 	}))
@@ -882,14 +903,13 @@ func TestGetTokensSupplyDoesNotWrapAcrossManyPositions(t *testing.T) {
 func TestTokensCarryMintMetadata(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
 
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "mint_meta",
+			TxID: txid("mint_meta"),
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
-				uapMintVout(0, pubkey1, 1000, salt, 2000.0),
+				uapMintVout(0, pubkey1, 1000, 2000.0),
 				opReturnVout(1, wuapPayload("WHIP", nil)),
 			},
 		},
@@ -910,24 +930,23 @@ func TestTokensCarryMintMetadata(t *testing.T) {
 func TestTransferMetadataDoesNotOverwriteLineage(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
 
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "mint_meta2",
+			TxID: txid("mint_meta2"),
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
-				uapMintVout(0, pubkey1, 1000, salt, 2000.0),
+				uapMintVout(0, pubkey1, 1000, 2000.0),
 				opReturnVout(1, wuapPayload("GOOD", nil)),
 			},
 		},
 	}))
 	idx.ApplyBlock(makeBlock("hashB", 101, []RPCTx{
 		{
-			TxID: "hijack",
-			Vin:  []RPCVin{{TxID: "mint_meta2", Vout: 0}},
+			TxID: txid("hijack"),
+			Vin:  []RPCVin{{TxID: txid("mint_meta2"), Vout: 0}},
 			Vout: []RPCVout{
-				uapTransferVout(0, pubkey1, 1000, 1999.0),
+				uapTransferVout(0, pubkey1, 1000, originOfMint(t, txid("mint_meta2"), 0), 1999.0),
 				opReturnVout(1, wuapPayload("EVIL", nil)),
 			},
 		},
@@ -944,7 +963,7 @@ func TestTransferMetadataDoesNotOverwriteLineage(t *testing.T) {
 
 	// Defence in depth: the read path only consults the mint, but the
 	// transfer position must not be carrying the hijacked metadata either.
-	hijacked, ok := mustPosition(t, idx, "hijack", 0)
+	hijacked, ok := mustPosition(t, idx, txid("hijack"), 0)
 	if !ok {
 		t.Fatal("the transfer position should have been indexed")
 	}
@@ -957,14 +976,13 @@ func TestTransferMetadataDoesNotOverwriteLineage(t *testing.T) {
 func TestUndoRemovesMintMetadata(t *testing.T) {
 	idx := NewIndex()
 	pubkey1 := fakePubKey(0x02)
-	salt := []byte("0123456789abcdef")
 
 	idx.ApplyBlock(makeBlock("hashA", 100, []RPCTx{
 		{
-			TxID: "mint_meta3",
+			TxID: txid("mint_meta3"),
 			Vin:  []RPCVin{coinbaseVin()},
 			Vout: []RPCVout{
-				uapMintVout(0, pubkey1, 1000, salt, 2000.0),
+				uapMintVout(0, pubkey1, 1000, 2000.0),
 				opReturnVout(1, wuapPayload("GONE", nil)),
 			},
 		},

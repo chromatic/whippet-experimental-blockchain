@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 )
@@ -9,7 +11,39 @@ import (
 const (
 	opMint         = 0xb5
 	opMintTransfer = 0xba
+	uapOriginSize  = 32 // origin is a SHA256 hash
 )
+
+// UapOriginFromOutpoint derives a lineage origin from an outpoint.
+// origin = SHA256(txid_bytes || n as 4-byte little-endian)
+// where txid_bytes is the REVERSE (internal bytes) of the txid as displayed by RPC.
+func UapOriginFromOutpoint(txidHex string, n uint32) ([]byte, error) {
+	// Decode the txid from RPC display format (big-endian display)
+	txidBytes, err := hex.DecodeString(txidHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid txid hex: %w", err)
+	}
+	if len(txidBytes) != 32 {
+		return nil, fmt.Errorf("txid must be 32 bytes, got %d", len(txidBytes))
+	}
+
+	// Reverse to get internal bytes
+	for i := 0; i < 16; i++ {
+		txidBytes[i], txidBytes[31-i] = txidBytes[31-i], txidBytes[i]
+	}
+
+	// Append n as 4-byte little-endian
+	nBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(nBytes, n)
+
+	// SHA256(txid_bytes || n_bytes)
+	h := sha256.New()
+	h.Write(txidBytes)
+	h.Write(nBytes)
+	origin := h.Sum(nil)
+
+	return origin, nil
+}
 
 // ParsedUAP is the decoded form of a UAP mint or transfer output script.
 // This is a best-effort mirror of ParseUapOutputScript in
@@ -21,7 +55,8 @@ const (
 type ParsedUAP struct {
 	PubKey     []byte
 	Multiplier int64
-	IsMint     bool // true: OP_MINT (fresh mint); false: OP_MINT_TRANSFER (covenant)
+	Origin     []byte // 32 bytes for transfers, empty for mints
+	IsMint     bool   // true: OP_MINT (fresh mint); false: OP_MINT_TRANSFER (covenant)
 }
 
 // scriptPush is one decoded element of a script: either pushed data, or a
@@ -157,8 +192,8 @@ func scriptNumToInt64(data []byte) (int64, error) {
 
 // ParseUAPScript recognizes:
 //
-//	<pubkey> <multiplier> <salt> OP_MINT           (fresh mint)
-//	<pubkey> <multiplier> OP_MINT_TRANSFER         (transfer/covenant)
+//	<pubkey> <multiplier> OP_MINT                           (fresh mint)
+//	<pubkey> <multiplier> <origin32> OP_MINT_TRANSFER       (transfer/covenant)
 //
 // and returns nil, nil for any script that doesn't match (not an error --
 // most outputs on the chain are ordinary, non-UAP outputs).
@@ -181,9 +216,9 @@ func ParseUAPScript(scriptHex string) (*ParsedUAP, error) {
 		return nil, nil // malformed script; not a UAP output we can trust
 	}
 
-	wantLen := 3 // pubkey, multiplier, OP_MINT_TRANSFER
-	if isMint {
-		wantLen = 4 // pubkey, multiplier, salt, OP_MINT
+	wantLen := 3 // pubkey, multiplier, OP_MINT for mints
+	if !isMint {
+		wantLen = 4 // pubkey, multiplier, origin, OP_MINT_TRANSFER for transfers
 	}
 	if len(pushes) != wantLen {
 		return nil, nil
@@ -217,16 +252,25 @@ func ParseUAPScript(scriptHex string) (*ParsedUAP, error) {
 		return nil, nil
 	}
 
+	var origin []byte
 	if isMint {
-		salt := pushes[2]
-		if !salt.IsPush || !isMinimalPush(salt) || len(salt.Data) < 16 {
+		// Mint: next element must be OP_MINT
+		if pushes[2].IsPush || pushes[2].Opcode != opMint {
 			return nil, nil
 		}
-		if pushes[3].IsPush || pushes[3].Opcode != opMint {
-			return nil, nil
-		}
+		// Mints carry no origin
+		origin = []byte{}
 	} else {
-		if pushes[2].IsPush || pushes[2].Opcode != opMintTransfer {
+		// Transfer: next element must be a 32-byte push (the origin)
+		originElem := pushes[2]
+		if !originElem.IsPush || !isMinimalPush(originElem) || len(originElem.Data) != 32 {
+			return nil, nil
+		}
+		origin = make([]byte, 32)
+		copy(origin, originElem.Data)
+
+		// Then OP_MINT_TRANSFER
+		if pushes[3].IsPush || pushes[3].Opcode != opMintTransfer {
 			return nil, nil
 		}
 	}
@@ -234,7 +278,7 @@ func ParseUAPScript(scriptHex string) (*ParsedUAP, error) {
 	pubkey := make([]byte, len(pk.Data))
 	copy(pubkey, pk.Data)
 
-	return &ParsedUAP{PubKey: pubkey, Multiplier: multiplier, IsMint: isMint}, nil
+	return &ParsedUAP{PubKey: pubkey, Multiplier: multiplier, Origin: origin, IsMint: isMint}, nil
 }
 
 // ParseP2PKHScript returns the 20-byte hash160 from a standard
