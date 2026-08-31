@@ -14,6 +14,8 @@
 #include "uint256.h"
 
 #include <limits>
+#include <set>
+#include <utility>
 
 using namespace std;
 
@@ -246,7 +248,30 @@ bool static CheckPubKeyEncoding(const valtype &vchPubKey, unsigned int flags, co
  * distinct mint lineages from being merged/diluted, without any separate
  * token-identity bookkeeping.
  */
-static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, const CScriptNum& mult, CAmount nValueIn, ScriptError* serror)
+/**
+ * A lineage's identity: SHA256 over the originating mint's outpoint, as
+ * 32 bytes of txid followed by the 4-byte output index, little-endian.
+ *
+ * The encoding is written out by hand rather than borrowed from the
+ * serializer because three independent implementations have to agree on it
+ * byte for byte -- this one, contrib/uap-js and contrib/uaptx -- and a
+ * reader in another language cannot check its work against a C++ template.
+ */
+static valtype UapOriginFromOutpoint(const COutPoint& outpoint)
+{
+    unsigned char buf[36];
+    memcpy(buf, outpoint.hash.begin(), 32);
+    const uint32_t n = outpoint.n;
+    buf[32] = (unsigned char)(n & 0xff);
+    buf[33] = (unsigned char)((n >> 8) & 0xff);
+    buf[34] = (unsigned char)((n >> 16) & 0xff);
+    buf[35] = (unsigned char)((n >> 24) & 0xff);
+    valtype out(UAP_ORIGIN_SIZE);
+    CSHA256().Write(buf, sizeof(buf)).Finalize(&out[0]);
+    return out;
+}
+
+static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, const CScriptNum& mult, const valtype& origin, ScriptError* serror)
 {
     const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
     if (!tchecker || !tchecker->txTo)
@@ -256,19 +281,83 @@ static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, cons
     if (tx.vout.empty())
         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
 
+    // Sum every input belonging to this lineage, not merely this one. That
+    // is what lets two positions of the same token be combined. The old rule
+    // compared the whole covenant output total against a *single* input's
+    // value, so merging two positions worth V each capped the output at V and
+    // burned the remainder -- and it had to, because without an origin in the
+    // script consensus could not tell "two positions of one token" from "two
+    // tokens that happen to share a multiplier". Merging the latter would let
+    // anyone add supply to someone else's token by posting par backing. With
+    // the origin explicit the two cases are distinguishable, and only the
+    // first is allowed.
+    CAmount nValueIn = 0;
+    // Every lineage with an input in this transaction. Collected while summing
+    // our own, because the output loop below needs it: see the comment there.
+    std::set<std::pair<int64_t, valtype> > setInputLineages;
+    const int32_t nInputs = checker.GetInputCount();
+    for (int32_t i = 0; i < nInputs; i++) {
+        CScript prevScript;
+        if (!checker.GetInputScriptPubKey((unsigned int)i, prevScript))
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        valtype inPubkey, inOrigin;
+        CScriptNum inMult(0);
+        bool fInIsMint;
+        if (!ParseUapOutputScript(prevScript, inPubkey, inMult, inOrigin, fInIsMint)) {
+            // Ordinary funding input, part of no lineage's accounting.
+            continue;
+        }
+        if ((unsigned int)i >= tx.vin.size())
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        // A mint input's lineage is its own outpoint; a transfer carries it.
+        const valtype inLineage = fInIsMint ? UapOriginFromOutpoint(tx.vin[i].prevout) : inOrigin;
+        // ParseUapOutputScript has already bounded the multiplier to
+        // [0, MAX_UAP_MULTIPLIER], so getint() cannot be clamping here.
+        setInputLineages.insert(std::make_pair((int64_t)inMult.getint(), inLineage));
+        if (inMult != mult || inLineage != origin)
+            continue;
+        CAmount inAmount = 0;
+        if (!checker.GetInputAmount((unsigned int)i, inAmount))
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        if (inAmount < 0 || nValueIn > MAX_MONEY - inAmount)
+            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        nValueIn += inAmount;
+    }
+
     CAmount nValueOut = 0;
     bool fHasMatchingCovenantOutput = false;
     for (const CTxOut& out : tx.vout) {
-        valtype pubkey;
+        valtype pubkey, outOrigin;
         CScriptNum outMult(0);
         bool fIsMint;
-        if (!ParseUapOutputScript(out.scriptPubKey, pubkey, outMult, fIsMint)) {
+        if (!ParseUapOutputScript(out.scriptPubKey, pubkey, outMult, outOrigin, fIsMint)) {
             // Not UAP-shaped at all: ordinary WHIP, not part of this
             // input's token accounting (e.g. a swap's payment leg).
             continue;
         }
-        if (fIsMint || outMult != mult)
+        // No output may be mint-shaped. A mint's identity comes from the
+        // outpoint it is spent at, so a mint output created *by* a spend would
+        // be a new lineage head funded out of an existing position's backing.
+        //
+        // Also belt and braces: a mint output carries no origin at all, so it
+        // matches neither this lineage nor any input lineage below, and would
+        // be rejected there. Stated explicitly because the rule is worth
+        // finding where a reader looks for it rather than deducing it from
+        // two comparisons that happen not to admit an empty origin.
+        if (fIsMint)
             return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        if (outMult != mult || outOrigin != origin) {
+            // A different lineage. Permitted only if it also has an input
+            // here: spending that input runs this same check for *its*
+            // lineage, so the foreign outputs are conserved by that pass
+            // rather than going unexamined. Without the requirement, a
+            // lineage with outputs but no inputs would be constrained by
+            // nothing at all -- tokens from nothing -- since no other
+            // conservation check would ever consider it.
+            if (!setInputLineages.count(std::make_pair((int64_t)outMult.getint(), outOrigin)))
+                return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            continue;
+        }
         if (out.nValue < 0 || nValueOut > MAX_MONEY - out.nValue)
             return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
         nValueOut += out.nValue;
@@ -295,10 +384,10 @@ static bool CheckUapOneShot(const BaseSignatureChecker& checker, unsigned int nI
         CScript prevScript;
         if (!checker.GetInputScriptPubKey((unsigned int)i, prevScript))
             return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-        valtype pubkey;
+        valtype pubkey, origin;
         CScriptNum mult(0);
         bool fIsMint;
-        if (ParseUapOutputScript(prevScript, pubkey, mult, fIsMint))
+        if (ParseUapOutputScript(prevScript, pubkey, mult, origin, fIsMint))
             return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
     }
     return true;
@@ -1089,14 +1178,26 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
 
                 // UAP opcodes
                 //
-                // Mint output:    <recipient_pubkey> <multiplier> <salt> OP_MINT
-                // Transfer output:<recipient_pubkey> <multiplier> OP_MINT_TRANSFER
+                // Mint output:    <recipient_pubkey> <multiplier> OP_MINT
+                // Transfer output:<recipient_pubkey> <multiplier> <origin32> OP_MINT_TRANSFER
                 //
                 // Spending either requires scriptSig = <sig>. The recipient's
                 // signature authorizes the spend, and every output of the
                 // spending transaction must itself be a UAP_TRANSFER covenant
-                // carrying the same multiplier, with total output value not
-                // exceeding the value held by this input (conservation).
+                // carrying the same multiplier *and the same lineage origin*,
+                // with total output value for that lineage not exceeding the
+                // total value its inputs bring in (conservation).
+                //
+                // Tests live in two places, and the split is not arbitrary:
+                //   src/test/data/uap_script_vectors.json -- script shape,
+                //     one script parsed in isolation. Also read by the Go
+                //     indexer and the JS wallet, so it is the cross-language
+                //     contract for what a UAP output *looks like*.
+                //   src/test/uap_mint_tests.cpp -- everything that depends on
+                //     the spending transaction: conservation, merging,
+                //     per-lineage grouping, and deriving a mint's origin from
+                //     the outpoint it is spent at. A JSON vector cannot
+                //     express any of these, having no transaction around it.
                 case OP_MINT:
                 case OP_MINT_TRANSFER:
                 {
@@ -1109,12 +1210,14 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
 
                     const bool fIsMint = (opcode == OP_MINT);
 
-                    if (stack.size() < (fIsMint ? 4u : 3u))
+                    // A transfer carries the extra <origin> element; a mint
+                    // does not, because its identity is its own outpoint.
+                    if (stack.size() < (fIsMint ? 3u : 4u))
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
 
-                    valtype salt;
-                    if (fIsMint) {
-                        salt = stacktop(-1);
+                    valtype scriptOrigin;
+                    if (!fIsMint) {
+                        scriptOrigin = stacktop(-1);
                         popstack(stack);
                     }
                     CScriptNum multiplier(stacktop(-1), fRequireMinimal);
@@ -1162,8 +1265,22 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     if (fIsMint && nValueIn < 1000 * COIN)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
 
-                    // 3. Salt: at least 16 bytes (fresh mints only).
-                    if (fIsMint && salt.size() < 16)
+                    // 3. Origin: exactly 32 bytes (transfers only). Every
+                    //    lineage comparison consensus makes is a comparison of
+                    //    these bytes, so a wrong-length one would either fail
+                    //    to match its own lineage or collide with another.
+                    //
+                    //    Belt and braces: ParseUapOutputScript accepts only
+                    //    32-byte origins, so a wrong-width position already
+                    //    has no conforming output it could ever continue into,
+                    //    and is unspendable regardless of this check. Stating
+                    //    the rule here turns "stuck forever, for reasons two
+                    //    functions away" into an immediate, locatable
+                    //    rejection. Mutation testing shows either path alone
+                    //    rejects, so neither is safe to delete on the grounds
+                    //    that the suite stays green without it; see
+                    //    covenant_with_wrong_width_origin_is_unspendable.
+                    if (!fIsMint && scriptOrigin.size() != UAP_ORIGIN_SIZE)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
 
                     // 4. Multiplier range + overflow guard: multiplier must
@@ -1186,9 +1303,17 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                         return false; // serror set
 
                     // 6. Strict script: every output must be a conforming
-                    //    UAP_TRANSFER covenant carrying this multiplier, and
-                    //    total output value may not exceed this input's value.
-                    if (!CheckUapOutputConservation(checker, multiplier, nValueIn, serror))
+                    //    UAP_TRANSFER covenant carrying this multiplier and
+                    //    this lineage, and the total value of that lineage's
+                    //    outputs may not exceed the total of its inputs.
+                    //
+                    //    A mint is the head of its own lineage, so its origin
+                    //    is derived from the outpoint being spent; a transfer
+                    //    carries the origin forward from the script.
+                    const valtype lineage = fIsMint
+                        ? UapOriginFromOutpoint(tchecker->txTo->vin[tchecker->nIn].prevout)
+                        : scriptOrigin;
+                    if (!CheckUapOutputConservation(checker, multiplier, lineage, serror))
                         return false; // serror set
 
                     stack.push_back(vchTrue);
@@ -1243,8 +1368,9 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                                 case 11: { // virtual balance = nValue * the output's own declared multiplier
                                     valtype pubkey;
                                     CScriptNum outMult(0);
+                                    valtype outOrigin;
                                     bool fIsMint;
-                                    if (!ParseUapOutputScript(out.scriptPubKey, pubkey, outMult, fIsMint)) {
+                                    if (!ParseUapOutputScript(out.scriptPubKey, pubkey, outMult, outOrigin, fIsMint)) {
                                         // Not a UAP output: it carries no tokens.
                                         stack.push_back(CScriptNum(0).getvch());
                                     } else {

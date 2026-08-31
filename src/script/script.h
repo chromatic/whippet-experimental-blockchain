@@ -669,11 +669,38 @@ static const int64_t MAX_UAP_MULTIPLIER = std::numeric_limits<int32_t>::max();
 bool CheckMinimalPush(const std::vector<unsigned char>& data, opcodetype opcode);
 
 /**
+ * Byte length of a lineage origin: SHA256 of the originating mint's own
+ * outpoint. See ParseUapOutputScript.
+ */
+static const size_t UAP_ORIGIN_SIZE = 32;
+
+/**
  * Recognize a UAP mint or mint-transfer output and extract its declared
- * recipient pubkey and multiplier. Matches exactly one of:
- *   <pubkey> <multiplier> <salt> OP_MINT           (fresh mint)
- *   <pubkey> <multiplier> OP_MINT_TRANSFER         (transfer/covenant)
+ * recipient pubkey, multiplier and (for transfers) lineage origin.
+ * Matches exactly one of:
+ *   <pubkey> <multiplier> OP_MINT                    (fresh mint)
+ *   <pubkey> <multiplier> <origin> OP_MINT_TRANSFER  (transfer/covenant)
  * Any other script shape is not a UAP output and this returns false.
+ *
+ * `origin` is SHA256(prevout.hash || prevout.n) of the mint that began the
+ * lineage, and it is what lets consensus tell two positions of the *same*
+ * token apart from two that merely share a multiplier. Conservation groups
+ * by (multiplier, origin), so positions of one lineage can be merged while
+ * distinct lineages still cannot.
+ *
+ * A mint carries no origin: its own outpoint is its identity, and it
+ * cannot contain that outpoint, because the outpoint depends on the txid
+ * which depends on this script. Identity is assigned at the first spend
+ * instead -- exactly when the interpreter can finally see the mint's
+ * outpoint. originOut is cleared for mints.
+ *
+ * A `<salt>` used to sit where `<origin>` now does, on mints rather than
+ * transfers, and was documented as the token's unique identifier.
+ * Consensus only ever checked its length, so that uniqueness was an
+ * honour-system property any minter could collide deliberately -- and it
+ * was dropped at the first spend regardless. The origin has the property
+ * the salt only claimed: unique by construction, because no two outputs
+ * can share an outpoint.
  *
  * Every element must use its canonical push encoding (CheckMinimalPush):
  * 0 is OP_0, a multiplier of 1..16 is OP_1..OP_16, and everything else is
@@ -691,7 +718,7 @@ bool CheckMinimalPush(const std::vector<unsigned char>& data, opcodetype opcode)
  * virtual-balance selector) and Solver()'s TX_OP_MINT/TX_OP_TRANSFER
  * classification all call it, so policy cannot drift from consensus.
  */
-bool ParseUapOutputScript(const CScript& script, std::vector<unsigned char>& pubkeyOut, CScriptNum& multiplierOut, bool& fIsMintOut);
+bool ParseUapOutputScript(const CScript& script, std::vector<unsigned char>& pubkeyOut, CScriptNum& multiplierOut, std::vector<unsigned char>& originOut, bool& fIsMintOut);
 
 struct CScriptWitness
 {

@@ -65,12 +65,24 @@ BOOST_AUTO_TEST_CASE(regtest_auxpow_chain_id_fix)
 
 BOOST_AUTO_TEST_CASE(uap_mint_activation_height)
 {
-    // Same height as the chain-ID fix on mainnet/testnet (chain tip was
-    // 79398 on mainnet when this was set); active from genesis on regtest
-    // for testability.
-    BOOST_CHECK_EQUAL(Params(CBaseChainParams::MAIN).GetConsensus(0).UAPMintHeight, 80000);
-    BOOST_CHECK_EQUAL(Params(CBaseChainParams::TESTNET).GetConsensus(0).UAPMintHeight, 80000);
+    // 82000 for the v2 origin covenant; the mainnet tip was 79991 when that
+    // was set. Regtest is active from genesis for testability.
+    //
+    // Asserted as literals on purpose. A node running a different
+    // UAPMintHeight than the miner forks at that height, so this number is
+    // consensus rather than configuration -- reading it back out of Params()
+    // would assert nothing at all. Changing it here should feel exactly as
+    // deliberate as changing it in chainparams.cpp.
+    BOOST_CHECK_EQUAL(Params(CBaseChainParams::MAIN).GetConsensus(0).UAPMintHeight, 82000);
+    BOOST_CHECK_EQUAL(Params(CBaseChainParams::TESTNET).GetConsensus(0).UAPMintHeight, 82000);
     BOOST_CHECK_EQUAL(Params(CBaseChainParams::REGTEST).GetConsensus(0).UAPMintHeight, 0);
+
+    // Mainnet and testnet are equal today, and the equality is load-bearing
+    // for nothing -- they are two independent chains and either may move
+    // alone. Kept in step only so there is one number to remember while
+    // both are unused. Do not "simplify" this into a shared constant.
+    BOOST_CHECK_EQUAL(Params(CBaseChainParams::MAIN).GetConsensus(0).UAPMintHeight,
+                      Params(CBaseChainParams::TESTNET).GetConsensus(0).UAPMintHeight);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

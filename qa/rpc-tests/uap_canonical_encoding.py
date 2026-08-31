@@ -39,12 +39,16 @@ this regression would slip back in:
          CONSENSUS, because conservation parses every output and refuses to
          count one it cannot parse (part 3a);
 
-       - a non-canonical spelling in the script BEING SPENT is rejected only
-         by POLICY, because OP_MINT reads the multiplier off the stack and
-         consensus never inspects how it was spelled (part 3b).
+       - a non-canonical spelling in the script BEING SPENT is rejected by
+         CONSENSUS as well, though indirectly: conservation identifies a
+         lineage's inputs with ParseUapOutputScript, so a non-canonical
+         input contributes no value and the spend's own covenant output
+         exceeds it (part 3b).
 
-     Asserting both as consensus rejections -- which this test originally
-     did -- would have described a guarantee the protocol does not make.
+     Which layer refuses a thing is not a detail, and it has moved once
+     already: part 3b was a policy-only rejection before conservation was
+     grouped by lineage. Assert the exact reason, so the next such shift is
+     visible instead of silent.
 
 The pairs are built so the two scripts differ in the multiplier's encoding
 and in nothing else -- see canonical_vs_not() below.
@@ -57,28 +61,12 @@ from test_framework.util import (
     assert_raises_jsonrpc,
 )
 from test_framework.mininode import CTransaction, CTxIn, CTxOut, COutPoint, FromHex, ToHex
-from test_framework.script import CScript, OP_MINT, OP_MINT_TRANSFER, SignatureHash, SIGHASH_ALL
-from test_framework.key import CECKey
+from test_framework.script import CScript
 from test_framework.bignum import bn2vch
-
-COIN = 100000000
-
-MINT_ENTRY_FEE = 1000 * COIN
-FEE = 1000000  # RECOMMENDED_MIN_TX_FEE, src/amount.h
-SALT = b"uap_regtest_salt_16byte"
-
-MANDATORY = "mandatory-script-verify-flag-failed"
-# Policy-only rejection: the node refuses to relay it, but a miner could
-# still include it in a block. Asserting the two apart is the whole point of
-# parts 3a and 3b -- collapsing them would hide which guarantee is which.
-NON_MANDATORY = "non-mandatory-script-verify-flag"
-
-
-def make_key(seed):
-    key = CECKey()
-    key.set_secretbytes(seed)
-    key.set_compressed(True)
-    return key
+from test_framework.uap import (
+    COIN, FEE, MINT_ENTRY_FEE, MANDATORY,
+    make_key, mint_script, transfer_script, origin_of, sign_spend,
+)
 
 
 def canonical_vs_not(value):
@@ -119,21 +107,6 @@ def canonical_vs_not(value):
         "script, so this case would prove nothing" % value)
 
     return value, non_canonical
-
-
-def mint_script(pubkey, multiplier, salt=SALT):
-    return CScript([pubkey, multiplier, salt, OP_MINT])
-
-
-def transfer_script(pubkey, multiplier):
-    return CScript([pubkey, multiplier, OP_MINT_TRANSFER])
-
-
-def sign_spend(script_code, key, tx, n_in):
-    sighash, err = SignatureHash(script_code, tx, n_in, SIGHASH_ALL)
-    assert err is None
-    sig = key.sign(sighash) + bytes([SIGHASH_ALL])
-    return CScript([sig])
 
 
 class UAPCanonicalEncodingTest(BitcoinTestFramework):
@@ -182,10 +155,18 @@ class UAPCanonicalEncodingTest(BitcoinTestFramework):
         return txid
 
     def spend_mint(self, mint_txid, mint_scr, key, value, out_pubkey, out_multiplier):
-        """Build the spend of a mint position. This is what runs OP_MINT."""
+        """Build the spend of a mint position. This is what runs OP_MINT.
+
+        The covenant output carries the lineage derived from the outpoint
+        being spent -- always canonical, and always the correct one, so that
+        any rejection is attributable to the multiplier's encoding and not
+        to the lineage.
+        """
+        lineage = origin_of(mint_txid, 0)
         tx = CTransaction()
         tx.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
-        tx.vout = [CTxOut(value - FEE, transfer_script(out_pubkey, out_multiplier))]
+        tx.vout = [CTxOut(value - FEE,
+                          transfer_script(out_pubkey, out_multiplier, lineage))]
         tx.vin[0].scriptSig = sign_spend(mint_scr, key, tx, 0)
         return ToHex(tx)
 
@@ -263,31 +244,31 @@ class UAPCanonicalEncodingTest(BitcoinTestFramework):
             print("  multiplier %d spelled %s rejected (mandatory)"
                   % (m, non_canonical.hex()))
 
-        # ---- 3b: non-canonical SPENT scripts are policy-rejected ---------
-        # The other half, and deliberately asserted as NON-mandatory,
-        # because that is what the node actually does and pretending
-        # otherwise would misdescribe the protocol:
+        # ---- 3b: non-canonical SPENT scripts are consensus-rejected ------
+        # The other half. This one used to be a POLICY-only rejection, and
+        # saying so was an accurate description of the node at the time:
+        # OP_MINT reads the multiplier off the stack rather than out of the
+        # script text, so consensus did not care how the push was spelled --
+        # only SCRIPT_VERIFY_MINIMALDATA did, and that is standardness.
         #
-        # When a position is spent, OP_MINT reads the multiplier off the
-        # stack, not out of the script text. Consensus therefore does not
-        # care how that push was spelled -- only SCRIPT_VERIFY_MINIMALDATA
-        # does, and that is standardness, not consensus.
+        # Grouping conservation by lineage changed that, as a side effect
+        # rather than by design. Conservation now sums the inputs belonging
+        # to the lineage being spent, and it identifies them with
+        # ParseUapOutputScript -- which rejects a non-canonical push. Such an
+        # input therefore contributes NOTHING to nValueIn, while the covenant
+        # output the spend must produce counts in full against it. Outputs
+        # exceed inputs, and the spend is refused at consensus level.
         #
-        # The residual risk this leaves is bounded and worth stating: a miner
-        # could mine an output whose multiplier is non-canonical. Such an
-        # output is not a UAP position as far as ParseUapOutputScript is
-        # concerned, so Solver() will not classify it and the indexer will
-        # not see it; it is simply an unrecognized script, not a token
-        # position that later becomes stuck. Ordinary users cannot create one,
-        # because the transaction creating it is non-standard and will not
-        # relay -- which is exactly what this half asserts.
-        print("non-canonical SPENT scripts are rejected by policy")
+        # The practical effect is that a non-canonically spelled position is
+        # unspendable rather than merely unrelayable: a miner cannot rescue
+        # one by mining the spend directly.
+        print("non-canonical SPENT scripts are rejected by consensus")
         for m in [0, 1, 5, 16, 17]:
             _, non_canonical = canonical_vs_not(m)
             raw = self.mint_and_spend(node, minter, minter_pub, recipient_pub,
                                       non_canonical, m)
-            assert_raises_jsonrpc(None, NON_MANDATORY, node.sendrawtransaction, raw)
-            print("  multiplier %d spelled %s rejected (policy)"
+            assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, raw)
+            print("  multiplier %d spelled %s is unspendable (consensus)"
                   % (m, non_canonical.hex()))
 
         # ---- 4: above 16 the canonical form still works ------------------

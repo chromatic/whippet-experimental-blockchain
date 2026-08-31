@@ -25,7 +25,7 @@ private:
     bool store;
 
 public:
-    CachingTransactionSignatureChecker(const CTransaction* txToIn, unsigned int nInIn, const CAmount& amount, bool storeIn, PrecomputedTransactionData& txdataIn, const std::vector<CScript>* vPrevScriptPubKeysIn = NULL) : TransactionSignatureChecker(txToIn, nInIn, amount, txdataIn, vPrevScriptPubKeysIn), store(storeIn) {}
+    CachingTransactionSignatureChecker(const CTransaction* txToIn, unsigned int nInIn, const CAmount& amount, bool storeIn, PrecomputedTransactionData& txdataIn, const std::vector<CScript>* vPrevScriptPubKeysIn = NULL, const std::vector<CAmount>* vPrevAmountsIn = NULL) : TransactionSignatureChecker(txToIn, nInIn, amount, txdataIn, vPrevScriptPubKeysIn, vPrevAmountsIn), store(storeIn) {}
 
     bool VerifySignature(const std::vector<unsigned char>& vchSig, const CPubKey& vchPubKey, const uint256& sighash) const;
 };

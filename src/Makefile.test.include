@@ -70,7 +70,8 @@ JSON_TEST_FILES = \
   test/data/tx_invalid.json \
   test/data/tx_valid.json \
   test/data/sighash.json \
-  test/data/uap_script_vectors.json
+  test/data/uap_script_vectors.json \
+  test/data/uap_origin_vectors.json
 
 RAW_TEST_FILES =
 

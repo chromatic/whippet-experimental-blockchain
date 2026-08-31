@@ -4,12 +4,20 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """UAP OP_MINT / OP_MINT_TRANSFER end-to-end QA test.
 
-Exercises the fixed OP_MINT design against a live regtest node:
-  - minting requires the recipient's signature (not anyone-can-spend)
-  - transfers must forward to a conforming OP_MINT_TRANSFER covenant
-    carrying the same multiplier
-  - wrong signer, value inflation, and multiplier mismatch are all
-    rejected by the mempool/consensus layer
+Walks one position through its whole life against a live regtest node --
+minted, spent into a lineage, forwarded onward -- with the ways that can go
+wrong asserted at each step:
+
+  - only the declared recipient may spend a position
+  - the destination must be a conforming covenant, not a plain script
+  - value cannot be created
+  - a mint's first spend names its lineage, and may only name its own
+  - an onward transfer must carry that lineage forward unchanged
+
+The last two are what v2 added. A mint carries no origin -- its identity is
+the outpoint it is spent at, which it cannot contain without circularity --
+so the first spend is where a lineage comes into existence, and every spend
+after that is bound to it.
 """
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -19,34 +27,13 @@ from test_framework.util import (
     assert_raises_jsonrpc,
 )
 from test_framework.mininode import CTransaction, CTxIn, CTxOut, COutPoint, FromHex, ToHex
-from test_framework.script import CScript, OP_MINT, OP_MINT_TRANSFER, SignatureHash, SIGHASH_ALL
-from test_framework.key import CECKey
+from test_framework.script import CScript
+from test_framework.uap import (
+    COIN, MANDATORY,
+    make_key, mint_script, transfer_script, origin_of, sign_spend,
+)
 
-COIN = 100000000
 MULTIPLIER = 1000
-SALT = b"uap_regtest_salt_16byte"
-
-
-def make_key(seed):
-    key = CECKey()
-    key.set_secretbytes(seed)
-    key.set_compressed(True)
-    return key
-
-
-def mint_script(pubkey, multiplier=MULTIPLIER, salt=SALT):
-    return CScript([pubkey, multiplier, salt, OP_MINT])
-
-
-def transfer_script(pubkey, multiplier=MULTIPLIER):
-    return CScript([pubkey, multiplier, OP_MINT_TRANSFER])
-
-
-def sign_spend(script_code, key, tx, n_in):
-    sighash, err = SignatureHash(script_code, tx, n_in, SIGHASH_ALL)
-    assert err is None
-    sig = key.sign(sighash) + bytes([SIGHASH_ALL])
-    return CScript([sig])
 
 
 class UAPMintTransferTest(BitcoinTestFramework):
@@ -59,7 +46,7 @@ class UAPMintTransferTest(BitcoinTestFramework):
         self.nodes = start_nodes(self.num_nodes, self.options.tmpdir, [["-debug"]])
 
     def fund_mint_input(self, node, min_value=1000 * COIN):
-        """Find (or mine towards) a single matured UTXO worth >= min_value."""
+        """Find a single matured UTXO worth >= min_value."""
         for utxo in node.listunspent():
             if int(round(utxo["amount"] * COIN)) >= min_value:
                 return utxo
@@ -72,11 +59,12 @@ class UAPMintTransferTest(BitcoinTestFramework):
         rawtx = node.createrawtransaction(inputs, outputs)
         tx = FromHex(CTransaction(), rawtx)
         tx.vout[0].nValue = out_value
-        tx.vout[0].scriptPubKey = mint_script(minter_pubkey)
+        tx.vout[0].scriptPubKey = mint_script(minter_pubkey, MULTIPLIER)
         rawtx = ToHex(tx)
 
         # This scriptSig authorizes spending the funding UTXO (ordinary
-        # wallet key), unrelated to OP_MINT's own recipient-signature rule.
+        # wallet key), unrelated to the covenant's own recipient-signature
+        # rule.
         signed = node.signrawtransaction(rawtx)
         assert signed["complete"]
         return node.sendrawtransaction(signed["hex"])
@@ -101,21 +89,24 @@ class UAPMintTransferTest(BitcoinTestFramework):
         mint_txid = self.build_and_send_mint(node, minter_pubkey, utxo, mint_value)
         node.generate(1)
 
-        mint_tx_raw = node.getrawtransaction(mint_txid)
-        mint_tx = FromHex(CTransaction(), mint_tx_raw)
-        the_mint_script = mint_script(minter_pubkey)
+        mint_tx = FromHex(CTransaction(), node.getrawtransaction(mint_txid))
+        the_mint_script = mint_script(minter_pubkey, MULTIPLIER)
         assert_equal(mint_tx.vout[0].scriptPubKey, bytes(the_mint_script))
+
+        # The lineage this mint will become, fixed by the outpoint it is
+        # spent at. Nothing on chain carries it yet -- it comes into
+        # existence with the first spend, in step 5.
+        lineage = origin_of(mint_txid, 0)
         print("  mint output confirmed: %d satoshi, multiplier %d" % (mint_value, MULTIPLIER))
+        print("  its lineage will be %s" % lineage.hex()[:16])
 
         print("Step 2: reject spend by the wrong signer")
         bad_spend = CTransaction()
         bad_spend.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
-        bad_spend.vout = [CTxOut(mint_value - 50000, transfer_script(recipient_pubkey))]
+        bad_spend.vout = [CTxOut(mint_value - 50000,
+                                 transfer_script(recipient_pubkey, MULTIPLIER, lineage))]
         bad_spend.vin[0].scriptSig = sign_spend(the_mint_script, impostor_key, bad_spend, 0)
-        assert_raises_jsonrpc(
-            None, "mandatory-script-verify-flag-failed",
-            node.sendrawtransaction, ToHex(bad_spend),
-        )
+        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(bad_spend))
         print("  correctly rejected")
 
         print("Step 3: reject a non-covenant destination output")
@@ -123,45 +114,77 @@ class UAPMintTransferTest(BitcoinTestFramework):
         bad_dest.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
         bad_dest.vout = [CTxOut(mint_value - 50000, CScript([recipient_pubkey, b'\xac']))]  # plain P2PK-ish, not a covenant
         bad_dest.vin[0].scriptSig = sign_spend(the_mint_script, minter_key, bad_dest, 0)
-        assert_raises_jsonrpc(
-            None, "mandatory-script-verify-flag-failed",
-            node.sendrawtransaction, ToHex(bad_dest),
-        )
+        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(bad_dest))
         print("  correctly rejected")
 
         print("Step 4: reject value created out of thin air")
         bad_value = CTransaction()
         bad_value.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
-        bad_value.vout = [CTxOut(mint_value + COIN, transfer_script(recipient_pubkey))]
+        bad_value.vout = [CTxOut(mint_value + COIN,
+                                 transfer_script(recipient_pubkey, MULTIPLIER, lineage))]
         bad_value.vin[0].scriptSig = sign_spend(the_mint_script, minter_key, bad_value, 0)
         # Caught by the generic "outputs exceed inputs" consensus check
         # before script validation even runs; still a correct rejection.
-        assert_raises_jsonrpc(
-            None, "bad-txns-in-belowout",
-            node.sendrawtransaction, ToHex(bad_value),
-        )
+        assert_raises_jsonrpc(None, "bad-txns-in-belowout",
+                              node.sendrawtransaction, ToHex(bad_value))
         print("  correctly rejected")
 
-        print("Step 5: correct transfer to recipient succeeds")
+        print("Step 5: a mint's first spend may only name its own lineage")
+        # A fresh mint cannot be renamed into somebody else's token. The
+        # origin the covenant output carries is not the spender's choice:
+        # consensus derives it from the outpoint being spent, and conservation
+        # then refuses an output belonging to a lineage that has no input in
+        # this transaction.
+        renamed = CTransaction()
+        renamed.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
+        renamed.vout = [CTxOut(mint_value - 50000,
+                               transfer_script(recipient_pubkey, MULTIPLIER,
+                                               origin_of(mint_txid, 1)))]
+        renamed.vin[0].scriptSig = sign_spend(the_mint_script, minter_key, renamed, 0)
+        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(renamed))
+        print("  a foreign origin is rejected")
+
         transfer_value = mint_value - 50000
         good_transfer = CTransaction()
         good_transfer.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
-        good_transfer.vout = [CTxOut(transfer_value, transfer_script(recipient_pubkey))]
+        good_transfer.vout = [CTxOut(transfer_value,
+                                     transfer_script(recipient_pubkey, MULTIPLIER, lineage))]
         good_transfer.vin[0].scriptSig = sign_spend(the_mint_script, minter_key, good_transfer, 0)
         transfer_txid = node.sendrawtransaction(ToHex(good_transfer))
         node.generate(1)
-        print("  transfer confirmed: %s" % transfer_txid)
+        print("  its own origin is accepted: %s" % transfer_txid)
 
-        print("Step 6: recipient forwards onward")
-        the_transfer_script = transfer_script(recipient_pubkey)
+        print("Step 6: an onward transfer carries the lineage forward, unchanged")
+        the_transfer_script = transfer_script(recipient_pubkey, MULTIPLIER, lineage)
         final_value = transfer_value - 50000
+
+        # Deriving a fresh origin from the transfer's OWN outpoint is the
+        # mistake this rule exists to catch: it looks reasonable, it is what
+        # a mint does, and it would rename the position into a lineage that
+        # has no input in the transaction -- minting supply out of nothing.
+        rewritten = CTransaction()
+        rewritten.vin = [CTxIn(COutPoint(int(transfer_txid, 16), 0))]
+        rewritten.vout = [CTxOut(final_value,
+                                 transfer_script(next_pubkey, MULTIPLIER,
+                                                 origin_of(transfer_txid, 0)))]
+        rewritten.vin[0].scriptSig = sign_spend(the_transfer_script, recipient_key, rewritten, 0)
+        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(rewritten))
+        print("  re-deriving the origin from its own outpoint is rejected")
+
         onward = CTransaction()
         onward.vin = [CTxIn(COutPoint(int(transfer_txid, 16), 0))]
-        onward.vout = [CTxOut(final_value, transfer_script(next_pubkey))]
+        onward.vout = [CTxOut(final_value, transfer_script(next_pubkey, MULTIPLIER, lineage))]
         onward.vin[0].scriptSig = sign_spend(the_transfer_script, recipient_key, onward, 0)
         onward_txid = node.sendrawtransaction(ToHex(onward))
         node.generate(1)
         print("  onward transfer confirmed: %s" % onward_txid)
+
+        # The lineage survived two hops and is still the one the mint's
+        # outpoint named. This is the assertion the whole file builds to.
+        final_tx = FromHex(CTransaction(), node.getrawtransaction(onward_txid))
+        assert_equal(final_tx.vout[0].scriptPubKey,
+                     bytes(transfer_script(next_pubkey, MULTIPLIER, lineage)))
+        print("  and it still carries the lineage the mint's outpoint named")
 
         print("All UAP mint/transfer checks passed")
 

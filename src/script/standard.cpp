@@ -80,10 +80,10 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
     // let policy accept a shape consensus rejects, or vice versa; this
     // file previously carried its own looser copy of the parse.
     if (scriptPubKey.size() >= 2 && (scriptPubKey.back() == OP_MINT || scriptPubKey.back() == OP_MINT_TRANSFER)) {
-        valtype pubkey;
+        valtype pubkey, origin;
         CScriptNum multiplier(0);
         bool fIsMint;
-        if (ParseUapOutputScript(scriptPubKey, pubkey, multiplier, fIsMint)) {
+        if (ParseUapOutputScript(scriptPubKey, pubkey, multiplier, origin, fIsMint)) {
             typeRet = fIsMint ? TX_OP_MINT : TX_OP_TRANSFER;
             vSolutionsRet.clear();
             vSolutionsRet.push_back(pubkey);

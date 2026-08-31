@@ -1,0 +1,66 @@
+[
+  {
+    "comment": "all-zero txid, index 0",
+    "txid": "0000000000000000000000000000000000000000000000000000000000000000",
+    "n": 0,
+    "origin": "6db65fd59fd356f6729140571b5bcd6bb3b83492a16e1bf0a3884442fc3c8a0e",
+    "_doc": [
+      "Lineage origin derivation vectors. Shared fixture: read by",
+      "src/test/uap_mint_tests.cpp (C++), contrib/uap-indexer (Go) and",
+      "contrib/uap-js (JavaScript).",
+      "",
+      "  origin = SHA256(prevout.hash || prevout.n as 4-byte little-endian)",
+      "",
+      "`txid` is written big-endian, the way RPC and explorers display it. The",
+      "bytes fed to SHA256 are its REVERSE, followed by n little-endian. A port",
+      "that skips the reversal, or writes n big-endian, stays self-consistent",
+      "and still disagrees with consensus -- which is what these vectors catch.",
+      "",
+      "A mint's origin is derived from the outpoint being SPENT (the mint",
+      "output's own location on chain), at the moment of its first spend. See",
+      "the 'lineage identity and merging' section of uap_mint_tests.cpp."
+    ]
+  },
+  {
+    "comment": "same txid, index 1 -- must differ from the above, or two mints in one transaction collide",
+    "txid": "0000000000000000000000000000000000000000000000000000000000000000",
+    "n": 1,
+    "origin": "71c99cc3bc21757feed5b712744ebb0f770d5c41d99189f9457495747bf11050"
+  },
+  {
+    "comment": "asymmetric txid: catches a port that hashes the display bytes without reversing",
+    "txid": "00000000000000000000000000000000000000000000000000000000000000ff",
+    "n": 0,
+    "origin": "78ccb86b524ee2d77751270df8ef6118017d7b714bdf9c0e5057a787fac50fa0"
+  },
+  {
+    "comment": "the byte-reversal of the previous case; the two origins must differ",
+    "txid": "ff00000000000000000000000000000000000000000000000000000000000000",
+    "n": 0,
+    "origin": "ed5de74bfe70c74aa62dc1162546543c5430bcc21398256451579a94955e20ea"
+  },
+  {
+    "comment": "arbitrary txid, index 0",
+    "txid": "1122334455667788990011223344556677889900112233445566778899001122",
+    "n": 0,
+    "origin": "752c40cc46e27586c81cc35e58beecf64c08ece4995684d0f97ef81104f0f470"
+  },
+  {
+    "comment": "index 0xffffffff -- the maximum, and the value a null outpoint carries",
+    "txid": "1122334455667788990011223344556677889900112233445566778899001122",
+    "n": 4294967295,
+    "origin": "bbbf0de01cf746fb250a294b14d18850b3e995cfc76e32198e1f63dc64ecb3a6"
+  },
+  {
+    "comment": "index 258 = 0x00000102, so a big-endian encoding of n gives a different origin",
+    "txid": "1122334455667788990011223344556677889900112233445566778899001122",
+    "n": 258,
+    "origin": "064e1b749558ed958372387872edab54e18d782fc216058cf3e2d6c3dc3e225c"
+  },
+  {
+    "comment": "arbitrary txid, index 7",
+    "txid": "deadbeefcafebabe0123456789abcdeffedcba9876543210deadbeefcafebabe",
+    "n": 7,
+    "origin": "9380bb4696fcb2ac1fbc8af0cc17ffa1a3b1a4478c46442d029a26a99b1f68c1"
+  }
+]

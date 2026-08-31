@@ -119,7 +119,12 @@ BOOST_FIXTURE_TEST_CASE(uap_premature_spend_rejected_without_stalling_the_miner,
     CKey recipient;
     recipient.MakeNewKey(true);
     const int64_t multiplier = 1000;
-    const CScript covenant = CScript() << ToByteVector(recipient.GetPubKey()) << multiplier << OP_MINT_TRANSFER;
+    // A transfer covenant carries its lineage origin. This one is spent into
+    // an output of the same lineage, so any 32 bytes serve -- the origin's
+    // derivation from a mint's outpoint is what uap_mint_tests covers, and is
+    // beside the point here, which is purely the height gate.
+    const std::vector<unsigned char> origin(32, 0x5c);
+    const CScript covenant = CScript() << ToByteVector(recipient.GetPubKey()) << multiplier << origin << OP_MINT_TRANSFER;
 
     // Put activation comfortably beyond the tip, so the next block stays
     // pre-activation however many blocks this test mines.

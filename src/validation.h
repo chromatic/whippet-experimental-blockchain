@@ -478,6 +478,10 @@ private:
     // concurrent read-vs-mutate access (was corrupting the map and
     // crashing on the copied-out CScript).
     std::vector<CScript> vPrevScriptPubKeys;
+    // Parallel to vPrevScriptPubKeys, and snapshotted for the same reason:
+    // UAP conservation sums every input belonging to one lineage, so it needs
+    // each prevout's value, not just the one being verified.
+    std::vector<CAmount> vPrevAmounts;
     bool fHavePrevScriptPubKeys;
 
 public:
@@ -488,10 +492,12 @@ public:
     {
         if (inputsViewIn) {
             vPrevScriptPubKeys.reserve(txToIn.vin.size());
+            vPrevAmounts.reserve(txToIn.vin.size());
             for (const auto& txin : txToIn.vin) {
                 const CCoins* coins = inputsViewIn->AccessCoins(txin.prevout.hash);
                 bool fAvailable = coins && coins->IsAvailable(txin.prevout.n);
                 vPrevScriptPubKeys.push_back(fAvailable ? coins->vout[txin.prevout.n].scriptPubKey : CScript());
+                vPrevAmounts.push_back(fAvailable ? coins->vout[txin.prevout.n].nValue : -1);
             }
         }
     }
@@ -508,6 +514,7 @@ public:
         std::swap(error, check.error);
         std::swap(txdata, check.txdata);
         vPrevScriptPubKeys.swap(check.vPrevScriptPubKeys);
+        vPrevAmounts.swap(check.vPrevAmounts);
         std::swap(fHavePrevScriptPubKeys, check.fHavePrevScriptPubKeys);
     }
 

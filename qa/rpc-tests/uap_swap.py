@@ -31,10 +31,13 @@ trade a UAP position for WHIP without a trusted third party:
     lets a plain WHIP payment output ride alongside the covenant leg in
     the same transaction.
 
-This file has never been run against a live node before -- signMakerOrder
-and fillOrder in uap.js were previously exercised only against fixtures.
 See doc/uap-marketplace-design.md and contrib/uap-js/uap.js (around
 signMakerOrder/fillOrder) for the design this mirrors in Python.
+
+The maker's position is minted and spent into its lineage before any order
+is signed, rather than conjured directly from a wallet input. A swap test
+whose maker position could not arise from a real mint would be testing a
+position shape the protocol never produces.
 
 Three things are checked, each on a real broadcast against real consensus:
 
@@ -50,10 +53,10 @@ Three things are checked, each on a real broadcast against real consensus:
      multiplier) trips CheckUapOutputConservation directly. Rejected.
 
 Every rejection is asserted against a specific, known reason string --
-not just "it failed" -- and every negative case has a corresponding
-"weaken it back to valid" control proving the assertion is actually
-caused by the defect under test. See the giant comment block near the
-bottom for how that was verified.
+not just "it failed". That matters more than it sounds: two independent
+rules can refuse the same malformed fill, and asserting only "rejected"
+lets one of them silently cover for the other going missing. Case 3b is
+exactly that situation, and says so where it sits.
 """
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -64,54 +67,23 @@ from test_framework.util import (
 )
 from test_framework.mininode import CTransaction, CTxIn, CTxOut, COutPoint, FromHex, ToHex
 from test_framework.script import (
-    CScript, OP_MINT_TRANSFER, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG,
-    SignatureHash, SIGHASH_ALL, SIGHASH_SINGLE, SIGHASH_ANYONECANPAY, hash160,
+    CScript, SignatureHash, SIGHASH_ALL, SIGHASH_SINGLE, SIGHASH_ANYONECANPAY,
 )
-from test_framework.key import CECKey
-
-COIN = 100000000
-
-FEE = 1000000  # RECOMMENDED_MIN_TX_FEE, src/amount.h -- see uap_transactions.py's
-               # comment on absurdly-high-fee: leaving the true change amount
-               # unaccounted for turns it into fee, and the node rejects that
-               # long before any UAP rule is even reached.
+from test_framework.uap import (
+    COIN, FEE, MINT_ENTRY_FEE, MANDATORY,
+    make_key, mint_script, transfer_script, p2pkh_script, origin_of, sign_spend,
+)
 
 MULTIPLIER = 100          # >16, so a plain int is already the canonical push
-                           # (see uap_canonical_encoding.py); no OP_N pitfalls.
+                          # (see uap_canonical_encoding.py); no OP_N pitfalls.
 TOKEN_VALUE = 100 * COIN  # the maker's position, in full
 PAYMENT_VALUE = 50 * COIN  # what the maker is asking for it
 CHANGE_VALUE = 5 * COIN
 TAKER_INPUT_VALUE = PAYMENT_VALUE + CHANGE_VALUE + FEE
 
-MANDATORY = "mandatory-script-verify-flag-failed"
 
-
-def make_key(seed):
-    key = CECKey()
-    key.set_secretbytes(seed)
-    key.set_compressed(True)
-    return key
-
-
-def transfer_script(pubkey, multiplier):
-    """<pubkey> <multiplier> OP_MINT_TRANSFER -- a UAP covenant continuation."""
-    return CScript([pubkey, multiplier, OP_MINT_TRANSFER])
-
-
-def p2pkh_script(pubkey):
-    return CScript([OP_DUP, OP_HASH160, hash160(pubkey), OP_EQUALVERIFY, OP_CHECKSIG])
-
-
-def sign_uap_input(script_code, key, tx, n_in, hashtype):
-    """Sign input n_in against a UAP mint/transfer scriptPubKey.
-
-    Spending a UAP output only ever needs scriptSig = <sig>; the pubkey,
-    multiplier, (and salt, for OP_MINT) come from the scriptPubKey being
-    spent, not the scriptSig. See uap_mint_transfer_spend.py.
-    """
-    sighash, err = SignatureHash(script_code, tx, n_in, hashtype)
-    assert err is None
-    return CScript([key.sign(sighash) + bytes([hashtype])])
+def sign_uap_input(script_code, key, tx, n_in, hashtype=SIGHASH_ALL):
+    return sign_spend(script_code, key, tx, n_in, hashtype)
 
 
 def sign_p2pkh_input(script_code, key, tx, n_in, hashtype=SIGHASH_ALL):
@@ -187,7 +159,7 @@ class UAPSwapTest(BitcoinTestFramework):
     def build_fill(self, maker_scriptsig, maker_position_txid, payment_script, payment_value,
                     taker_input_txid, taker_input_value, taker_fund_key,
                     token_out_pubkey, token_out_multiplier, token_out_value,
-                    change_script, change_value,
+                    change_script, change_value, lineage,
                     reorder_outputs=False, drop_covenant=False):
         """Assemble and sign a fill of the maker's order. This is the
         Python equivalent of uap.js's fillOrder() plus the taker's own
@@ -207,7 +179,8 @@ class UAPSwapTest(BitcoinTestFramework):
         ]
 
         payment_out = CTxOut(payment_value, payment_script)
-        covenant_out = CTxOut(token_out_value, transfer_script(token_out_pubkey, token_out_multiplier))
+        covenant_out = CTxOut(token_out_value,
+                              transfer_script(token_out_pubkey, token_out_multiplier, lineage))
         change_out = CTxOut(change_value, change_script)
 
         if drop_covenant:
@@ -258,8 +231,30 @@ class UAPSwapTest(BitcoinTestFramework):
         taker_token_key = make_key(("swap_taker_tok_" + seed_suffix).encode().ljust(32, b"t"))
         taker_fund_key = make_key(("swap_taker_fund_" + seed_suffix).encode().ljust(32, b"f"))
 
-        maker_position_script = transfer_script(maker_key.get_pubkey(), MULTIPLIER)
-        maker_position_txid = self.create_output(node, maker_position_script, TOKEN_VALUE)
+        # The maker's position has to be a REAL one, minted and then spent
+        # into its lineage, rather than conjured directly by writing a
+        # transfer script into a wallet-funded output. A position that no
+        # mint ever produced is not the thing this test is about.
+        mint_scr = mint_script(maker_key.get_pubkey(), MULTIPLIER)
+        mint_txid = self.create_output(node, mint_scr, MINT_ENTRY_FEE)
+        lineage = origin_of(mint_txid, 0)
+
+        # Split the mint into the position being sold plus a remainder, both
+        # in the new lineage. Sending the whole 1000 coin into a 100 coin
+        # position would leave the rest as fee and trip absurdly-high-fee
+        # long before any UAP rule is reached.
+        maker_position_script = transfer_script(maker_key.get_pubkey(), MULTIPLIER, lineage)
+        remainder_key = make_key(("swap_remainder_" + seed_suffix).encode().ljust(32, b"z"))
+        first_spend = CTransaction()
+        first_spend.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
+        first_spend.vout = [
+            CTxOut(TOKEN_VALUE, maker_position_script),
+            CTxOut(MINT_ENTRY_FEE - TOKEN_VALUE - FEE,
+                   transfer_script(remainder_key.get_pubkey(), MULTIPLIER, lineage)),
+        ]
+        first_spend.vin[0].scriptSig = sign_uap_input(mint_scr, maker_key, first_spend, 0)
+        maker_position_txid = node.sendrawtransaction(ToHex(first_spend))
+        node.generate(1)
 
         maker_payment_addr = node.getnewaddress()
         payment_script = CScript(bytes.fromhex(node.validateaddress(maker_payment_addr)["scriptPubKey"]))
@@ -284,6 +279,7 @@ class UAPSwapTest(BitcoinTestFramework):
             "taker_fund_key": taker_fund_key,
             "taker_input_txid": taker_input_txid,
             "change_script": change_script,
+            "lineage": lineage,
         }
 
     def test_happy_path(self):
@@ -295,7 +291,7 @@ class UAPSwapTest(BitcoinTestFramework):
             ctx["payment_script"], PAYMENT_VALUE,
             ctx["taker_input_txid"], TAKER_INPUT_VALUE, ctx["taker_fund_key"],
             ctx["taker_token_key"].get_pubkey(), MULTIPLIER, TOKEN_VALUE,
-            ctx["change_script"], CHANGE_VALUE)
+            ctx["change_script"], CHANGE_VALUE, ctx["lineage"])
 
         txid = node.sendrawtransaction(ToHex(tx))
         node.generate(1)
@@ -314,8 +310,8 @@ class UAPSwapTest(BitcoinTestFramework):
 
         # The position provably moved: a fresh OP_MINT_TRANSFER covenant
         # output exists, addressed to the taker's pubkey, same multiplier.
-        expected_covenant_hex = transfer_script(
-            ctx["taker_token_key"].get_pubkey(), MULTIPLIER).hex()
+        expected_covenant_hex = bytes(transfer_script(
+            ctx["taker_token_key"].get_pubkey(), MULTIPLIER, ctx["lineage"])).hex()
         assert_equal(result["vout"][1]["scriptPubKey"]["hex"], expected_covenant_hex)
         assert_equal(result["vout"][1]["value"] * COIN, TOKEN_VALUE)
         print("  continuing covenant output present, addressed to the taker, x%d" % MULTIPLIER)
@@ -323,11 +319,13 @@ class UAPSwapTest(BitcoinTestFramework):
         # And it's actually spendable by the taker going forward -- not
         # just shaped right on the wire. Prove it by spending it once
         # more, ordinary single-hop transfer style.
-        next_key = make_key(b"swap_happy_next_hop_key_1234567")
-        covenant_script = transfer_script(ctx["taker_token_key"].get_pubkey(), MULTIPLIER)
+        next_key = make_key(b"swap_happy_next_hop_key_12345678")
+        covenant_script = transfer_script(
+            ctx["taker_token_key"].get_pubkey(), MULTIPLIER, ctx["lineage"])
         spend = CTransaction()
         spend.vin = [CTxIn(COutPoint(int(txid, 16), 1))]
-        spend.vout = [CTxOut(TOKEN_VALUE - FEE, transfer_script(next_key.get_pubkey(), MULTIPLIER))]
+        spend.vout = [CTxOut(TOKEN_VALUE - FEE,
+                             transfer_script(next_key.get_pubkey(), MULTIPLIER, ctx["lineage"]))]
         spend.vin[0].scriptSig = sign_uap_input(
             covenant_script, ctx["taker_token_key"], spend, 0, SIGHASH_ALL)
         spend_txid = node.sendrawtransaction(ToHex(spend))
@@ -344,7 +342,7 @@ class UAPSwapTest(BitcoinTestFramework):
             ctx["payment_script"], PAYMENT_VALUE,
             ctx["taker_input_txid"], TAKER_INPUT_VALUE, ctx["taker_fund_key"],
             ctx["taker_token_key"].get_pubkey(), MULTIPLIER, TOKEN_VALUE,
-            ctx["change_script"], CHANGE_VALUE,
+            ctx["change_script"], CHANGE_VALUE, ctx["lineage"],
             reorder_outputs=True)
 
         assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(tx))
@@ -362,7 +360,7 @@ class UAPSwapTest(BitcoinTestFramework):
             ctx["payment_script"], PAYMENT_VALUE,
             ctx["taker_input_txid"], TAKER_INPUT_VALUE, ctx["taker_fund_key"],
             ctx["taker_token_key"].get_pubkey(), MULTIPLIER, TOKEN_VALUE,
-            ctx["change_script"], CHANGE_VALUE,
+            ctx["change_script"], CHANGE_VALUE, ctx["lineage"],
             drop_covenant=True)
         assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(tx))
         print("  fill with no continuing covenant output: rejected (%s)" % MANDATORY)
@@ -374,7 +372,10 @@ class UAPSwapTest(BitcoinTestFramework):
             ctx["payment_script"], PAYMENT_VALUE,
             ctx["taker_input_txid"], TAKER_INPUT_VALUE, ctx["taker_fund_key"],
             ctx["taker_token_key"].get_pubkey(), MULTIPLIER + 1, TOKEN_VALUE,
-            ctx["change_script"], CHANGE_VALUE)
+            ctx["change_script"], CHANGE_VALUE, ctx["lineage"])
+        # Conservation groups positions by (multiplier, origin), so a
+        # covenant output at MULTIPLIER + 1 belongs to a group this
+        # transaction has no input in, and is refused for that reason.
         assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(tx))
         print("  continuing covenant output with wrong multiplier (x%d instead of x%d): rejected (%s)" %
               (MULTIPLIER + 1, MULTIPLIER, MANDATORY))

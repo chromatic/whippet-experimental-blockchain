@@ -300,7 +300,7 @@ static bool GetUapDataPush(const CScript& script, CScript::const_iterator& pc, s
     return CheckMinimalPush(vch, opcode);
 }
 
-bool ParseUapOutputScript(const CScript& script, std::vector<unsigned char>& pubkeyOut, CScriptNum& multiplierOut, bool& fIsMintOut)
+bool ParseUapOutputScript(const CScript& script, std::vector<unsigned char>& pubkeyOut, CScriptNum& multiplierOut, std::vector<unsigned char>& originOut, bool& fIsMintOut)
 {
     CScript::const_iterator pc = script.begin();
     opcodetype opcode;
@@ -346,21 +346,29 @@ bool ParseUapOutputScript(const CScript& script, std::vector<unsigned char>& pub
     if (!script.GetOp(pc, opcode, vch))
         return false;
 
-    if (opcode == OP_MINT_TRANSFER) {
+    if (opcode == OP_MINT) {
         if (pc != script.end())
             return false;
-        fIsMintOut = false;
+        // A mint carries no origin: its identity is its own outpoint, which
+        // it cannot contain without circularity.
+        originOut.clear();
+        fIsMintOut = true;
         return true;
     }
 
-    // Otherwise this must have been the <salt> push, followed by OP_MINT.
-    if (opcode > OP_PUSHDATA4 || vch.size() < 16 || !CheckMinimalPush(vch, opcode))
+    // Otherwise this must have been the <origin> push, followed by
+    // OP_MINT_TRANSFER. Exactly UAP_ORIGIN_SIZE bytes, because the origin
+    // is a SHA256 and every comparison consensus makes between lineages is
+    // a comparison of these bytes: a short or long one would either fail to
+    // match its own lineage or collide with a different one.
+    if (opcode > OP_PUSHDATA4 || vch.size() != UAP_ORIGIN_SIZE || !CheckMinimalPush(vch, opcode))
         return false;
     opcodetype opcode2;
     std::vector<unsigned char> vch2;
-    if (!script.GetOp(pc, opcode2, vch2) || opcode2 != OP_MINT || pc != script.end())
+    if (!script.GetOp(pc, opcode2, vch2) || opcode2 != OP_MINT_TRANSFER || pc != script.end())
         return false;
-    fIsMintOut = true;
+    originOut = vch;
+    fIsMintOut = false;
     return true;
 }
 

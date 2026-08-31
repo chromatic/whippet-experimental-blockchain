@@ -1014,10 +1014,10 @@ bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const C
                 if (!coins || txin.prevout.n >= coins->vout.size())
                     continue;
                 const CScript& prevScript = coins->vout[txin.prevout.n].scriptPubKey;
-                std::vector<unsigned char> pubkey;
+                std::vector<unsigned char> pubkey, origin;
                 CScriptNum multiplier(0);
                 bool fIsMint;
-                if (ParseUapOutputScript(prevScript, pubkey, multiplier, fIsMint)) {
+                if (ParseUapOutputScript(prevScript, pubkey, multiplier, origin, fIsMint)) {
                     return state.DoS(0, false, REJECT_NONSTANDARD, "premature-uap-spend", false,
                                      strprintf("OP_MINT/OP_MINT_TRANSFER activates at height %d",
                                                Params().GetConsensus(0).UAPMintHeight));
@@ -1457,7 +1457,7 @@ bool CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
 
-    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata, fHavePrevScriptPubKeys ? &vPrevScriptPubKeys : NULL), &error)) {
+    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata, fHavePrevScriptPubKeys ? &vPrevScriptPubKeys : NULL, fHavePrevScriptPubKeys ? &vPrevAmounts : NULL), &error)) {
         return false;
     }
     return true;

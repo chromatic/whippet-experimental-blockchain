@@ -3,25 +3,36 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-"""UAP OP_MINT rule-by-rule QA test.
+"""UAP covenant rule-by-rule QA test.
 
-Each of OP_MINT's numbered guards in src/script/interpreter.cpp gets one
-case here: entry fee, salt length, multiplier range, and the virtual-balance
-overflow guard. A matching positive case sits next to each rejection, so a
-test that rejects for the wrong reason cannot pass unnoticed.
+Each numbered guard in src/script/interpreter.cpp's OP_MINT/OP_MINT_TRANSFER
+case gets one case here: entry fee (2), origin width (3), multiplier range
+and the virtual-balance overflow guard (4). A matching positive case sits
+next to each rejection, so a test that rejects for the wrong reason cannot
+pass unnoticed.
 
-  IMPORTANT, and the reason this file was rewritten:
+  TRAP 1, and the reason this file was first rewritten:
 
   *Creating* an output whose scriptPubKey ends in OP_MINT executes nothing.
-  Script runs when an output is *spent*. The previous version of this test
-  only ever built and broadcast the mint-creating transaction, so every
-  "invalid" case was accepted -- it printed warnings that read like
-  consensus holes and asserted nothing at all. It also used the pre-1.2.0
-  script format, CScript([multiplier, salt, OP_MINT]), which carries no
-  recipient pubkey and is not a UAP output under the current rules.
+  Script runs when an output is *spent*. An early version only ever built
+  and broadcast the mint-creating transaction, so every "invalid" case was
+  accepted -- it printed warnings that read like consensus holes and
+  asserted nothing at all.
 
-  So every case below spends a mint position, which is what runs the
-  opcode, and asserts on the node's rejection reason rather than printing it.
+  So every case below spends a position, which is what runs the opcode, and
+  asserts on the node's rejection reason rather than printing it.
+
+  TRAP 2, and the reason for the v2 rewrite:
+
+  A test that asserts only "this was rejected" cannot tell "rejected by the
+  rule I am testing" from "rejected because this is no longer a covenant at
+  all". When the covenant format dropped the salt and gained a 32-byte
+  origin, the old salted scripts stopped parsing as UAP outputs entirely --
+  and every negative case here went on passing while testing nothing.
+
+  Hence the positive half of every pair, which is what actually pins the
+  rule; and hence test_framework/uap.py, so the format lives in one place
+  instead of a private copy in each of five test files.
 """
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -31,48 +42,12 @@ from test_framework.util import (
     assert_raises_jsonrpc,
 )
 from test_framework.mininode import CTransaction, CTxIn, CTxOut, COutPoint, FromHex, ToHex
-from test_framework.script import CScript, OP_MINT, OP_MINT_TRANSFER, SignatureHash, SIGHASH_ALL
-from test_framework.key import CECKey
-
-COIN = 100000000
-
-# src/script/interpreter.cpp, OP_MINT step 2.
-MINT_ENTRY_FEE = 1000 * COIN
-# step 3.
-MIN_SALT_LEN = 16
-# step 4.
-MAX_UAP_MULTIPLIER = 2147483647
-MAX_VIRTUAL_BALANCE = 1 << 48
-
-FEE = 1000000  # RECOMMENDED_MIN_TX_FEE, src/amount.h
-SALT = b"uap_regtest_salt_16byte"
-
-# A mandatory failure is a consensus rejection; a non-mandatory one is only
-# policy. Every case here must be mandatory -- if one ever reports
-# "non-mandatory", the rule has quietly become advisory.
-MANDATORY = "mandatory-script-verify-flag-failed"
-
-
-def make_key(seed):
-    key = CECKey()
-    key.set_secretbytes(seed)
-    key.set_compressed(True)
-    return key
-
-
-def mint_script(pubkey, multiplier, salt=SALT):
-    return CScript([pubkey, multiplier, salt, OP_MINT])
-
-
-def transfer_script(pubkey, multiplier):
-    return CScript([pubkey, multiplier, OP_MINT_TRANSFER])
-
-
-def sign_spend(script_code, key, tx, n_in):
-    sighash, err = SignatureHash(script_code, tx, n_in, SIGHASH_ALL)
-    assert err is None
-    sig = key.sign(sighash) + bytes([SIGHASH_ALL])
-    return CScript([sig])
+from test_framework.script import CScript, OP_MINT_TRANSFER
+from test_framework.uap import (
+    COIN, FEE, MINT_ENTRY_FEE, ORIGIN_SIZE, MAX_UAP_MULTIPLIER,
+    MAX_VIRTUAL_BALANCE, MANDATORY,
+    make_key, mint_script, transfer_script, origin_of, sign_spend,
+)
 
 
 class UAPTransactionTest(BitcoinTestFramework):
@@ -90,12 +65,12 @@ class UAPTransactionTest(BitcoinTestFramework):
                 return utxo
         raise AssertionError("no matured UTXO worth at least %d satoshi" % min_value)
 
-    def create_mint(self, node, script, value):
+    def create_output(self, node, script, value):
         """Put an output carrying `script` and holding `value` on chain.
 
         Nothing is executed here; this only creates the position. The wallet
         signs the *funding* input, which is an ordinary key and has nothing
-        to do with OP_MINT's own recipient-signature rule.
+        to do with the covenant's own recipient-signature rule.
         """
         utxo = self.fund(node, value + FEE)
         total = int(round(utxo["amount"] * COIN))
@@ -125,20 +100,24 @@ class UAPTransactionTest(BitcoinTestFramework):
     def spend_mint(self, mint_txid, mint_scr, key, value, out_pubkey, multiplier):
         """Build a spend of a mint position into a conforming covenant.
 
-        This is what executes OP_MINT.
+        This is what executes OP_MINT. The lineage the covenant output must
+        carry is derived from the outpoint being spent -- a mint cannot name
+        its own lineage, since the origin depends on the txid, which depends
+        on the script.
         """
+        lineage = origin_of(mint_txid, 0)
         tx = CTransaction()
         tx.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
-        tx.vout = [CTxOut(value - FEE, transfer_script(out_pubkey, multiplier))]
+        tx.vout = [CTxOut(value - FEE, transfer_script(out_pubkey, multiplier, lineage))]
         tx.vin[0].scriptSig = sign_spend(mint_scr, key, tx, 0)
         return ToHex(tx)
 
     def mint_and_spend(self, node, minter, minter_pub, recipient_pub,
-                       multiplier, value=MINT_ENTRY_FEE, salt=SALT):
+                       multiplier, value=MINT_ENTRY_FEE):
         """Create a position with the given parameters and return the raw
         spend of it, ready to broadcast."""
-        scr = mint_script(minter_pub, multiplier, salt=salt)
-        txid = self.create_mint(node, scr, value)
+        scr = mint_script(minter_pub, multiplier)
+        txid = self.create_output(node, scr, value)
         return self.spend_mint(txid, scr, minter, value, recipient_pub, multiplier)
 
     def run_test(self):
@@ -150,7 +129,7 @@ class UAPTransactionTest(BitcoinTestFramework):
         minter_pub = minter.get_pubkey()
         recipient_pub = recipient.get_pubkey()
 
-        print("\n=== OP_MINT rule-by-rule ===\n")
+        print("\n=== UAP covenant rules, one at a time ===\n")
 
         # ---- baseline ---------------------------------------------------
         # Every case below differs from this by exactly one field, so a
@@ -178,18 +157,49 @@ class UAPTransactionTest(BitcoinTestFramework):
         node.generate(1)
         print("  exactly at the floor is accepted")
 
-        # ---- rule 3: salt length ----------------------------------------
-        print("rule 3: salt of at least %d bytes" % MIN_SALT_LEN)
-        raw = self.mint_and_spend(node, minter, minter_pub, recipient_pub, 1002,
-                                  salt=b"x" * (MIN_SALT_LEN - 1))
-        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, raw)
-        print("  a %d-byte salt is rejected" % (MIN_SALT_LEN - 1))
+        # ---- rule 3: origin width ---------------------------------------
+        # This is the slot the salt-length rule used to occupy, and the two
+        # are opposites: v1 required a salt of AT LEAST 16 bytes on a mint,
+        # v2 requires an origin of EXACTLY 32 bytes on a transfer, and a
+        # mint carries no third field at all.
+        #
+        # A wrong-width origin is checked twice over, deliberately.
+        # ParseUapOutputScript refuses to classify it as a covenant, so such
+        # an output has no conforming continuation and is unspendable for
+        # that reason alone; rule 3 states the same thing at execution time,
+        # which turns "stuck forever, for reasons two functions away" into
+        # an immediate, locatable rejection. The C++ side calls this out at
+        # interpreter.cpp rule 3.
+        print("rule 3: origin of exactly %d bytes" % ORIGIN_SIZE)
+        for width in (ORIGIN_SIZE - 1, ORIGIN_SIZE + 1):
+            scr = transfer_script(recipient_pub, 1000, b"o" * width)
+            txid = self.create_output(node, scr, 10 * COIN)
+            tx = CTransaction()
+            tx.vin = [CTxIn(COutPoint(int(txid, 16), 0))]
+            tx.vout = [CTxOut(10 * COIN - FEE,
+                              transfer_script(recipient_pub, 1000, b"o" * width))]
+            tx.vin[0].scriptSig = sign_spend(scr, recipient, tx, 0)
+            assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(tx))
+            print("  a %d-byte origin is unspendable" % width)
 
-        raw = self.mint_and_spend(node, minter, minter_pub, recipient_pub, 1003,
-                                  salt=b"y" * MIN_SALT_LEN)
-        node.sendrawtransaction(raw)
+        # The positive half: the same script at exactly 32 bytes spends.
+        # Without it, the two cases above would pass just as well against a
+        # node that refused every transfer covenant.
+        mint_txid = self.create_output(node, mint_script(minter_pub, 1002), MINT_ENTRY_FEE)
+        lineage = origin_of(mint_txid, 0)
+        position = self.spend_mint(mint_txid, mint_script(minter_pub, 1002),
+                                   minter, MINT_ENTRY_FEE, recipient_pub, 1002)
+        position_txid = node.sendrawtransaction(position)
         node.generate(1)
-        print("  exactly %d bytes is accepted" % MIN_SALT_LEN)
+        onward = CTransaction()
+        onward.vin = [CTxIn(COutPoint(int(position_txid, 16), 0))]
+        onward.vout = [CTxOut(MINT_ENTRY_FEE - 2 * FEE,
+                              transfer_script(recipient_pub, 1002, lineage))]
+        onward.vin[0].scriptSig = sign_spend(
+            transfer_script(recipient_pub, 1002, lineage), recipient, onward, 0)
+        node.sendrawtransaction(ToHex(onward))
+        node.generate(1)
+        print("  exactly %d bytes is accepted, and carries the lineage forward" % ORIGIN_SIZE)
 
         # ---- rule 4a: multiplier range ----------------------------------
         print("rule 4: multiplier within [0, %d]" % MAX_UAP_MULTIPLIER)
@@ -201,7 +211,7 @@ class UAPTransactionTest(BitcoinTestFramework):
         # ---- rule 4b: virtual-balance overflow guard --------------------
         # (input value in whole coins) * multiplier must not exceed 2^48.
         # At the entry fee that is 1000 whole coins, so the largest legal
-        # multiplier here is 2^48 / 1000.
+        # multiplier there is 2^48 / 1000.
         print("rule 4: (whole coins * multiplier) <= 2^48")
         # The guard is only reachable when 2^48 / base_coin is itself below
         # INT32_MAX -- otherwise the range check above fires first and this
@@ -226,7 +236,7 @@ class UAPTransactionTest(BitcoinTestFramework):
         node.generate(1)
         print("  a multiplier exactly at the guard is accepted")
 
-        print("\nAll OP_MINT rule checks passed\n")
+        print("\nAll UAP covenant rule checks passed\n")
 
 
 if __name__ == '__main__':
