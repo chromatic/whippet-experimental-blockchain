@@ -1,477 +1,318 @@
 # UAP Minting and Token Spending Guide
 
-This guide explains how to create OP_MINT transactions to mint tokens and spend those tokens using UAP (Universal Asset Protocol) smart contracts.
+How to mint a UAP token on Whippet, move it, and redeem it.
+
+The normative reference for the covenant format is
+`ParseUapOutputScript` in `src/script/script.cpp`; for the spend rules it is
+the `OP_MINT`/`OP_MINT_TRANSFER` case in `src/script/interpreter.cpp`. Where
+this guide and that code disagree, the code is right — and please fix the
+guide.
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Creating OP_MINT Transactions](#creating-opmint-transactions)
-3. [Token Transfer via Covenants](#token-transfer-via-covenants)
-4. [Spending Minted Tokens](#spending-minted-tokens)
-5. [Complete Example: End-to-End Workflow](#complete-example-end-to-end-workflow)
-6. [Advanced Features](#advanced-features)
+2. [Lineage: what identifies a token](#lineage-what-identifies-a-token)
+3. [Creating a mint](#creating-a-mint)
+4. [The first spend](#the-first-spend)
+5. [Transfers](#transfers)
+6. [Redeeming backing (melt)](#redeeming-backing-melt)
+7. [Complete example](#complete-example)
+8. [Introspection opcodes](#introspection-opcodes)
+9. [Testing](#testing)
 
 ## Overview
 
-> **Design note:** an earlier version of OP_MINT required no signature to
-> spend, which meant the real WHIP value locked in a mint output was
-> spendable by anyone, not just the intended recipient, and the declared
-> multiplier was discarded rather than enforced. The design below fixes both:
-> spending now requires the recipient's signature, and every output of a
-> spending transaction must carry the same, enforced multiplier.
+A UAP position is an ordinary transaction output whose `scriptPubKey` is a
+covenant. Like any Bitcoin-style script it is evaluated when the output is
+*spent*, not when it is created, so almost every rule below is enforced at
+spend time against the position's own declared fields.
 
-### What is OP_MINT?
-
-OP_MINT is an opcode used as an output's scriptPubKey to mint new tokens on
-the Whippet blockchain. Like any Bitcoin-style script, it is evaluated when
-that output is later *spent*, not when it is created — so all of its rules
-are enforced at spend time, against the position's own declared fields:
-
-1. **Signature**: only the recipient pubkey embedded in the script may authorize a spend
-2. **Entry Fee**: the position must hold ≥ 1000 COIN satoshis to mint
-3. **Salt Validation**: the salt (unique identifier) must be at least 16 bytes
-4. **Overflow Guard**: `(input value in whole coins) × multiplier` must not exceed 2^48
-5. **One-Shot**: a mint transaction may not also spend another UAP position as a sibling input
-6. **Strict Script**: every output of the spending transaction must itself be a conforming `OP_MINT_TRANSFER` covenant carrying the same multiplier, with total output value not exceeding the input's value (the difference becomes miner fee)
-
-### Token Multiplier
-
-Tokens use a **multiplier** to represent fractional amounts:
-- `Multiplier` = 10 means 1 WHIP represents 10 tokens
-- `Multiplier` = 1000 means 1 WHIP represents 1,000 tokens
-- Token value = output_value (satoshis) × multiplier / 1
-
-**Example**: If you mint 1 WHIP (100,000 satoshis) with multiplier 1000, you create 100,000,000 tokens.
-
-The multiplier is declared in the output's own script and is read back by
-`OP_INSPECT` (selector 11, "virtual balance") — it is not a hardcoded
-constant, and every output in a transfer chain must carry the same value as
-the position it spends.
-
-### Entry Fee Requirement
-
-To prevent spam, a fresh OP_MINT requires the position being minted to hold
-value ≥ 1000 COIN satoshis. This is checked when that position is later
-spent (against its own value), which is equivalent to checking it at mint
-time since neither the script nor the value can change in between. Transfers
-(`OP_MINT_TRANSFER`) are not subject to this floor — only the initial mint.
-
-## Creating OP_MINT Transactions
-
-### Step 1: Build the OP_MINT Script
-
-The OP_MINT script consists of four elements:
+There are two shapes, and only two:
 
 ```
-<recipient_pubkey> <multiplier> <salt> OP_MINT
+mint      <recipient_pubkey> <multiplier> OP_MINT
+transfer  <recipient_pubkey> <multiplier> <origin32> OP_MINT_TRANSFER
 ```
 
-**Parameters:**
-- `recipient_pubkey`: the only key that may authorize spending this position
-- `multiplier`: Integer defining token granularity (e.g., 100, 1000)
-- `salt`: Unique byte string ≥ 16 bytes to identify this token
+### Rules enforced when a position is spent
+
+Numbered as in `src/script/interpreter.cpp`:
+
+0. **Activation.** Before `UAPMintHeight` both opcodes are disabled entirely,
+   identical to an undefined opcode.
+1. **Signature.** Only the `recipient_pubkey` embedded in the script may
+   authorize the spend. Strict DER, low-S and a defined hashtype are required
+   unconditionally, not gated on policy flags.
+2. **Entry fee** *(mints only)*. A fresh mint must hold at least
+   `1000 * COIN` = **100,000,000,000 satoshis (1,000 WHIP)**.
+3. **Origin width** *(transfers only)*. The origin must be exactly 32 bytes.
+4. **Multiplier range and overflow.** `0 <= multiplier <= 2147483647`, and
+   `(input value in whole coins) * multiplier <= 2^48`.
+5. **One-shot** *(mints only)*. A transaction spending a mint may not also
+   spend another UAP position as a sibling input.
+6. **Conservation.** See [Transfers](#transfers).
+
+### The rule enforced when a position is *created*
+
+One rule does not wait for the spend, because it cannot:
+`CheckUapOutputCreation` in `src/validation.cpp` requires that **a transaction
+creating a transfer output of lineage `(multiplier, origin)` also spends an
+input of that lineage.**
+
+It has to live outside the script interpreter. Creating an output executes no
+script, so a transaction funded entirely by ordinary inputs runs no covenant
+code at all — and without this rule it could mint a position into any lineage
+it named, counterfeiting supply for the price of one transaction. Mint outputs
+are exempt: creating one is how a lineage begins, and a mint is inert until
+spent.
+
+### Multiplier and token quantity
+
+The multiplier declares how many token units each satoshi of backing
+represents. A position's quantity is:
+
+```
+units = value_in_satoshis * multiplier
+```
+
+**Example.** 1,000 WHIP is 100,000,000,000 satoshis. At multiplier 1,000 that
+position carries 100,000,000,000,000 units.
+
+The satoshis locked in a position are not a fee — they *are* the token, at a
+fixed ratio. Value can leave a position, but token quantity leaves in exact
+proportion, which is what makes a position's backing verifiable by anyone
+holding the outpoint.
+
+> Note on the overflow guard: rule 4 computes whole coins as
+> `nValueIn / COIN`, integer division, so a position of 1.99999999 WHIP counts
+> as 1 and a position under 1 WHIP counts as 0 (which short-circuits the guard
+> entirely). The bound is therefore looser than `2^48` suggests. Nothing is
+> exploitable — the multiplication is separately overflow-checked — but do not
+> write a contract that relies on `2^48` being exact.
+
+## Lineage: what identifies a token
+
+A token is a **lineage**, identified by 32 bytes:
+
+```
+origin = SHA256(mint_outpoint.txid_internal_bytes || mint_outpoint.n as 4-byte LE)
+```
+
+`txid_internal_bytes` is the txid in internal byte order — reversed relative
+to the display form you get from RPC. Getting that backwards produces a
+plausible-looking 32 bytes that no node will agree with.
+
+Three consequences worth internalising:
+
+- **A mint carries no origin.** It cannot: the origin depends on the outpoint,
+  the outpoint depends on the txid, and the txid depends on the script. The
+  lineage is assigned at the mint's *first spend*, which is the first moment
+  the interpreter can see the outpoint.
+- **A transfer carries its lineage forward, unchanged.** Re-deriving the
+  origin from a transfer's own outpoint looks reasonable — it is exactly what
+  a mint does — and is rejected, because it renames the position into a
+  lineage the transaction has no input in.
+- **Conservation groups by `(multiplier, origin)`**, so two positions of one
+  token can be merged, while two tokens that merely share a multiplier cannot.
+
+This replaced a mint-time `<salt>`, which was documented as the token's unique
+identifier but never was one: consensus only checked its length, so uniqueness
+was an honour-system property any minter could collide deliberately, and the
+salt was discarded at the first spend regardless. An outpoint is unique by
+construction.
+
+## Creating a mint
+
+Creating the output runs no script. You need an ordinary wallet spend whose
+new output carries the mint script and at least 1,000 WHIP.
 
 **Encoding:** every element must use its *canonical* (shortest) push — `OP_0`
 for a zero multiplier, `OP_1`..`OP_16` for 1..16, and a minimal data push for
 anything longer. Any script builder gives you this for free (Python's
 `CScript([...])`, C++'s `CScript::operator<<`, `uap.js`'s `buildMintScript`);
-it only matters if you assemble the bytes by hand. The rule exists because a
-covenant's script is *executed* when the position is spent, and
-`SCRIPT_VERIFY_MINIMALDATA` demands that same canonical encoding at that
-point. Consensus therefore accepts only encodings that are also relayable:
-there is exactly one way to write a given position, and no way to create one
-that cannot later be moved.
-
-**Example using Whippet RPC:**
-
-```bash
-# Create a script with a recipient pubkey, multiplier=1000, and a unique salt
-# recipient_pubkey: 33-byte compressed pubkey
-# multiplier: 1000 (varint)
-# salt: "my_token_salt_16" (16 bytes)
-# opcode: OP_MINT
-
-scriptPubKey = [recipient_pubkey, 1000, "my_token_salt_16", OP_MINT]
-```
-
-### Step 2: Create and Fund the Transaction
-
-1. **Get a UTXO** with sufficient value (≥ 1000 COIN satoshis):
-   ```bash
-   utxo=$(whippet-cli listunspent | jq '.[0]')
-   txid=$(echo $utxo | jq -r '.txid')
-   vout=$(echo $utxo | jq -r '.vout')
-   amount=$(echo $utxo | jq -r '.amount')
-   ```
-
-2. **Create a transaction** spending this UTXO:
-   ```bash
-   # Create transaction with inputs and outputs
-   inputs='[{"txid":"'$txid'", "vout":'$vout'}]'
-   outputs='{"'$(whippet-cli getnewaddress)'": '$(echo "$amount - 0.01" | bc)'}'
-   rawtx=$(whippet-cli createrawtransaction "$inputs" "$outputs")
-   ```
-
-3. **Modify the scriptPubKey** to use OP_MINT (use raw transaction manipulation):
-   - Replace the default scriptPubKey of the first output with your OP_MINT script
-   - Set the output value to your desired token amount in WHIP
-
-4. **Sign the transaction**:
-   ```bash
-   signed=$(whippet-cli signrawtransaction "$rawtx" | jq -r '.hex')
-   ```
-
-5. **Broadcast to the network**:
-   ```bash
-   txid=$(whippet-cli sendrawtransaction "$signed")
-   whippet-cli generate 1
-   echo "Minted tokens in transaction: $txid"
-   ```
-
-### Example OP_MINT Transaction
-
-Here's a concrete example using Python (similar to the test framework):
+it only matters if you assemble bytes by hand. The rule exists because the
+script is *executed* when the position is spent, and `SCRIPT_VERIFY_MINIMALDATA`
+demands that same canonical encoding then. Consensus therefore accepts only
+encodings that are also relayable: there is exactly one way to write a given
+position, and no way to create one that cannot later be moved.
 
 ```python
-from test_framework.messages import CTransaction, CTxIn, CTxOut, COutPoint, FromHex, ToHex
-from test_framework.script import CScript, OP_MINT
+from test_framework.uap import mint_script, make_key, COIN, MINT_ENTRY_FEE
 
-# 1. Get a UTXO
-utxo = node.listunspent()[0]
-txid = utxo["txid"]
-vout = utxo["vout"]
-amount = utxo["amount"]
-
-# 2. Define token parameters
-recipient_key = CECKey()
-recipient_key.set_secretbytes(b"recipient_key_unique_bytes_123")
-recipient_pubkey = recipient_key.get_pubkey()
-multiplier = 1000  # 1 WHIP = 1,000 tokens
-salt = b"my_unique_token_salt_1234"  # Must be ≥ 16 bytes
-
-# 3. Build OP_MINT script
-mint_script = CScript([recipient_pubkey, multiplier, salt, OP_MINT])
-
-# 4. Create the transaction
-inputs = [{"txid": txid, "vout": vout}]
-outputs = {node.getnewaddress(): float(amount) - 0.01}
-rawtx = node.createrawtransaction(inputs, outputs)
-
-# 5. Modify scriptPubKey to OP_MINT
-tx = FromHex(CTransaction(), rawtx)
-tx.vout[0].scriptPubKey = mint_script
-rawtx = ToHex(tx)
-
-# 6. Sign and broadcast
-signed = node.signrawtransaction(rawtx)["hex"]
-txid = node.sendrawtransaction(signed)
-node.generate(1)  # Include in a block
-
-print(f"Token minted in transaction: {txid}")
-print(f"Token supply: {amount} WHIP × {multiplier} = {amount * multiplier} tokens")
+minter = make_key(b"m" * 32)
+script = mint_script(minter.get_pubkey(), 1000)   # <pubkey> <1000> OP_MINT
 ```
 
-## Token Transfer via Covenants
+Fund it like any other output — see `create_output()` in
+`qa/rpc-tests/uap_transactions.py`, which does exactly this: build a raw
+transaction, overwrite `vout[0].scriptPubKey`, keep a change output so the
+remainder does not become an absurd fee, sign, broadcast.
 
-Tokens created with OP_MINT are constrained by a dedicated **OP_MINT_TRANSFER**
-covenant opcode (not a generic hand-assembled script) that enforces how they
-can be transferred. This is checked by consensus directly, not by convention.
+## The first spend
 
-### UAP Transfer Template
-
-```
-<recipient_pubkey> <multiplier> OP_MINT_TRANSFER
-```
-
-**What it does, when this output is later spent:**
-1. Requires a valid signature from `recipient_pubkey`
-2. Requires every output of the spending transaction to itself be an
-   `OP_MINT_TRANSFER` covenant carrying the *same* multiplier
-3. Requires `sum(output values) <= input value` (tokens are conserved; the
-   difference becomes miner fee, never new tokens)
-
-### Building a Transfer Script
+This is where the lineage is born. The covenant output must carry
+`origin_of(mint_txid, mint_vout)` — the outpoint being spent — and nothing
+else is accepted.
 
 ```python
-def build_uap_transfer_script(recipient_pubkey, multiplier):
-    """Build a UAP_TRANSFER covenant output script."""
-    return CScript([recipient_pubkey, multiplier, OP_MINT_TRANSFER])
+from test_framework.uap import transfer_script, origin_of, sign_spend, FEE
+from test_framework.mininode import CTransaction, CTxIn, CTxOut, COutPoint, ToHex
+
+lineage = origin_of(mint_txid, 0)
+
+tx = CTransaction()
+tx.vin  = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
+tx.vout = [CTxOut(mint_value - FEE,
+                  transfer_script(recipient.get_pubkey(), 1000, lineage))]
+tx.vin[0].scriptSig = sign_spend(script, minter, tx, 0)
+node.sendrawtransaction(ToHex(tx))
 ```
 
-### Spending Minted Tokens
+The scriptSig is just `<sig>`. The pubkey, multiplier and origin all come from
+the `scriptPubKey` being spent, never from the scriptSig — and the signature
+is made over that exact script as the scriptCode, so use the bytes the chain
+has rather than reassembling them.
 
-To spend tokens from an OP_MINT or OP_MINT_TRANSFER output, you must:
+## Transfers
 
-1. **Create a new transaction** that spends the position
-2. **Set every output to an `OP_MINT_TRANSFER` covenant** carrying the same multiplier
-3. **Ensure token conservation**: `sum(output values) <= input value`
-4. **Sign scriptSig with the recipient key** named in the position being spent — the signature is verified against `SignatureHash(scriptCode, tx, nIn, SIGHASH_ALL, ...)`, the same construction used for a normal P2PK spend
+Spending a transfer works the same way, except the lineage is read from the
+input's script instead of derived.
 
-### Example: Spending Minted Tokens
+Conservation (rule 6) requires, for the lineage being spent:
+
+1. **at least one** output that is a covenant of the same `(multiplier,
+   origin)`;
+2. the total value of that lineage's outputs must not exceed the total of its
+   inputs — summed across *every* input of that lineage in the transaction,
+   which is what allows two positions of one token to be merged;
+3. no output may be mint-shaped;
+4. any covenant output of a *different* lineage is permitted only if that
+   lineage also has an input in the same transaction.
+
+**Outputs that are not covenants at all are unrestricted.** This is the point
+that makes trading possible: a plain P2PKH payment leg can ride alongside the
+covenant leg in one atomic transaction, which is exactly how a maker/taker
+swap settles. (An earlier version of this guide said every output had to be a
+covenant. That was true once and has not been since non-covenant siblings were
+allowed.)
+
+Value may leave a position — the difference becomes miner fee, or a payment,
+or change — and token quantity leaves with it in proportion. Nothing creates
+tokens.
+
+## Redeeming backing (melt)
+
+Because a position needs only *one* surviving same-lineage covenant output,
+you can recover most of its backing as ordinary spendable WHIP: send a
+dust-valued covenant onward and take the remainder to a plain output.
+`uap-js`'s `buildMeltTx` does this.
+
+A position can never be melted to zero — a covenant output always survives —
+so "fully redeemable" means "redeemable minus dust and fee".
+
+## Complete example
+
+The end-to-end flow, in runnable form, is
+`qa/rpc-tests/uap_mint_transfer.py`: mint, reject the wrong signer, reject a
+non-covenant destination, reject value creation, reject a foreign origin on
+the first spend, transfer, reject an origin rewrite on the onward hop, and
+assert the lineage survived both hops unchanged.
+
+Rather than duplicating it here — where it would rot, as the previous version
+of this section did — read that file. Its helpers live in
+`qa/rpc-tests/test_framework/uap.py`, which is the single Python definition of
+the format:
 
 ```python
-# 1. Get the minted output from a previous OP_MINT transaction
-mint_txid = "..."  # From earlier OP_MINT transaction
-mint_tx = node.getrawtransaction(mint_txid, True)
-minted_output = mint_tx["vout"][0]
-mint_value = minted_output["value"]  # In WHIP
-mint_script = CScript(bytes.fromhex(minted_output["scriptPubKey"]["hex"]))
-
-# 2. minter_key must be the same key named in the OP_MINT script being
-#    spent (mint_script) -- it's what authorizes this spend, not the
-#    recipient's key. recipient_key names the new covenant's owner.
-minter_key = CECKey()
-minter_key.set_secretbytes(b"minter_private_key_16bytes_1234")
-
-recipient_key = CECKey()
-recipient_key.set_secretbytes(b"recipient_key_unique_bytes_123")
-recipient_pubkey = recipient_key.get_pubkey()
-
-covenant_script = build_uap_transfer_script(recipient_pubkey, multiplier)
-
-# 3. Create spend transaction
-spend_input = CTxIn(COutPoint(int(mint_txid, 16), 0))
-spend_tx = CTransaction()
-spend_tx.vin = [spend_input]
-
-# Calculate output amounts (conserving tokens)
-output_amount = mint_value - 0.005  # Leave 5 millitoshi for fees
-spend_tx.vout = [
-    CTxOut(int(output_amount * COIN), covenant_script)
-]
-
-# 4. Sign with the key named in the position being spent (mint_script here)
-sighash = SignatureHash(mint_script, spend_tx, 0, SIGHASH_ALL, 0, SIGVERSION_BASE)
-sig = minter_key.sign(sighash) + bytes([SIGHASH_ALL])
-spend_tx.vin[0].scriptSig = CScript([sig])
-spend_raw = ToHex(spend_tx)
-
-# 5. Broadcast
-spend_txid = node.sendrawtransaction(spend_raw)
-node.generate(1)
-
-print(f"Tokens spent and transferred in: {spend_txid}")
-print(f"Token conservation: {mint_value} WHIP input → {output_amount} WHIP output")
+mint_script(pubkey, multiplier)
+transfer_script(pubkey, multiplier, origin)
+origin_of(txid_hex, n)
+sign_spend(script_code, key, tx, n_in, hashtype=SIGHASH_ALL)
 ```
 
-## Complete Example: End-to-End Workflow
+Two notes for anyone adapting older code: the transaction primitives are in
+`test_framework.mininode` (not `test_framework.messages`), and this tree's
+`SignatureHash(script, txTo, inIdx, hashtype)` returns a `(hash, err)` tuple,
+so the error must be checked rather than the result used directly.
 
-This example demonstrates the complete flow:
-1. Mint tokens to the minter's own key
-2. Transfer to a recipient
-3. Recipient transfers onward again
+## Introspection opcodes
 
-Every hop requires a signature from the key named in the position being
-spent, and every output must be a conforming `OP_MINT_TRANSFER` covenant
-carrying the same multiplier (see "Token Transfer via Covenants" above).
-
-```python
-import sys
-from decimal import Decimal
-from test_framework.test_framework import BitcoinTestFramework
-from test_framework.messages import CTransaction, CTxIn, CTxOut, COutPoint, FromHex, ToHex
-from test_framework.script import CScript, OP_MINT, OP_MINT_TRANSFER, SignatureHash, SIGHASH_ALL, SIGVERSION_BASE
-from test_framework.key import CECKey
-from test_framework.util import *
-
-COIN = 100000000
-
-def build_mint_script(recipient_pubkey, multiplier, salt):
-    return CScript([recipient_pubkey, multiplier, salt, OP_MINT])
-
-def build_uap_transfer_script(recipient_pubkey, multiplier):
-    return CScript([recipient_pubkey, multiplier, OP_MINT_TRANSFER])
-
-def sign_spend(script_code, key, tx, n_in):
-    sighash = SignatureHash(script_code, tx, n_in, SIGHASH_ALL, 0, SIGVERSION_BASE)
-    sig = key.sign(sighash) + bytes([SIGHASH_ALL])
-    return CScript([sig])
-
-class TokenEndToEndTest(BitcoinTestFramework):
-    def setup_network(self):
-        self.setup_nodes()
-
-    def run_test(self):
-        node = self.nodes[0]
-        multiplier = 1000
-
-        print("\n=== Step 1: Mint tokens ===")
-
-        minter_key = CECKey()
-        minter_key.set_secretbytes(b"minter_private_key_16bytes_1234")
-        minter_pubkey = minter_key.get_pubkey()
-        salt = b"e2e_test_salt_16_bytes_plus"
-
-        # Get UTXO (must hold >= 1000 coin, the OP_MINT entry fee)
-        utxo = node.listunspent()[0]
-        mint_script = build_mint_script(minter_pubkey, multiplier, salt)
-
-        inputs = [{"txid": utxo["txid"], "vout": utxo["vout"]}]
-        amount = float(utxo["amount"])
-        outputs = {node.getnewaddress(): amount - 0.01}
-        rawtx = node.createrawtransaction(inputs, outputs)
-
-        tx = FromHex(CTransaction(), rawtx)
-        tx.vout[0].scriptPubKey = mint_script
-        rawtx = ToHex(tx)
-
-        # This entry's scriptSig is unrelated to OP_MINT (it authorizes
-        # spending the funding UTXO, e.g. a normal P2PKH input); sign it
-        # with the wallet as usual.
-        signed = node.signrawtransaction(rawtx)["hex"]
-        mint_txid = node.sendrawtransaction(signed)
-        node.generate(1)
-
-        mint_tx = node.getrawtransaction(mint_txid, True)
-        mint_value = Decimal(str(mint_tx["vout"][0]["value"]))
-        total_tokens = mint_value * multiplier
-
-        print(f"✓ Minted: {mint_value} WHIP = {total_tokens} tokens")
-        print(f"✓ Mint TxID: {mint_txid}")
-
-        print("\n=== Step 2: Transfer tokens to recipient ===")
-
-        recipient_key = CECKey()
-        recipient_key.set_secretbytes(b"recipient_private_key_16bytes_1")
-        recipient_pubkey = recipient_key.get_pubkey()
-
-        covenant_script = build_uap_transfer_script(recipient_pubkey, multiplier)
-
-        spend_input = CTxIn(COutPoint(int(mint_txid, 16), 0))
-        spend_tx = CTransaction()
-        spend_tx.vin = [spend_input]
-
-        transfer_amount = mint_value - Decimal('0.005')
-        spend_tx.vout = [
-            CTxOut(int(transfer_amount * COIN), covenant_script)
-        ]
-
-        # Signed by the minter (the key named in mint_script), not the recipient.
-        spend_tx.vin[0].scriptSig = sign_spend(mint_script, minter_key, spend_tx, 0)
-        spend_raw = ToHex(spend_tx)
-
-        transfer_txid = node.sendrawtransaction(spend_raw)
-        node.generate(1)
-
-        transfer_value = Decimal(str(transfer_amount))
-        transfer_tokens = transfer_value * multiplier
-
-        print(f"✓ Transferred: {transfer_value} WHIP = {transfer_tokens} tokens")
-        print(f"✓ Transfer TxID: {transfer_txid}")
-
-        print("\n=== Step 3: Recipient transfers onward ===")
-
-        next_key = CECKey()
-        next_key.set_secretbytes(b"next_holder_private_key_16bytes1")
-        next_pubkey = next_key.get_pubkey()
-
-        recipient_spend_input = CTxIn(COutPoint(int(transfer_txid, 16), 0))
-        recipient_spend_tx = CTransaction()
-        recipient_spend_tx.vin = [recipient_spend_input]
-
-        spend_amount = transfer_value - Decimal('0.001')
-        recipient_spend_tx.vout = [
-            CTxOut(int(spend_amount * COIN), build_uap_transfer_script(next_pubkey, multiplier))
-        ]
-
-        # Signed by the recipient (the key named in covenant_script).
-        recipient_spend_tx.vin[0].scriptSig = sign_spend(covenant_script, recipient_key, recipient_spend_tx, 0)
-        recipient_spend_raw = ToHex(recipient_spend_tx)
-
-        final_txid = node.sendrawtransaction(recipient_spend_raw)
-        node.generate(1)
-
-        final_value = Decimal(str(spend_amount))
-        final_tokens = final_value * multiplier
-
-        print(f"✓ Recipient forwarded: {final_value} WHIP = {final_tokens} tokens")
-        print(f"✓ Spend TxID: {final_txid}")
-
-        print("\n=== Token Chain Verification ===")
-        print(f"Minted:    {mint_value} WHIP = {total_tokens} tokens")
-        print(f"Final:     {final_value} WHIP = {final_tokens} tokens")
-        print(f"Total fee: {mint_value - final_value} WHIP")
-        print(f"✓ End-to-end token workflow completed successfully!")
-
-if __name__ == "__main__":
-    test = TokenEndToEndTest()
-    test.main()
-```
-
-## Advanced Features
-
-### OP_INSPECT: Output Introspection
-
-`OP_INSPECT` allows you to read properties of transaction outputs within a script:
+### `OP_INSPECT` — transaction introspection
 
 ```
-index OP_INSPECT → nValue (on stack)
+[index] selector OP_INSPECT -> value
 ```
 
-**Usage example:**
+The selector is on top of the stack and is popped first; selectors 10-12 then
+pop an output index from beneath it. So the script order is
+`<index> <selector> OP_INSPECT`. Any selector not listed below is an error.
+
+| Selector | Index? | Pushes |
+|---|---|---|
+| 0 | no | transaction version |
+| 1 | no | index of the input being verified |
+| 2 | no | input count |
+| 3 | no | output count |
+| 10 | yes | `vout[index].nValue` |
+| 11 | yes | virtual balance of `vout[index]` (see below) |
+| 12 | yes | `vout[index].scriptPubKey` |
+
+Example — require that output 0 of the *spending* transaction pays exactly
+1,000 satoshis:
+
 ```
-# Verify output 0 has value 1000 satoshis
-0 OP_INSPECT 1000 OP_EQUAL
+0 10 OP_INSPECT 1000 OP_EQUAL
 ```
 
-### OP_INSPECT_SELF: Script Introspection
+Note the ordering, and note that this constrains the transaction that
+*spends* the output carrying the script, not the one that creates it. An
+earlier version of this guide documented `0 OP_INSPECT` as reading `nValue`;
+selector 0 is the transaction version, and a script written that way compares
+the version against your expected value instead.
 
-`OP_INSPECT_SELF` pushes the current script onto the stack, enabling self-referential covenant scripts:
+**Selector 11, virtual balance**, is `nValue * multiplier` for a covenant
+output, and 0 for an output that is not a covenant at all. **It does not
+consult the output's origin**, so two positions of different lineages that
+share a multiplier report identical, interchangeable balances. That ambiguity
+is currently unreachable — `ParseUapOutputScript` accepts only the two exact
+covenant shapes, so no covenant can contain `OP_INSPECT` — but do not build on
+selector 11 expecting it to identify a token.
+
+### `OP_INSPECT_SELF` — script introspection
 
 ```
-OP_INSPECT_SELF → scriptPubKey (on stack)
+OP_INSPECT_SELF -> scriptPubKey
 ```
 
-**Usage example - verify outputs use same script:**
+Pushes the currently-executing script, enabling self-referential covenants:
+
 ```
 OP_INSPECT_SELF OP_INSPECT_SELF OP_EQUAL
 ```
 
-### Multi-Level Transactions
+Neither introspection opcode is height-gated the way
+`OP_MINT`/`OP_MINT_TRANSFER` are: `SCRIPT_VERIFY_UAP_MINT` gates only the
+latter pair.
 
-You can build complex transaction chains with token splits and recombinations:
-
-1. **Minting**: Create initial token supply
-2. **Level 1**: Mint → Multiple recipients (1-to-N transfer)
-3. **Level 2**: Each recipient can further transfer (N-to-M transfer)
-4. **Level N**: Unlimited depth of transfers with covenant preservation
-
-**Key principles:**
-- Tokens are conserved at each level (tokens_in ≥ tokens_out + fees)
-- Each output must use a covenant script to maintain token validity
-- Transaction fees are paid from token value (reducing total token supply by fee amount)
-
-### Token Fee Calculations
-
-When transferring tokens, calculate fees as follows:
-
-```
-Input tokens:  input_value × multiplier
-Output tokens: sum(output_values) × multiplier
-Fee tokens:    Input tokens - Output tokens
-
-Example:
-- Input:  1 WHIP × 1000 = 1,000 tokens
-- Fee:    0.001 WHIP (1000 × 1000 = 1,000 tokens burned)
-- Output: 0.999 WHIP × 1000 = 999,000 tokens
-- Net:    1,000,000 - 999,000 = 1,000 tokens paid as fees
-```
-
-## Testing Your Implementation
-
-The Whippet test framework includes comprehensive tests for OP_MINT:
+## Testing
 
 ```bash
-# Run all UAP tests
-make check
+# C++ unit tests for the covenant and creation rules
+./src/test/test_whippet --run_test=uap_mint_tests
+./src/test/test_whippet --run_test=uap_creation_tests
 
-# Run only OP_MINT tests
-qa/rpc-tests/uap_mint_transfer_spend.py
+# Live regtest coverage
+qa/rpc-tests/uap_transactions.py          # rules 2, 3, 4, one at a time
+qa/rpc-tests/uap_mint_transfer.py         # a position's whole life
+qa/rpc-tests/uap_mint_transfer_spend.py   # chains, splits, introspection
+qa/rpc-tests/uap_canonical_encoding.py    # canonical push encodings
+qa/rpc-tests/uap_swap.py                  # maker/taker atomic swap
+qa/rpc-tests/uap_output_provenance.py     # the creation rule, mempool + block
 ```
 
 ## References
 
-- [OP_MINT Specification](doc/uap-specification.md)
-- [UAP Smart Contract Guide](doc/uap-smart-contracts.md)
-- [Whippet RPC API](doc/REST-interface.md)
-- [Transaction Creation Guide](doc/developer-notes.md)
+- [Token metadata format](uap-token-metadata.md) — the `OP_RETURN` ticker record
+- [Marketplace design](uap-marketplace-design.md) — the signed-order model
+- [`contrib/uap-js/README.md`](../contrib/uap-js/README.md) — JavaScript builder
+- [`contrib/uap-indexer/README.md`](../contrib/uap-indexer/README.md) — indexer and order relay

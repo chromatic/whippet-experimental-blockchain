@@ -74,11 +74,13 @@ unrelated tokens can share a multiplier, and consensus keeps them from ever
 merging (see `CheckUapOutputConservation`), but nothing keeps them from
 *looking* alike in a UI.
 
-**Decision: token identity = the outpoint of the originating `OP_MINT`.**
-Every position carries an `origin` field (`txid:vout`); a fresh mint's
-origin is itself, a transfer inherits it from the position it spent. All
-market pairs, balances, and listings key off `origin`, never off
-`multiplier` alone.
+**Decision: token identity = the outpoint of the originating `OP_MINT`,
+hashed.** Every position carries an `origin` field: the hex encoding of
+`SHA256(txid_internal_bytes || vout as 4-byte LE)`, *not* the `txid:vout`
+string. Consensus stamps it into the covenant at the mint's first spend and
+every transfer carries it forward unchanged, so the indexer reads it off the
+script rather than reconstructing it. All market pairs, balances and listings
+key off `origin`, never off `multiplier` alone.
 
 This must be added to the indexer or the marketplace will silently
 conflate unrelated tokens.
@@ -90,7 +92,8 @@ quotes and fills, price rises deterministically with supply, and it
 "graduates" to a DEX at a threshold. **Whippet cannot do this.** There are
 no general smart contracts — only the fixed `OP_MINT` /
 `OP_MINT_TRANSFER` covenant, whose script format
-(`<pubkey> <multiplier> OP_MINT_TRANSFER`) has no room for curve logic.
+(`<pubkey> <multiplier> <origin32> OP_MINT_TRANSFER`) has no room for curve
+logic.
 
 What Whippet has instead is a **signed-order book**: makers publish
 `SIGHASH_SINGLE|ANYONECANPAY` fragments, takers fill them. This is
@@ -133,14 +136,16 @@ Three points of rationale that belong to this plan rather than to the format:
   identifier; everything descriptive lives behind the hash. UI copy below
   reflects this.
 - **`OP_RETURN` does not bloat the UTXO set,** so naming a token costs
-  one-time block space and fee rather than permanent node state. (The *salt*
-  is the thing that genuinely persists, since it sits in a real spendable
-  output's scriptPubKey — which is why metadata does not go there.)
-- **Provenance needs no new identifier.** The originating mint's outpoint
-  (`txid:vout`) is already globally unique and unforgeable, and the
-  indexer tracks it as `origin` regardless. A random ID would be redundant
-  and strictly weaker: it is unbound, so two mints can claim the same one
-  and a tiebreak rule becomes necessary.
+  one-time block space and fee rather than permanent node state. (The
+  *origin* is the thing that genuinely persists, since it sits in every
+  transfer covenant's scriptPubKey, which is a real spendable output — which
+  is why metadata does not go there. The v1 salt occupied that role and was
+  removed; see the minting guide.)
+- **Provenance needs no new identifier.** The originating mint's outpoint is
+  already globally unique and unforgeable, and its hash is what consensus
+  stamps into every covenant in the lineage as `origin`. A random ID would be
+  redundant and strictly weaker: it is unbound, so two mints can claim the
+  same one and a tiebreak rule becomes necessary.
 
 Anchoring with a **hash rather than an ID** is the point: an ID is a
 trusted pointer (whoever serves it can swap the content underneath), a

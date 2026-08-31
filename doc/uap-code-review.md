@@ -1,5 +1,24 @@
 # UAP marketplace merge — code review
 
+> **Status: point-in-time snapshot, partially superseded.** This review was
+> written against the tree as it stood before the covenant v2 work. It is kept
+> as a record of what was found and why, not as a current defect list. Verified
+> against the code as of the 1.3.0 branch:
+>
+> | Finding | Status |
+> |---|---|
+> | S2 — `script.go`'s mirror missing the multiplier upper bound | **fixed** (`script.go` now rejects `> 2147483647`) |
+> | S3 — only write endpoints rate-limited | **fixed** (`api.go` applies a separate `readRL` to the read endpoints) |
+> | 1 — no pagination on `/positions` or `/orders` | **fixed** (`ListOrdersPage`, `PositionsForPubKeyPage`, `Page`) |
+> | 4 — `ByPubKey` sub-maps never pruned | **obsolete** (the in-memory index by pubkey is gone; positions live in the SQLite store) |
+> | S1, 2, 3, 5 | **not re-verified.** Treat as open until checked against the code. |
+>
+> Two things this review could not have found, both since fixed, and both worth
+> noting because they show the limits of a read-only review of one directory:
+> UAP transfer outputs could be created for a lineage the transaction never
+> spent (`CheckUapOutputCreation`, `src/validation.cpp` — the scope here
+> excluded `src/`), and the covenant format itself has since changed.
+
 Scope: `contrib/uap-indexer/*.go`, `contrib/faucet/faucet.go`, and
 `contrib/uap-js/{addr,ripemd160,sha256}.js` + their tests. Read against
 `doc/uap-marketplace-website-plan.md`.

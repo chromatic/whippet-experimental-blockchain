@@ -28,10 +28,13 @@ The record appears **on the mint transaction only**. A token's identity is fixed
 creation; a `WUAP` record on any later transaction in the lineage is ignored, so a
 subsequent owner cannot rename a token out from under its holders.
 
-The token's identity is the mint output's outpoint (`txid:vout`), which the indexer
-tracks as `origin`. The metadata record does not carry an identifier of its own —
-the outpoint is already globally unique and unforgeable, whereas a self-declared ID
-is unbound, so two mints could claim the same one and a tiebreak rule would become
+The token's identity is derived from the mint output's outpoint:
+`origin = SHA256(txid_internal_bytes || vout as 4-byte LE)`. Note that this is the
+32-byte hash, not the `txid:vout` string — the indexer serves it hex-encoded as
+`origin`, and every transfer covenant in the lineage carries those same 32 bytes in
+its scriptPubKey. The metadata record does not carry an identifier of its own: the
+outpoint is already globally unique and unforgeable, whereas a self-declared ID is
+unbound, so two mints could claim the same one and a tiebreak rule would become
 necessary.
 
 ### `ticker`
@@ -118,8 +121,9 @@ pruned, in the code's own words, "instantly when entering the UTXO set."
 The cost of naming a token is therefore one-time block space and fee, not permanent
 node state. This is precisely why the metadata is not stuffed into the mint
 covenant's own scriptPubKey, which *is* resident: a mint position
-(`<pubkey> <multiplier> <salt> OP_MINT`, ~58 bytes) sits in the UTXO set until it is
-spent.
+(`<pubkey> <multiplier> OP_MINT`, ~37 bytes) sits in the UTXO set until it is
+spent, and a transfer position (`<pubkey> <multiplier> <origin32>
+OP_MINT_TRANSFER`, ~70 bytes) sits there for as long as it is held.
 
 The output must carry **zero value**. Paying an unspendable script burns the coins
 outright.

@@ -52,13 +52,31 @@ a single originating `OP_MINT`. This is verified live and covered by
 `src/test/uap_mint_tests.cpp` (and `transfer_solo_spend_of_either_lineage_still_works`
 confirming this isn't just multi-input transactions breaking generally).
 
-Practical implication for a marketplace/indexer: authenticity of a
-position is established by walking its spend history back to a genuine
-`OP_MINT` -- which `uap-indexer` already does implicitly, since it only
-records positions it observed as real chain outputs and tracks spend
-status through that same lineage. There is no way to fabricate a
-same-multiplier position's value without it actually tracing back to a
-real mint that funded it.
+Practical implication for a marketplace/indexer: a position states its own
+lineage. `uap-indexer` reads the 32-byte origin straight out of a transfer's
+scriptPubKey (`index.go`), and derives it from the outpoint for a mint; it
+does *not* walk the spend graph, which is exactly what the origin field
+retired.
+
+That makes the indexer's honesty dependent on consensus rather than on
+bookkeeping, and it is worth being precise about which rule carries the
+weight. Two are needed, not one:
+
+- `CheckUapOutputConservation` bounds what a *spend* may produce, and runs
+  only when a covenant is spent.
+- `CheckUapOutputCreation` (`src/validation.cpp`) requires a transaction
+  creating a transfer output of a lineage to also spend an input of that
+  lineage.
+
+Without the second, an earlier version of this document was simply wrong: it
+claimed "there is no way to fabricate a same-multiplier position's value
+without it actually tracing back to a real mint that funded it". There was.
+Creating an output executes no script, so a transaction funded entirely by
+ordinary P2PKH inputs ran no covenant code, and could emit a covenant output
+naming any lineage it liked -- a counterfeit position, indistinguishable on
+chain from a genuine one and indistinguishable to this indexer, which reads
+the lineage from the script. With both rules in force the original claim
+holds; with only the first it did not.
 
 ## Signed-order model: maker/taker, no live coordination
 
