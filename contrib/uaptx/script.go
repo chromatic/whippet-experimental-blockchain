@@ -1,6 +1,11 @@
 package uaptx
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+)
 
 // Opcodes, matching src/script/script.h.
 const (
@@ -13,6 +18,9 @@ const (
 	op0             = 0x00
 	op1             = 0x51 // OP_1..OP_16 are 0x51..0x60
 )
+
+// UAPOriginSize is the fixed size of a lineage origin: exactly 32 bytes (SHA256).
+const UAPOriginSize = 32
 
 // SIGHASH types.
 const (
@@ -89,30 +97,56 @@ func pushMultiplier(n int64) []byte {
 	return pushData(scriptNumBytes(n))
 }
 
-// BuildMintScript builds a fresh OP_MINT output script:
+// OriginFromOutpoint derives a lineage origin from an outpoint:
 //
-//	<recipient_pubkey> <multiplier> <salt> OP_MINT
+//	origin = SHA256(txid_internal_bytes || n_little_endian)
 //
-// salt must be >= 16 bytes (consensus rule).
-func BuildMintScript(pubkey []byte, multiplier int64, salt []byte) []byte {
-	if len(salt) < 16 {
-		panic("uaptx: salt must be at least 16 bytes")
+// txid is the transaction ID in big-endian (display order); it is reversed
+// to internal byte order before hashing. n is the output index.
+func OriginFromOutpoint(txid string, n uint32) []byte {
+	// Reverse the txid from big-endian to internal byte order
+	txidBytes, err := hex.DecodeString(txid)
+	if err != nil || len(txidBytes) != 32 {
+		panic(fmt.Sprintf("uaptx: invalid txid %q: must be 32 bytes of hex, got err=%v len=%d", txid, err, len(txidBytes)))
 	}
+	txidLE := reverseBytes(txidBytes)
+
+	// Encode n as 4 bytes, little-endian
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], n)
+
+	// Hash txid || n
+	h := sha256.Sum256(append(txidLE, buf[:]...))
+	return h[:]
+}
+
+// BuildMintScript builds a fresh OP_MINT output script (v2 format):
+//
+//	<recipient_pubkey> <multiplier> OP_MINT
+//
+// The salt has been removed; lineage identity is derived from the
+// outpoint when the mint is first spent.
+func BuildMintScript(pubkey []byte, multiplier int64) []byte {
 	var out []byte
 	out = append(out, pushData(pubkey)...)
 	out = append(out, pushMultiplier(multiplier)...)
-	out = append(out, pushData(salt)...)
 	out = append(out, opMint)
 	return out
 }
 
-// BuildTransferScript builds an OP_MINT_TRANSFER covenant output script:
+// BuildTransferScript builds an OP_MINT_TRANSFER covenant output script (v2 format):
 //
-//	<recipient_pubkey> <multiplier> OP_MINT_TRANSFER
-func BuildTransferScript(pubkey []byte, multiplier int64) []byte {
+//	<recipient_pubkey> <multiplier> <origin32> OP_MINT_TRANSFER
+//
+// origin must be exactly 32 bytes and represents the lineage identity.
+func BuildTransferScript(pubkey []byte, multiplier int64, origin []byte) []byte {
+	if len(origin) != UAPOriginSize {
+		panic(fmt.Sprintf("uaptx: origin must be exactly %d bytes, got %d", UAPOriginSize, len(origin)))
+	}
 	var out []byte
 	out = append(out, pushData(pubkey)...)
 	out = append(out, pushMultiplier(multiplier)...)
+	out = append(out, pushData(origin)...)
 	out = append(out, opMintTransfer)
 	return out
 }

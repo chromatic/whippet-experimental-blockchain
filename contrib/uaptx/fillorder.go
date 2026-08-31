@@ -28,6 +28,10 @@ type FillOrderOpts struct {
 	ToPubkey   []byte
 	Multiplier int64
 
+	// Origin is the lineage identity of the position being spent.
+	// Used in the output covenant script to maintain lineage across transfers.
+	Origin []byte
+
 	// TokenValue is the position's full value (satoshis). The maker's
 	// order does not carry this -- SIGHASH_SINGLE|ANYONECANPAY did not
 	// commit to it -- so the taker must know it independently (e.g. from
@@ -83,7 +87,7 @@ func FillOrder(order MakerOrder, opts FillOrderOpts) Tx {
 	}
 	vout = append(vout, TxOut{
 		Value:        opts.TokenValue,
-		ScriptPubKey: BuildTransferScript(opts.ToPubkey, opts.Multiplier),
+		ScriptPubKey: BuildTransferScript(opts.ToPubkey, opts.Multiplier, opts.Origin),
 	})
 	if opts.ChangeValue != 0 {
 		vout = append(vout, TxOut{Value: opts.ChangeValue, ScriptPubKey: opts.ChangeScript})
