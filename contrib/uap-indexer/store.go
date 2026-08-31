@@ -130,6 +130,10 @@ CREATE TABLE IF NOT EXISTS positions (
     metadata     BLOB
 );
 CREATE INDEX IF NOT EXISTS positions_by_pubkey ON positions(pubkey);
+-- tokenQuery joins every lineage to its mint on (origin, is_mint); without
+-- this index that join scans the whole positions table once per lineage,
+-- so /api/tokens degrades quadratically as lineages accumulate.
+CREATE INDEX IF NOT EXISTS positions_by_origin ON positions(origin, is_mint);
 CREATE TABLE IF NOT EXISTS utxos (
     key     TEXT PRIMARY KEY,
     txid    TEXT    NOT NULL,
