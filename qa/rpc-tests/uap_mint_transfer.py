@@ -29,7 +29,7 @@ from test_framework.util import (
 from test_framework.mininode import CTransaction, CTxIn, CTxOut, COutPoint, FromHex, ToHex
 from test_framework.script import CScript
 from test_framework.uap import (
-    COIN, MANDATORY,
+    COIN, MANDATORY, NO_INPUT,
     make_key, mint_script, transfer_script, origin_of, sign_spend,
 )
 
@@ -132,16 +132,24 @@ class UAPMintTransferTest(BitcoinTestFramework):
         print("Step 5: a mint's first spend may only name its own lineage")
         # A fresh mint cannot be renamed into somebody else's token. The
         # origin the covenant output carries is not the spender's choice:
-        # consensus derives it from the outpoint being spent, and conservation
-        # then refuses an output belonging to a lineage that has no input in
-        # this transaction.
+        # consensus derives it from the outpoint being spent and requires a
+        # matching output.
+        #
+        # Two independent rules refuse this, and the reported one is
+        # CheckUapOutputCreation rather than the covenant check, because a
+        # renamed output is also an output of a lineage the transaction does
+        # not spend -- and creation is checked before scripts are run. That
+        # ordering is the reason to assert the exact reason string here: an
+        # assertion of "rejected somehow" would not notice if the covenant
+        # rule stopped working, since the creation rule would keep the test
+        # green on its own.
         renamed = CTransaction()
         renamed.vin = [CTxIn(COutPoint(int(mint_txid, 16), 0))]
         renamed.vout = [CTxOut(mint_value - 50000,
                                transfer_script(recipient_pubkey, MULTIPLIER,
                                                origin_of(mint_txid, 1)))]
         renamed.vin[0].scriptSig = sign_spend(the_mint_script, minter_key, renamed, 0)
-        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(renamed))
+        assert_raises_jsonrpc(None, NO_INPUT, node.sendrawtransaction, ToHex(renamed))
         print("  a foreign origin is rejected")
 
         transfer_value = mint_value - 50000
@@ -162,13 +170,14 @@ class UAPMintTransferTest(BitcoinTestFramework):
         # mistake this rule exists to catch: it looks reasonable, it is what
         # a mint does, and it would rename the position into a lineage that
         # has no input in the transaction -- minting supply out of nothing.
+        # Reported by CheckUapOutputCreation, for the reason given in step 5.
         rewritten = CTransaction()
         rewritten.vin = [CTxIn(COutPoint(int(transfer_txid, 16), 0))]
         rewritten.vout = [CTxOut(final_value,
                                  transfer_script(next_pubkey, MULTIPLIER,
                                                  origin_of(transfer_txid, 0)))]
         rewritten.vin[0].scriptSig = sign_spend(the_transfer_script, recipient_key, rewritten, 0)
-        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(rewritten))
+        assert_raises_jsonrpc(None, NO_INPUT, node.sendrawtransaction, ToHex(rewritten))
         print("  re-deriving the origin from its own outpoint is rejected")
 
         onward = CTransaction()

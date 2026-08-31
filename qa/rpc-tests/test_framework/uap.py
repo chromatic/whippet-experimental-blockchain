@@ -54,6 +54,12 @@ FEE = 1000000  # RECOMMENDED_MIN_TX_FEE, src/amount.h
 MANDATORY = "mandatory-script-verify-flag-failed"
 NON_MANDATORY = "non-mandatory-script-verify-flag"
 
+# CheckUapOutputCreation (src/validation.cpp): a transfer output may only be
+# created by a transaction that spends the lineage it names. This runs
+# BEFORE script verification, so where a transaction breaks both this rule
+# and a covenant rule -- renaming a lineage does both -- the node reports
+# this one. Asserting the exact string is what keeps those two apart.
+NO_INPUT = "bad-txns-uap-output-without-input"
 
 
 def make_key(seed):

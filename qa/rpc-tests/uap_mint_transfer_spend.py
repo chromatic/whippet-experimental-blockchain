@@ -19,10 +19,18 @@ ParseUapOutputScript, which is the authority):
 Spending either requires scriptSig = <sig> only -- the pubkey, multiplier
 and origin all come from the scriptPubKey being spent.
 
-The covenant rules -- entry fee, origin width, one-shot, conservation -- all
-run when a position is SPENT, because that is when its scriptPubKey executes.
-Creating an output executes nothing, which is the single fact most of this
-file's history of wrong tests came from ignoring.
+Two things run at different times, and most of the confusion in this file's
+history came from conflating them:
+
+  - the COVENANT rules (entry fee, origin width, one-shot, conservation) run
+    when a position is SPENT, because that is when its scriptPubKey
+    executes. Creating an output executes nothing.
+
+  - the PROVENANCE rule (CheckUapOutputCreation, validation.cpp) runs when a
+    transaction is validated, on its outputs, and applies to every
+    transaction whether or not it spends a covenant. It is what stops a
+    transfer output being created for a lineage the transaction does not
+    spend.
 
 The lineage itself is the thread running through every test below. A mint
 carries no origin -- its identity is the outpoint it is spent at -- so the
@@ -39,7 +47,7 @@ from test_framework.script import (
     CScript, OP_INSPECT, OP_INSPECT_SELF, OP_MINT, OP_EQUAL, OP_TRUE,
 )
 from test_framework.uap import (
-    MANDATORY,
+    MANDATORY, NO_INPUT,
     make_key, mint_script, transfer_script, origin_of, sign_spend,
 )
 from decimal import Decimal
@@ -70,7 +78,8 @@ class UAPMintTransferSpendTest(BitcoinTestFramework):
     def broadcast_mint(self, coinbase_utxo, mint_value, multiplier, key):
         """
         Fund a fresh OP_MINT output of `mint_value` WHIP from coinbase_utxo.
-        Creation is unconditional -- the covenant only runs at spend time --
+        Creation is unconditional -- the covenant only runs at spend time,
+        and a mint output has no lineage for the provenance rule to check --
         so the wallet just signs the ordinary coinbase input.
 
         Returns (txid, script, lineage), where lineage is the origin this
@@ -223,13 +232,15 @@ class UAPMintTransferSpendTest(BitcoinTestFramework):
             "a salted v1 script must not be classified as a v2 mint"
         print(f"  A v1 salted script is not classified as a covenant (type {vout0['type']})")
 
-        # And it cannot be spent into a lineage: the trailing push shifts
-        # every element the opcode pops, so the signature is checked against
-        # the wrong stack entries and fails.
+        # And it cannot be spent into a lineage. The spend is refused by the
+        # provenance rule rather than the covenant rule: since the input
+        # does not parse as a covenant, it confers no lineage, so the
+        # transfer output it tries to create belongs to a lineage this
+        # transaction never spends.
         spend = self.build_spend(mint_txid, 0, v1_script, key,
                                  origin_of(mint_txid, 0),
                                  [(Decimal('1490'), key.get_pubkey(), multiplier)])
-        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(spend))
+        assert_raises_jsonrpc(None, NO_INPUT, node.sendrawtransaction, ToHex(spend))
         print("  ...and it cannot be spent into a lineage")
 
     def test_mint_entry_fee(self):
@@ -248,10 +259,11 @@ class UAPMintTransferSpendTest(BitcoinTestFramework):
             small_coinbase, Decimal('500'), multiplier, key)
         spend = self.build_spend(small_txid, 0, small_script, key, small_lineage,
                                  [(Decimal('490'), key.get_pubkey(), multiplier)])
-        # Asserting the exact reason, not merely that it was refused: this
-        # spend is well-formed in every way except the entry fee, so a bare
-        # "rejected" would pass even if the fee check disappeared and
-        # something else happened to reject it.
+        # MANDATORY, not NO_INPUT: this transaction's lineage IS backed (it
+        # spends the mint whose outpoint names it), so provenance is
+        # satisfied and the covenant rule is what refuses it. Asserting the
+        # exact reason is what keeps the two rules from covering for each
+        # other.
         assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(spend))
         print("  Sub-1000-WHIP position correctly rejected on spend")
 
@@ -444,7 +456,15 @@ class UAPMintTransferSpendTest(BitcoinTestFramework):
         print("  ✓ Covenant chain of 4 hops accepted end-to-end, one lineage throughout\n")
 
     def test_covenant_standardness(self):
-        """Covenant outputs are recognised and classified by Solver()."""
+        """Covenant outputs are recognised and classified by Solver().
+
+        Test 2 changed with the provenance rule, and the change is the point
+        of the test now. A bare OP_MINT_TRANSFER output can no longer be
+        conjured from an ordinary wallet input at all -- that was the
+        counterfeit-position hole -- so its standardness is asserted where
+        such an output is legitimately produced: as the continuation of a
+        real spend.
+        """
         node = self.nodes[0]
         print("\n  === Testing Covenant Script Standardness ===")
 
@@ -457,7 +477,19 @@ class UAPMintTransferSpendTest(BitcoinTestFramework):
         assert_equal(spk["type"], "op_mint")
         print(f"  ✓ OP_MINT output recognized as standard: {mint_txid}")
 
-        print("\n  Test 2: OP_MINT_TRANSFER output standardness")
+        print("\n  Test 2: a bare OP_MINT_TRANSFER output cannot be conjured")
+        orphan = CTransaction()
+        utxo = self.get_coinbase_utxo(Decimal('1'))
+        inputs = [{"txid": utxo["txid"], "vout": utxo["vout"]}]
+        outputs = {node.getnewaddress(): float(utxo["amount"]) - 0.01}
+        orphan = FromHex(CTransaction(), node.createrawtransaction(inputs, outputs))
+        orphan.vout[0].scriptPubKey = transfer_script(
+            mint_key.get_pubkey(), 1000, origin_of(mint_txid, 0))
+        signed = node.signrawtransaction(ToHex(orphan))["hex"]
+        assert_raises_jsonrpc(None, NO_INPUT, node.sendrawtransaction, signed)
+        print("  ✓ refused: a transfer output needs the lineage it names")
+
+        print("\n  Test 3: OP_MINT_TRANSFER output standardness, produced legitimately")
         spend_txid, _ = self.spend_uap_input(
             mint_txid, 0, mint_scr, mint_key, lineage,
             [(Decimal('1190'), mint_key.get_pubkey(), 1000)])

@@ -1025,6 +1025,13 @@ bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const C
             }
         }
 
+        // A transfer output may only be created by a transaction that spends
+        // the lineage it names. Gated on the same activation flag as the
+        // opcodes themselves, so mempool policy and block validity agree
+        // about when the rule starts applying. See CheckUapOutputCreation.
+        if (uapMintFlags && !CheckUapOutputCreation(tx, view, state))
+            return false; // state filled in by CheckUapOutputCreation
+
         unsigned int scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
         if (!Params().RequireStandard()) {
             scriptVerifyFlags = GetArg("-promiscuousmempoolflags", scriptVerifyFlags);
@@ -1517,6 +1524,100 @@ bool CheckTxInputs(const CChainParams& params, const CTransaction& tx, CValidati
     return true;
 }
 }// namespace Consensus
+
+/**
+ * A UAP transfer output may only be created by a transaction that also spends
+ * the lineage that output names.
+ *
+ * CheckUapOutputConservation (script/interpreter.cpp) bounds what a spend may
+ * produce, but it runs only when a UAP output is SPENT: an output's
+ * scriptPubKey is not executed by the transaction that creates it. A
+ * transaction funded entirely by ordinary P2PKH inputs therefore executes no
+ * UAP code at all, and without this rule it could create a covenant output
+ * naming any lineage it liked -- a counterfeit position, indistinguishable on
+ * chain from a genuine one, inflating that token's supply for the price of
+ * one transaction. It could equally invent a lineage no mint ever created,
+ * skipping the OP_MINT entry fee entirely.
+ *
+ * Nothing downstream can undo that. The fabricated output is spendable, it
+ * merges cleanly with genuine positions of the same group (conservation sums
+ * every same-group input, interpreter.cpp), and the UTXO set carries no
+ * provenance with which to tell the two apart afterwards. Creation is the
+ * only point at which this is stoppable, which is why the rule lives here
+ * and not in the script interpreter.
+ *
+ * Mint outputs are deliberately unrestricted: creating one is how a lineage
+ * comes into existence, and a mint is inert until spent, at which point both
+ * the entry fee and the outpoint-derived lineage are enforced.
+ *
+ * A coinbase spends nothing, so it may create no transfer output at all --
+ * and it needs saying separately, because ConnectBlock does not run
+ * CheckInputs over the coinbase.
+ */
+bool CheckUapOutputCreation(const CTransaction& tx, const CCoinsViewCache& view, CValidationState& state)
+{
+    // Cheap pre-scan first: this runs on every transaction in every block,
+    // and almost none of them carry a covenant output.
+    bool fHasTransferOutput = false;
+    for (const CTxOut& out : tx.vout) {
+        std::vector<unsigned char> pubkey, origin;
+        CScriptNum multiplier(0);
+        bool fIsMint;
+        if (ParseUapOutputScript(out.scriptPubKey, pubkey, multiplier, origin, fIsMint) && !fIsMint) {
+            fHasTransferOutput = true;
+            break;
+        }
+    }
+    if (!fHasTransferOutput)
+        return true;
+
+    // The groups this transaction is entitled to write to: one per UAP input,
+    // keyed exactly as conservation keys them. A mint input contributes the
+    // lineage its outpoint mints into, which is the value its first spend
+    // stamps onto the covenant outputs.
+    std::set<std::pair<int64_t, std::vector<unsigned char> > > setInputLineages;
+    if (!tx.IsCoinBase()) {
+        for (const CTxIn& txin : tx.vin) {
+            const CCoins* coins = view.AccessCoins(txin.prevout.hash);
+            if (!coins || txin.prevout.n >= coins->vout.size() || !coins->IsAvailable(txin.prevout.n)) {
+                // Fail closed. A missing prevout means the transaction is
+                // invalid for other reasons too and will be rejected by
+                // CheckTxInputs, but treating an unreadable input as "not a
+                // UAP input" would be a way to widen the permitted set.
+                return state.DoS(100, false, REJECT_INVALID, "bad-txns-uap-creation-missing-prevout", false,
+                                 strprintf("prevout %s not available while checking UAP output creation",
+                                           txin.prevout.ToString()));
+            }
+            const CScript& prevScript = coins->vout[txin.prevout.n].scriptPubKey;
+            std::vector<unsigned char> pubkey, origin;
+            CScriptNum multiplier(0);
+            bool fIsMint;
+            if (!ParseUapOutputScript(prevScript, pubkey, multiplier, origin, fIsMint))
+                continue;
+            const std::vector<unsigned char> lineage =
+                fIsMint ? UapOriginFromOutpoint(txin.prevout) : origin;
+            setInputLineages.insert(std::make_pair((int64_t)multiplier.getint(), lineage));
+        }
+    }
+
+    for (unsigned int i = 0; i < tx.vout.size(); i++) {
+        std::vector<unsigned char> pubkey, origin;
+        CScriptNum multiplier(0);
+        bool fIsMint;
+        if (!ParseUapOutputScript(tx.vout[i].scriptPubKey, pubkey, multiplier, origin, fIsMint))
+            continue;
+        if (fIsMint)
+            continue;
+        if (!setInputLineages.count(std::make_pair((int64_t)multiplier.getint(), origin))) {
+            return state.DoS(100, false, REJECT_INVALID, "bad-txns-uap-output-without-input", false,
+                             strprintf("output %u creates a position of lineage %s (multiplier %d) "
+                                       "that this transaction does not spend from",
+                                       i, HexStr(origin), multiplier.getint()));
+        }
+    }
+
+    return true;
+}
 
 bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck> *pvChecks)
 {
@@ -2032,6 +2133,17 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
             return state.DoS(100, error("ConnectBlock(): too many sigops"),
                              REJECT_INVALID, "bad-blk-sigops");
+
+        // Every transaction, coinbase included -- deliberately outside the
+        // !IsCoinBase() guard below, and outside fScriptChecks. A coinbase
+        // spends nothing, so it may create no transfer output at all, and
+        // without a call here a miner would be the one party able to
+        // fabricate positions. It sits outside fScriptChecks because this is
+        // consensus, not a signature check, and must not be skipped under
+        // -assumevalid.
+        if ((flags & SCRIPT_VERIFY_UAP_MINT) && !CheckUapOutputCreation(tx, view, state))
+            return error("ConnectBlock(): CheckUapOutputCreation on %s failed with %s",
+                tx.GetHash().ToString(), FormatStateMessage(state));
 
         txdata.emplace_back(tx);
         if (!tx.IsCoinBase())

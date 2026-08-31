@@ -386,6 +386,13 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                  unsigned int flags, bool cacheStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck> *pvChecks = NULL);
 
 /**
+ * Check that every UAP transfer output this transaction creates belongs to a
+ * lineage the transaction also spends from. See the definition in
+ * validation.cpp for why this cannot live in the script interpreter.
+ */
+bool CheckUapOutputCreation(const CTransaction& tx, const CCoinsViewCache& view, CValidationState& state);
+
+/**
  * SCRIPT_VERIFY_UAP_MINT if OP_MINT/OP_MINT_TRANSFER are active at nHeight,
  * otherwise 0. Sole definition of the activation test: ConnectBlock asks for
  * the block's own height, AcceptToMemoryPool for chainActive.Height() + 1.

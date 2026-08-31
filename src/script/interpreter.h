@@ -131,6 +131,17 @@ enum SigVersion
 
 uint256 SignatureHash(const CScript &scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType, const CAmount& amount, SigVersion sigversion, const PrecomputedTransactionData* cache = NULL);
 
+/**
+ * A UAP lineage's identity: SHA256 over the originating mint's outpoint, as
+ * 32 bytes of txid followed by the 4-byte output index, little-endian.
+ *
+ * Exported because the identity of a lineage has to be derived identically
+ * on both sides of the protocol: when a mint is spent (CheckUapOutputConservation,
+ * here) and when a transfer output is created (CheckUapOutputCreation, in
+ * validation.cpp). Two copies of this encoding would be two chances to
+ * disagree about which lineage a position belongs to.
+ */
+std::vector<unsigned char> UapOriginFromOutpoint(const COutPoint& outpoint);
 
 class BaseSignatureChecker
 {

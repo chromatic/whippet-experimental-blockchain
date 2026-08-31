@@ -35,9 +35,10 @@ See doc/uap-marketplace-design.md and contrib/uap-js/uap.js (around
 signMakerOrder/fillOrder) for the design this mirrors in Python.
 
 The maker's position is minted and spent into its lineage before any order
-is signed, rather than conjured directly from a wallet input. A swap test
-whose maker position could not arise from a real mint would be testing a
-position shape the protocol never produces.
+is signed. That is not ceremony: an earlier version conjured the position
+directly from a wallet input, which was the counterfeit-position hole and is
+now refused by CheckUapOutputCreation. A swap test whose maker position
+could not legally exist would prove nothing about swaps.
 
 Three things are checked, each on a real broadcast against real consensus:
 
@@ -70,7 +71,7 @@ from test_framework.script import (
     CScript, SignatureHash, SIGHASH_ALL, SIGHASH_SINGLE, SIGHASH_ANYONECANPAY,
 )
 from test_framework.uap import (
-    COIN, FEE, MINT_ENTRY_FEE, MANDATORY,
+    COIN, FEE, MINT_ENTRY_FEE, MANDATORY, NO_INPUT,
     make_key, mint_script, transfer_script, p2pkh_script, origin_of, sign_spend,
 )
 
@@ -232,9 +233,12 @@ class UAPSwapTest(BitcoinTestFramework):
         taker_fund_key = make_key(("swap_taker_fund_" + seed_suffix).encode().ljust(32, b"f"))
 
         # The maker's position has to be a REAL one, minted and then spent
-        # into its lineage, rather than conjured directly by writing a
-        # transfer script into a wallet-funded output. A position that no
-        # mint ever produced is not the thing this test is about.
+        # into its lineage. An earlier version of this file conjured it
+        # directly -- create_output(transfer_script(...)) from an ordinary
+        # wallet input -- which was quietly the counterfeit-position attack
+        # and is now refused outright by CheckUapOutputCreation
+        # (validation.cpp). A swap test whose maker position could not
+        # legally exist proves nothing about swaps.
         mint_scr = mint_script(maker_key.get_pubkey(), MULTIPLIER)
         mint_txid = self.create_output(node, mint_scr, MINT_ENTRY_FEE)
         lineage = origin_of(mint_txid, 0)
@@ -373,12 +377,15 @@ class UAPSwapTest(BitcoinTestFramework):
             ctx["taker_input_txid"], TAKER_INPUT_VALUE, ctx["taker_fund_key"],
             ctx["taker_token_key"].get_pubkey(), MULTIPLIER + 1, TOKEN_VALUE,
             ctx["change_script"], CHANGE_VALUE, ctx["lineage"])
-        # Conservation groups positions by (multiplier, origin), so a
-        # covenant output at MULTIPLIER + 1 belongs to a group this
-        # transaction has no input in, and is refused for that reason.
-        assert_raises_jsonrpc(None, MANDATORY, node.sendrawtransaction, ToHex(tx))
+        # NO_INPUT rather than MANDATORY, and the difference is worth
+        # keeping straight. Conservation groups positions by
+        # (multiplier, origin), so a covenant output at MULTIPLIER + 1 is an
+        # output of a group this transaction has no input in -- and the
+        # provenance rule, which runs before any script does, refuses it
+        # first. Conservation would refuse it too, on its own reasoning.
+        assert_raises_jsonrpc(None, NO_INPUT, node.sendrawtransaction, ToHex(tx))
         print("  continuing covenant output with wrong multiplier (x%d instead of x%d): rejected (%s)" %
-              (MULTIPLIER + 1, MULTIPLIER, MANDATORY))
+              (MULTIPLIER + 1, MULTIPLIER, NO_INPUT))
 
 
 if __name__ == '__main__':

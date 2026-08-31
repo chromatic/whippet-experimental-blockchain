@@ -257,7 +257,7 @@ bool static CheckPubKeyEncoding(const valtype &vchPubKey, unsigned int flags, co
  * byte for byte -- this one, contrib/uap-js and contrib/uaptx -- and a
  * reader in another language cannot check its work against a C++ template.
  */
-static valtype UapOriginFromOutpoint(const COutPoint& outpoint)
+valtype UapOriginFromOutpoint(const COutPoint& outpoint)
 {
     unsigned char buf[36];
     memcpy(buf, outpoint.hash.begin(), 32);
