@@ -39,8 +39,6 @@
   <legend>2. Build an OP_MINT output script</legend>
   <label>Multiplier</label>
   <input id="multiplier" value="1000" />
-  <label>Salt (hex, &ge;16 bytes -- click to randomize)</label>
-  <input id="salt" readonly onclick="randomizeSalt()" />
   <button onclick="buildMint()">Build mint script</button>
   <label>Mint scriptPubKey (hex)</label>
   <textarea id="mintScript" readonly></textarea>
@@ -101,11 +99,6 @@
   window.secp = secp;
   window.UAP = UAP;
 
-  window.randomizeSalt = function () {
-    document.getElementById('salt').value = UAP.bytesToHex(UAP.randomSalt(20));
-  };
-  randomizeSalt();
-
   document.getElementById('genKeyBtn').addEventListener('click', () => {
     const priv = secp.utils.randomPrivateKey();
     const pub = secp.getPublicKey(priv, true);
@@ -116,8 +109,7 @@
   window.buildMint = function () {
     const pub = UAP.hexToBytes(document.getElementById('pubKey').value.trim());
     const multiplier = parseInt(document.getElementById('multiplier').value, 10);
-    const salt = UAP.hexToBytes(document.getElementById('salt').value.trim());
-    const script = UAP.buildMintScript(pub, multiplier, salt);
+    const script = UAP.buildMintScript(pub, multiplier);
     document.getElementById('mintScript').value = UAP.bytesToHex(script);
   };
 

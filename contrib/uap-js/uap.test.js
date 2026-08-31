@@ -16,25 +16,31 @@ assert.strictEqual(UAP.bytesToHex(UAP.hexToBytes('')), '');
 {
   const pubkey = new Uint8Array(33).fill(0xab);
   pubkey[0] = 0x02;
-  const salt = new Uint8Array(20).fill(0x11);
 
-  const mint = UAP.buildMintScript(pubkey, 1000, salt);
-  // <21 pubkey(33)> <02 e803 (1000 LE)> <14 salt(20)> <b5 OP_MINT>
+  // v2 mints: <pubkey> <multiplier> OP_MINT (no salt)
+  const mint = UAP.buildMintScript(pubkey, 1000);
+  // <21 pubkey(33)> <02 e803 (1000 LE)> <b5 OP_MINT>
   assert.strictEqual(mint[0], 0x21);
   assert.strictEqual(mint[34], 0x02); // multiplier push length
   assert.strictEqual(mint[35], 0xe8);
   assert.strictEqual(mint[36], 0x03);
-  assert.strictEqual(mint[37], 0x14); // salt push length
   assert.strictEqual(mint[mint.length - 1], UAP.OP_MINT);
-  assert.strictEqual(mint.length, 1 + 33 + 1 + 2 + 1 + 20 + 1);
+  assert.strictEqual(mint.length, 1 + 33 + 1 + 2 + 1); // no salt in v2
 
-  const transfer = UAP.buildTransferScript(pubkey, 42);
-  assert.strictEqual(transfer[0], 0x21);
+  // v2 transfers: <pubkey> <multiplier> <origin32> OP_MINT_TRANSFER
+  const origin = new Uint8Array(32).fill(0xcd);
+  const transfer = UAP.buildTransferScript(pubkey, 42, origin);
+  assert.strictEqual(transfer[0], 0x21); // pubkey length
   assert.strictEqual(transfer[34], 0x01); // 42 fits in one byte
   assert.strictEqual(transfer[35], 42);
+  assert.strictEqual(transfer[36], 0x20); // origin push length (32 bytes)
   assert.strictEqual(transfer[transfer.length - 1], UAP.OP_MINT_TRANSFER);
+  assert.strictEqual(transfer.length, 1 + 33 + 1 + 1 + 1 + 32 + 1);
 
-  assert.throws(() => UAP.buildMintScript(pubkey, 1000, new Uint8Array(15)), /at least 16 bytes/);
+  // buildTransferScript requires origin
+  assert.throws(() => UAP.buildTransferScript(pubkey, 1000), /origin/);
+  // origin must be exactly 32 bytes
+  assert.throws(() => UAP.buildTransferScript(pubkey, 1000, new Uint8Array(31)), /32 bytes/);
 }
 
 // Multiplier encoding. A UAP output must use the canonical push for every
@@ -44,44 +50,50 @@ assert.strictEqual(UAP.bytesToHex(UAP.hexToBytes('')), '');
 // standard transaction. See pushMultiplier.
 {
   const pubkey = new Uint8Array(33).fill(0x02);
+  const origin = new Uint8Array(32).fill(0xaa);
 
   // 0 -> OP_0: an empty data push, and already minimal.
-  const t0 = UAP.buildTransferScript(pubkey, 0);
-  assert.strictEqual(t0[34], 0x00);
-  assert.strictEqual(t0.length, 1 + 33 + 1 + 1);
+  const t0 = UAP.buildTransferScript(pubkey, 0, origin);
+  // structure: <21 pubkey> <00 multiplier> <20 origin32> <ba OP_MINT_TRANSFER>
+  assert.strictEqual(t0[34], 0x00); // OP_0 for multiplier 0
+  assert.strictEqual(t0.length, 1 + 33 + 1 + 1 + 32 + 1);
 
   // 1..16 -> the small-integer opcodes, one byte, no length prefix.
   for (const m of [1, 2, 10, 15, 16]) {
-    const t = UAP.buildTransferScript(pubkey, m);
+    const t = UAP.buildTransferScript(pubkey, m, origin);
     assert.strictEqual(t[34], 0x50 + m, `multiplier ${m} must encode as OP_${m}`);
-    assert.strictEqual(t.length, 1 + 33 + 1 + 1, `multiplier ${m} must be a single byte`);
+    // structure: <21 pubkey> <5N multiplier> <20 origin32> <ba OP_MINT_TRANSFER>
+    assert.strictEqual(t.length, 1 + 33 + 1 + 1 + 32 + 1, `multiplier ${m} must be a single byte`);
 
-    const mint = UAP.buildMintScript(pubkey, m, new Uint8Array(16));
+    const mint = UAP.buildMintScript(pubkey, m);
     assert.strictEqual(mint[34], 0x50 + m, `mint multiplier ${m} must encode as OP_${m}`);
   }
 
   // 17 is the first multiplier above the small-int range, so it becomes a
   // one-byte data push.
-  const t17 = UAP.buildTransferScript(pubkey, 17);
+  const t17 = UAP.buildTransferScript(pubkey, 17, origin);
+  // structure: <21 pubkey> <01 17> <20 origin32> <ba>
   assert.strictEqual(t17[34], 0x01);
   assert.strictEqual(t17[35], 17);
-  assert.strictEqual(t17.length, 1 + 33 + 2 + 1);
+  assert.strictEqual(t17.length, 1 + 33 + 2 + 1 + 32 + 1);
 
-  const t1000 = UAP.buildTransferScript(pubkey, 1000);
+  const t1000 = UAP.buildTransferScript(pubkey, 1000, origin);
+  // structure: <21 pubkey> <02 e8 03> <20 origin32> <ba>
   assert.strictEqual(t1000[34], 0x02);
   assert.strictEqual(t1000[35], 0xe8);
   assert.strictEqual(t1000[36], 0x03);
 
   // Out-of-range multipliers are rejected rather than silently encoded.
-  assert.throws(() => UAP.buildTransferScript(pubkey, -1), /multiplier/);
-  assert.throws(() => UAP.buildTransferScript(pubkey, 2147483648), /multiplier/);
-  assert.throws(() => UAP.buildTransferScript(pubkey, 1.5), /multiplier/);
+  assert.throws(() => UAP.buildTransferScript(pubkey, -1, origin), /multiplier/);
+  assert.throws(() => UAP.buildTransferScript(pubkey, 2147483648, origin), /multiplier/);
+  assert.throws(() => UAP.buildTransferScript(pubkey, 1.5, origin), /multiplier/);
 }
 
 // transaction serialization: a 1-in-1-out tx has a predictable byte length,
 // and re-decoding the varints/fields back out should match what went in.
 {
-  const scriptPubKey = UAP.buildTransferScript(new Uint8Array(33).fill(3), 500);
+  const origin = new Uint8Array(32).fill(0x99);
+  const scriptPubKey = UAP.buildTransferScript(new Uint8Array(33).fill(3), 500, origin);
   const tx = {
     version: 1,
     locktime: 0,
@@ -183,7 +195,8 @@ const stubSecp = createStubSecp();
   const privKey = new Uint8Array(32).fill(1);
   const pubkey = new Uint8Array(33).fill(2);
   pubkey[0] = 0x02; // valid compressed pubkey prefix
-  const scriptCode = UAP.buildTransferScript(pubkey, 500);
+  const origin = new Uint8Array(32).fill(0x11);
+  const scriptCode = UAP.buildTransferScript(pubkey, 500, origin);
 
   const tx = {
     version: 1,
@@ -208,7 +221,8 @@ const stubSecp = createStubSecp();
   const privKey = new Uint8Array(32).fill(3);
   const pubkey = new Uint8Array(33).fill(4);
   pubkey[0] = 0x02;
-  const scriptCode = UAP.buildTransferScript(pubkey, 500);
+  const origin = new Uint8Array(32).fill(0x22);
+  const scriptCode = UAP.buildTransferScript(pubkey, 500, origin);
 
   const tx = {
     version: 1,
@@ -922,11 +936,14 @@ const stubSecp = createStubSecp();
 
     let actual;
     if (vec.is_mint) {
-      const { elements } = splitElements(expected);
-      assert.strictEqual(elements.length, 3, `fixture "${vec.comment}": expected 3 elements`);
-      actual = UAP.buildMintScript(pubkey, vec.multiplier, elements[2].data);
+      // v2 mints: <pubkey> <multiplier> OP_MINT (no salt)
+      assert.strictEqual(vec.origin, '', `fixture "${vec.comment}": mints must have empty origin`);
+      actual = UAP.buildMintScript(pubkey, vec.multiplier);
     } else {
-      actual = UAP.buildTransferScript(pubkey, vec.multiplier);
+      // v2 transfers: <pubkey> <multiplier> <origin32> OP_MINT_TRANSFER
+      assert(vec.origin && vec.origin.length === 64, `fixture "${vec.comment}": transfers must have 32-byte origin (64 hex chars)`);
+      const origin = UAP.hexToBytes(vec.origin);
+      actual = UAP.buildTransferScript(pubkey, vec.multiplier, origin);
     }
     assert.deepStrictEqual(
       Array.from(actual), Array.from(expected),
@@ -963,7 +980,8 @@ console.log('uap.js: all tests passed');
 // really wants a huge fee can say so with maxFee.
 {
   const pubkey = new Uint8Array(33).fill(0x02);
-  const scriptPubKey = UAP.buildTransferScript(pubkey, 1000);
+  const origin = new Uint8Array(32).fill(0x77);
+  const scriptPubKey = UAP.buildTransferScript(pubkey, 1000, origin);
 
   assert.strictEqual(UAP.DEFAULT_TRANSACTION_MAXFEE, UAP.RECOMMENDED_MIN_TX_FEE * 10000,
     'the cap must mirror the node constant in src/validation.h');
@@ -1134,13 +1152,18 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0x22);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 1000);
+    const inputTxid = 'aa'.repeat(32);
+    const inputVout = 0;
+    // The position being melted is a TRANSFER, so it already belongs to a
+    // lineage and melting must keep it there.
+    const lineage = UAP.deriveOrigin('cd'.repeat(32), 3);
+    const scriptCode = UAP.buildTransferScript(pubkey, 1000, lineage);
     const fee = 50000;
 
     const tx = UAP.buildMeltTx(stubSecp, {
       input: {
-        txid: 'aa'.repeat(32),
-        vout: 0,
+        txid: inputTxid,
+        vout: inputVout,
         scriptCode,
         value: 5000000,  // dust (1000000) + fee (50000) + a remainder that itself clears dust
         privKey
@@ -1155,9 +1178,14 @@ console.log('uap.js: all tests passed');
     assert.strictEqual(tx.vout.length, 2, 'melt tx should have exactly 2 outputs');
     const covenantOutput = tx.vout[0];
 
-    // The covenant output should be a transfer script (OP_MINT_TRANSFER, not OP_MINT)
-    const expectedScript = UAP.buildTransferScript(pubkey, 1000);
-    assert.deepStrictEqual(covenantOutput.scriptPubKey, expectedScript, 'covenant output must be a OP_MINT_TRANSFER script');
+    // The covenant output continues the lineage the melted position was
+    // already in. It is NOT deriveOrigin(input.txid, input.vout) -- that is
+    // only how a MINT's first spend names a brand new lineage. Asserting the
+    // derived value here is what let the "always derive" bug through: the
+    // expectation was written to match the implementation instead of the
+    // consensus rule.
+    const expectedScript = UAP.buildTransferScript(pubkey, 1000, lineage);
+    assert.deepStrictEqual(covenantOutput.scriptPubKey, expectedScript, 'covenant output must be a OP_MINT_TRANSFER script with correct origin');
   }
 
   // Test: covenant output has dust value
@@ -1166,12 +1194,15 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0x44);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 500);
+    const inputTxid = 'bb'.repeat(32);
+    const inputVout = 1;
+    const dummyOrigin = new Uint8Array(32).fill(0x00);
+    const scriptCode = UAP.buildTransferScript(pubkey, 500, dummyOrigin);
     const fee = 50000;
     const inputValue = 5000000;
 
     const tx = UAP.buildMeltTx(stubSecp, {
-      input: { txid: 'bb'.repeat(32), vout: 1, scriptCode, value: inputValue, privKey },
+      input: { txid: inputTxid, vout: inputVout, scriptCode, value: inputValue, privKey },
       toPubkey: pubkey,
       multiplier: 500,
       fee,
@@ -1188,12 +1219,15 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0x66);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 100);
+    const inputTxid = 'cc'.repeat(32);
+    const inputVout = 2;
+    const dummyOrigin = new Uint8Array(32).fill(0x00);
+    const scriptCode = UAP.buildTransferScript(pubkey, 100, dummyOrigin);
     const fee = 50000;
     const inputValue = 5000000;
 
     const tx = UAP.buildMeltTx(stubSecp, {
-      input: { txid: 'cc'.repeat(32), vout: 2, scriptCode, value: inputValue, privKey },
+      input: { txid: inputTxid, vout: inputVout, scriptCode, value: inputValue, privKey },
       toPubkey: pubkey,
       multiplier: 100,
       fee,
@@ -1213,10 +1247,14 @@ console.log('uap.js: all tests passed');
 
     // Test with multiplier 42 (fits in one byte, will be OP_42 which is 0x50 + 42)
     const multiplier = 42;
-    const scriptCode = UAP.buildTransferScript(pubkey, multiplier);
+    const inputTxid = 'dd'.repeat(32);
+    const inputVout = 3;
+    // A transfer, so it is already in a lineage; melting keeps it there.
+    const lineage = UAP.deriveOrigin('ef'.repeat(32), 1);
+    const scriptCode = UAP.buildTransferScript(pubkey, multiplier, lineage);
 
     const tx = UAP.buildMeltTx(stubSecp, {
-      input: { txid: 'dd'.repeat(32), vout: 3, scriptCode, value: 5000000, privKey },
+      input: { txid: inputTxid, vout: inputVout, scriptCode, value: 5000000, privKey },
       toPubkey: pubkey,
       multiplier,
       fee: 30000,
@@ -1224,8 +1262,9 @@ console.log('uap.js: all tests passed');
     });
 
     const covenantOutput = tx.vout[0];
-    const expectedScript = UAP.buildTransferScript(pubkey, multiplier);
-    assert.deepStrictEqual(covenantOutput.scriptPubKey, expectedScript, 'covenant output must preserve multiplier');
+    // Same lineage in, same lineage out -- see the note on the melt test above.
+    const expectedScript = UAP.buildTransferScript(pubkey, multiplier, lineage);
+    assert.deepStrictEqual(covenantOutput.scriptPubKey, expectedScript, 'covenant output must preserve multiplier and use correct origin');
   }
 
   // Test: melting a position too small to leave dust + fee is rejected
@@ -1234,7 +1273,8 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0xaa);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 1);
+    const dummyOrigin = new Uint8Array(32).fill(0x00);
+    const scriptCode = UAP.buildTransferScript(pubkey, 1, dummyOrigin);
     const fee = 50000;
     // A meltable position needs TWO dust limits plus the fee: one for the
     // covenant that must survive the spend, and one so the remainder output
@@ -1266,7 +1306,8 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0xbb);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 1);
+    const dummyOrigin = new Uint8Array(32).fill(0x00);
+    const scriptCode = UAP.buildTransferScript(pubkey, 1, dummyOrigin);
 
     // Chosen so the remainder lands BELOW the dust limit: exactly the shape
     // the old code turned into a silent burn rather than an error.
@@ -1290,12 +1331,15 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0xcc);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 10);
+    const inputTxid = 'ff'.repeat(32);
+    const inputVout = 5;
+    const dummyOrigin = new Uint8Array(32).fill(0x00);
+    const scriptCode = UAP.buildTransferScript(pubkey, 10, dummyOrigin);
     const fee = 50000;
     const inputValue = 5000000;
 
     const tx = UAP.buildMeltTx(stubSecp, {
-      input: { txid: 'ff'.repeat(32), vout: 5, scriptCode, value: inputValue, privKey },
+      input: { txid: inputTxid, vout: inputVout, scriptCode, value: inputValue, privKey },
       toPubkey: pubkey,
       multiplier: 10,
       fee,
@@ -1312,12 +1356,15 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0xee);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 5);
+    const inputTxid = 'aa00'.repeat(16);
+    const inputVout = 6;
+    const dummyOrigin = new Uint8Array(32).fill(0x00);
+    const scriptCode = UAP.buildTransferScript(pubkey, 5, dummyOrigin);
     const inputValue = 5000000;
 
     // Call without specifying fee (should use default of 50000)
     const tx = UAP.buildMeltTx(stubSecp, {
-      input: { txid: 'aa00'.repeat(16), vout: 6, scriptCode, value: inputValue, privKey },
+      input: { txid: inputTxid, vout: inputVout, scriptCode, value: inputValue, privKey },
       toPubkey: pubkey,
       multiplier: 5,
       remainderScript: dummyRemainderScript
@@ -1334,10 +1381,13 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0x01);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 20);
+    const inputTxid = 'bb11'.repeat(16);
+    const inputVout = 7;
+    const dummyOrigin = new Uint8Array(32).fill(0x00);
+    const scriptCode = UAP.buildTransferScript(pubkey, 20, dummyOrigin);
 
     const tx = UAP.buildMeltTx(stubSecp, {
-      input: { txid: 'bb11'.repeat(16), vout: 7, scriptCode, value: 3000000, privKey },
+      input: { txid: inputTxid, vout: inputVout, scriptCode, value: 3000000, privKey },
       toPubkey: pubkey,
       multiplier: 20,
       fee: 40000,
@@ -1355,13 +1405,15 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0x03);
     pubkey[0] = 0x02;
     const multiplier = 777;
-    const salt = new Uint8Array(20).fill(0x04);
 
-    // Input is a fresh mint (OP_MINT script)
-    const mintScriptCode = UAP.buildMintScript(pubkey, multiplier, salt);
+    // Input is a fresh mint (OP_MINT script, no origin)
+    const mintScriptCode = UAP.buildMintScript(pubkey, multiplier);
+
+    const inputTxid = 'cc22'.repeat(16);
+    const inputVout = 8;
 
     const tx = UAP.buildMeltTx(stubSecp, {
-      input: { txid: 'cc22'.repeat(16), vout: 8, scriptCode: mintScriptCode, value: 4000000, privKey },
+      input: { txid: inputTxid, vout: inputVout, scriptCode: mintScriptCode, value: 4000000, privKey },
       toPubkey: pubkey,
       multiplier,
       fee: 45000,
@@ -1370,7 +1422,8 @@ console.log('uap.js: all tests passed');
 
     // The output must be a OP_MINT_TRANSFER script (which uses OP_MINT_TRANSFER, not OP_MINT)
     const covenantOutput = tx.vout[0];
-    const expectedScript = UAP.buildTransferScript(pubkey, multiplier);
+    const expectedOrigin = UAP.deriveOrigin(inputTxid, inputVout);
+    const expectedScript = UAP.buildTransferScript(pubkey, multiplier, expectedOrigin);
     assert.deepStrictEqual(covenantOutput.scriptPubKey, expectedScript, 'melting a mint must still emit OP_MINT_TRANSFER, not OP_MINT');
 
     // Verify it's using OP_MINT_TRANSFER (0xba), not OP_MINT (0xb5)
@@ -1383,7 +1436,8 @@ console.log('uap.js: all tests passed');
     const pubkey = new Uint8Array(33).fill(0x05);
     pubkey[0] = 0x02;
 
-    const scriptCode = UAP.buildTransferScript(pubkey, 1);
+    const dummyOrigin = new Uint8Array(32).fill(0x00);
+    const scriptCode = UAP.buildTransferScript(pubkey, 1, dummyOrigin);
 
     assert.throws(
       () => UAP.buildMeltTx(stubSecp, {
@@ -1397,4 +1451,129 @@ console.log('uap.js: all tests passed');
       'buildMeltTx must refuse a fee above the cap'
     );
   }
+}
+
+// ---- serializeTx: txid length validation ----
+// A transaction input's txid must be exactly 32 bytes (64 hex characters).
+// A txid shorter or longer than that is invalid and must be rejected with a
+// clear error message naming the offending txid and its actual byte length.
+// This prevents silent corruption of transaction bytes due to a typo in the txid.
+{
+  // Test 1: Reject a txid that is too short (31 bytes / 62 hex characters)
+  {
+    const tooShortTxid = 'aa'.repeat(31);  // 31 bytes = 62 hex chars
+    assert.strictEqual(tooShortTxid.length, 62, 'test setup: short txid should be 62 hex chars');
+
+    const tx = {
+      version: 1,
+      locktime: 0,
+      vin: [{ txid: tooShortTxid, vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+      vout: [{ value: 100000, scriptPubKey: new Uint8Array([1, 2, 3]) }],
+    };
+
+    assert.throws(
+      () => UAP.serializeTx(tx),
+      /txid|bytes|32|length/i,
+      'serializeTx should reject a 31-byte txid with a clear error message'
+    );
+  }
+
+  // Test 2: Reject a txid that is too long (33 bytes / 66 hex characters)
+  {
+    const tooLongTxid = 'bb'.repeat(33);  // 33 bytes = 66 hex chars
+    assert.strictEqual(tooLongTxid.length, 66, 'test setup: long txid should be 66 hex chars');
+
+    const tx = {
+      version: 1,
+      locktime: 0,
+      vin: [{ txid: tooLongTxid, vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+      vout: [{ value: 100000, scriptPubKey: new Uint8Array([1, 2, 3]) }],
+    };
+
+    assert.throws(
+      () => UAP.serializeTx(tx),
+      /txid|bytes|32|length/i,
+      'serializeTx should reject a 33-byte txid with a clear error message'
+    );
+  }
+
+  // Test 3: Accept a correct 32-byte txid (64 hex characters)
+  {
+    const correctTxid = 'cc'.repeat(32);  // 32 bytes = 64 hex chars
+    assert.strictEqual(correctTxid.length, 64, 'test setup: correct txid should be 64 hex chars');
+
+    const tx = {
+      version: 1,
+      locktime: 0,
+      vin: [{ txid: correctTxid, vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+      vout: [{ value: 100000, scriptPubKey: new Uint8Array([1, 2, 3]) }],
+    };
+
+    // Should not throw; serialization should succeed
+    const serialized = UAP.serializeTx(tx);
+    assert(serialized instanceof Uint8Array, 'serializeTx should return a Uint8Array for a valid 32-byte txid');
+    assert(serialized.length > 0, 'serialized transaction should have non-zero length');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A spend takes its lineage from the covenant it spends, not from its outpoint.
+//
+// Regression: all three builders derived the origin as deriveOrigin(input.txid,
+// input.vout) unconditionally. That is right only for a mint's FIRST spend,
+// where identity is being created. Spending a transfer must carry the existing
+// origin forward -- and since every spend after the first spends a transfer,
+// the bug meant the wallet could build exactly one valid transaction per token
+// and then silently emitted transactions consensus rejects. Every test passed,
+// because every test spent a mint.
+// ---------------------------------------------------------------------------
+{
+  const priv = new Uint8Array(32).fill(0x33);
+  const pub = new Uint8Array(33).fill(0x22);
+  pub[0] = 0x02;
+  const toPubkey = new Uint8Array(33).fill(0x03);
+  toPubkey[0] = 0x02;
+  const lineage = UAP.deriveOrigin('ab'.repeat(32), 0);
+  const stubSecp = createStubSecp();
+
+  const originOfOutput = (script) => {
+    const hex = UAP.bytesToHex(script);
+    return hex.slice(hex.length - 66, hex.length - 2);
+  };
+
+  // Spending a transfer: the output must stay in the input's lineage.
+  const transferScript = UAP.buildTransferScript(pub, 4, lineage);
+  const spendTransfer = UAP.buildTransferTx(stubSecp, {
+    input: { txid: 'dd'.repeat(32), vout: 2, scriptCode: transferScript, value: 10 * UAP.COIN, privKey: priv },
+    toPubkey, multiplier: 4, fee: 60000,
+  });
+  assert.strictEqual(originOfOutput(spendTransfer.vout[0].scriptPubKey), UAP.bytesToHex(lineage),
+     'spending a transfer must carry its lineage forward, not mint a new one');
+
+  // Spending a mint: identity is created here, from the outpoint being spent.
+  const mintScript = UAP.buildMintScript(pub, 4);
+  const spendMint = UAP.buildTransferTx(stubSecp, {
+    input: { txid: 'ee'.repeat(32), vout: 1, scriptCode: mintScript, value: 10 * UAP.COIN, privKey: priv },
+    toPubkey, multiplier: 4, fee: 60000,
+  });
+  assert.strictEqual(originOfOutput(spendMint.vout[0].scriptPubKey), UAP.bytesToHex(UAP.deriveOrigin('ee'.repeat(32), 1)),
+     "a mint's first spend stamps SHA256 of its own outpoint");
+
+  // Melt must behave the same way: it is a spend like any other.
+  const melt = UAP.buildMeltTx(stubSecp, {
+    input: { txid: 'dd'.repeat(32), vout: 2, scriptCode: transferScript, value: 10 * UAP.COIN, privKey: priv },
+    toPubkey, multiplier: 4,
+    remainderScript: new Uint8Array([0x76, 0xa9, 0x14, ...new Array(20).fill(0xff), 0x88, 0xac]),
+    fee: 60000,
+  });
+  assert.strictEqual(originOfOutput(melt.vout[0].scriptPubKey), UAP.bytesToHex(lineage),
+     'melting a transfer must keep the position in its own lineage');
+
+  // A scriptCode that is neither shape is refused rather than guessed at.
+  let threw = false;
+  try { UAP.originForSpend(new Uint8Array([0x76, 0xa9, 0x14, ...new Array(20).fill(0xff), 0x88, 0xac]), 'dd'.repeat(32), 0); }
+  catch (e) { threw = true; }
+  if (!threw) throw new Error('originForSpend accepted a non-covenant scriptCode');
+
+  console.log('uap.js: lineage is taken from the covenant spent, not the outpoint');
 }

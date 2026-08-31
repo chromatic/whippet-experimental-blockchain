@@ -102,10 +102,12 @@ const pub = secp.getPublicKey(priv, true); // compressed
 // 2. Build a mint script and fund it (the funding step is an ordinary
 //    wallet spend -- see doc/uap-minting-guide.md -- only the *new*
 //    output's scriptPubKey needs to be this mint script)
-const salt = UAP.randomSalt(20);
-const mintScript = UAP.buildMintScript(pub, /* multiplier */ 1000, salt);
+const mintScript = UAP.buildMintScript(pub, /* multiplier */ 1000);
 
-// 3. Later, spend the confirmed mint output into a transfer covenant
+// 3. Later, spend the confirmed mint output into a transfer covenant.
+//    The first spend is where the lineage is born: buildTransferTx derives
+//    the origin from the outpoint being spent (see originForSpend), so it
+//    is not passed in here. A later transfer carries that origin forward.
 const recipientPub = /* ... */;
 const tx = UAP.buildTransferTx(secp, {
   input: {
@@ -188,8 +190,10 @@ the three suites fails.
   `buildMintScript`/`buildTransferScript` do this for you; if you assemble
   script bytes yourself, get it right. Consensus rejects anything else,
   because the same script is executed under `SCRIPT_VERIFY_MINIMALDATA`
-  when the position is spent, and a non-canonical position would be one
-  the network refuses to relay a spend of.
+  when the position is spent. A non-canonically spelled position is worse
+  than unrelayable: it parses as no covenant at all, so spending it confers
+  no lineage, so the covenant output such a spend must produce is refused by
+  `CheckUapOutputCreation`. It is unspendable outright, not merely awkward.
 - **This is a mirror of the consensus script format, not the source of
   truth**, same caveat as `uap-indexer`. If `OP_MINT`'s script format or
   signing rules change in `src/script/script.cpp`, this must be updated to

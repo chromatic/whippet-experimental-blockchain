@@ -107,7 +107,27 @@ for (const c of fixture.scriptSigs) {
   const priv = unhex(c.priv);
   const key = fixture.keys.find((k) => k.priv === c.priv);
   const pub = unhex(key.pubCompressed);
-  const scriptCode = UAP.buildTransferScript(pub, 500);
+  // FROZEN scriptCode: `<pubkey> <500> OP_MINT_TRANSFER`, written as literal
+  // bytes rather than built by UAP.buildTransferScript.
+  //
+  // This file's job is to pin @noble/secp256k1's RFC6979 output ACROSS
+  // library versions: the fixture is a v1.7.1 baseline and the installed
+  // library is 2.3.0, so every assertion here is evidence that the two still
+  // agree byte for byte. A signature is over a sighash, a sighash is over the
+  // scriptCode -- so building the scriptCode with the covenant builder
+  // silently coupled that cross-version guarantee to the covenant FORMAT.
+  //
+  // When the format changed to v2, every expected value in the fixture went
+  // wrong at once, and the obvious fix -- regenerate the fixture -- replaces
+  // the v1.7.1 baseline with whatever the currently installed library emits.
+  // That deletes the guarantee entirely while leaving the suite green, which
+  // is why the fixture says in its own header not to regenerate it.
+  //
+  // These bytes are arbitrary and must never change. They are no longer a
+  // covenant this codebase builds, and that is fine: nothing here cares what
+  // the script MEANS, only that it is a fixed sequence of bytes to sign over.
+  // Do not "modernise" it to the current format.
+  const scriptCode = new Uint8Array([0x21, ...pub, 0x02, 0xf4, 0x01, 0xba]);
   const label = `${c.priv.slice(0, 8)}.. hashType=${c.hashType} nIn=${c.nIn}`;
 
   eq(hex(UAP.signatureHash(scriptCode, fixedTx(), c.nIn, c.hashType)), c.sigHash, `signatureHash ${label}`);

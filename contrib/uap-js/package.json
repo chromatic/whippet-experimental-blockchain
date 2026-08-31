@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Build and sign Whippet UAP (OP_MINT / OP_MINT_TRANSFER) transactions in plain JavaScript.",
   "scripts": {
-    "test": "node sha256.test.js && node ripemd160.test.js && node addr.test.js && node uap.test.js && node sighash-vectors.test.js && node secp-equivalence.test.js && node signing.test.js",
+    "test": "node sha256.test.js && node ripemd160.test.js && node addr.test.js && node uap.test.js && node sighash-vectors.test.js && node secp-equivalence.test.js && node signing.test.js && node origin-vectors.test.js",
     "test:integration": "node integration.test.js",
     "vendor:secp": "node vendor-secp.mjs"
   },

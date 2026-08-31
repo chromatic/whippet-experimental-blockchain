@@ -19,7 +19,7 @@
 // never paste a real private key into a demo page. Signing must happen
 // wherever the key lives (ideally the user's own device).
 
-import { hash256, hmacSha256, concatBytes } from './sha256.js';
+import { sha256, hash256, hmacSha256, concatBytes } from './sha256.js';
 
 /**
  * @noble/secp256k1 deliberately ships no hash implementation, to stay
@@ -121,6 +121,72 @@ function scriptNumBytes(n) {
 }
 
 /**
+ * Derive a token's lineage origin from the outpoint being spent.
+ * origin = SHA256(prevout.hash_reversed || prevout.n as 4-byte LE)
+ *
+ * @param txid 64-character hex string (big-endian / display order)
+ * @param vout output index (uint32)
+ * @returns 32-byte Uint8Array origin
+ */
+function deriveOrigin(txid, vout) {
+  const txidBytes = hexToBytes(txid);
+  if (txidBytes.length !== 32) {
+    throw new Error(`txid must be exactly 32 bytes, got ${txidBytes.length}`);
+  }
+  if (!Number.isInteger(vout) || vout < 0 || vout > 0xffffffff) {
+    throw new Error('vout must be an unsigned 32-bit integer');
+  }
+  const reversed = reverseBytes(txidBytes);
+  const voutLE = encodeUint32LE(vout);
+  const preimage = concatBytes(reversed, voutLE);
+  // Origin is SHA256(txid_reversed || vout_le), NOT the Bitcoin-style double hash256
+  return sha256(preimage);
+}
+
+/**
+ * The lineage the covenant outputs of a spend must carry.
+ *
+ * This is NOT always deriveOrigin(txid, vout), and getting that wrong is the
+ * easiest way to build a transaction the network will reject:
+ *
+ *   - Spending a MINT is the lineage's first spend, and the moment its
+ *     identity is created. The origin is derived from the outpoint being
+ *     spent, because a mint output cannot contain its own outpoint (that
+ *     depends on the txid, which depends on the script).
+ *   - Spending a TRANSFER must carry that lineage's existing origin forward
+ *     UNCHANGED. Deriving a fresh one from the transfer's own outpoint
+ *     renames the position into a lineage that has no input in the
+ *     transaction, and consensus rejects it (see the C++
+ *     transfer_rejects_rewriting_the_origin test).
+ *
+ * Since every spend after the first spends a transfer, deriving from the
+ * outpoint unconditionally produces a wallet that can make exactly one valid
+ * transaction per token and then silently emits invalid ones forever.
+ *
+ * @param scriptCode the covenant being spent (this position's scriptPubKey)
+ * @param txid,vout the outpoint being spent
+ * @returns 32-byte origin
+ */
+function originForSpend(scriptCode, txid, vout) {
+  if (!scriptCode || scriptCode.length < 1) {
+    throw new Error('originForSpend needs the scriptCode of the position being spent');
+  }
+  const last = scriptCode[scriptCode.length - 1];
+  if (last === OP_MINT) {
+    return deriveOrigin(txid, vout);
+  }
+  if (last === OP_MINT_TRANSFER) {
+    const n = scriptCode.length;
+    // ... <0x20> <32-byte origin> OP_MINT_TRANSFER
+    if (n < 34 || scriptCode[n - 34] !== 0x20) {
+      throw new Error('transfer scriptCode does not carry a 32-byte origin push');
+    }
+    return scriptCode.slice(n - 33, n - 1);
+  }
+  throw new Error('scriptCode is not a UAP mint or transfer covenant');
+}
+
+/**
  * Push a UAP multiplier in its canonical encoding: OP_0 for zero,
  * OP_1..OP_16 for 1..16, and a minimal data push of a minimal CScriptNum
  * above that. This is exactly what CScript::operator<<(int64_t) emits.
@@ -154,20 +220,28 @@ function pushMultiplier(n) {
 
 /**
  * Build a fresh OP_MINT output script:
- *   <recipient_pubkey> <multiplier> <salt> OP_MINT
- * salt must be >= 16 bytes (consensus rule).
+ *   <recipient_pubkey> <multiplier> OP_MINT
  */
-function buildMintScript(pubkey, multiplier, salt) {
-  if (salt.length < 16) throw new Error('salt must be at least 16 bytes');
-  return concatBytes(pushData(pubkey), pushMultiplier(multiplier), pushData(salt), Uint8Array.of(OP_MINT));
+function buildMintScript(pubkey, multiplier) {
+  return concatBytes(pushData(pubkey), pushMultiplier(multiplier), Uint8Array.of(OP_MINT));
 }
 
 /**
  * Build an OP_MINT_TRANSFER covenant output script:
- *   <recipient_pubkey> <multiplier> OP_MINT_TRANSFER
+ *   <recipient_pubkey> <multiplier> <origin32> OP_MINT_TRANSFER
+ *
+ * @param pubkey recipient's public key (Uint8Array)
+ * @param multiplier token multiplier (integer)
+ * @param origin 32-byte Uint8Array lineage identifier (required)
  */
-function buildTransferScript(pubkey, multiplier) {
-  return concatBytes(pushData(pubkey), pushMultiplier(multiplier), Uint8Array.of(OP_MINT_TRANSFER));
+function buildTransferScript(pubkey, multiplier, origin) {
+  if (origin === undefined) {
+    throw new Error('buildTransferScript requires origin parameter (32-byte Uint8Array)');
+  }
+  if (origin.length !== 32) {
+    throw new Error(`origin must be exactly 32 bytes, got ${origin.length}`);
+  }
+  return concatBytes(pushData(pubkey), pushMultiplier(multiplier), pushData(origin), Uint8Array.of(OP_MINT_TRANSFER));
 }
 
 // A token's ticker lives in an OP_RETURN on its mint transaction:
@@ -291,16 +365,6 @@ function buildMetadataScript({ ticker, metadataHash = null }) {
   return script;
 }
 
-/** Generate a cryptographically random 16+ byte salt for a new mint. */
-function randomSalt(len) {
-  len = len || 32;
-  const out = new Uint8Array(len);
-  if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
-    throw new Error('no cryptographically secure RNG available (need global crypto.getRandomValues)');
-  }
-  crypto.getRandomValues(out);
-  return out;
-}
 
 // ---- varint / transaction (de)serialization (legacy, non-segwit) ----
 
@@ -333,7 +397,11 @@ function encodeInt64LE(n) {
 function serializeTx(tx) {
   const parts = [encodeUint32LE(tx.version || 1), encodeVarInt(tx.vin.length)];
   for (const vin of tx.vin) {
-    const txidLE = reverseBytes(hexToBytes(vin.txid));
+    const txidBytes = hexToBytes(vin.txid);
+    if (txidBytes.length !== 32) {
+      throw new Error(`txid must be exactly 32 bytes, got ${txidBytes.length} (${JSON.stringify(vin.txid)})`);
+    }
+    const txidLE = reverseBytes(txidBytes);
     const scriptSig = vin.scriptSig || new Uint8Array(0);
     // scriptSigLength exists only for signatureHash's scriptCode, where the
     // node writes a length that can disagree with the bytes that follow.
@@ -720,11 +788,16 @@ function buildTransferTx(secp, opts) {
   }
   const outValue = opts.input.value - fee;
   if (outValue <= 0) throw new Error('fee exceeds input value');
+
+  // First spend of a mint assigns the lineage; a transfer carries its own
+  // forward. See originForSpend -- deriving unconditionally is wrong.
+  const origin = originForSpend(opts.input.scriptCode, opts.input.txid, opts.input.vout);
+
   const tx = {
     version: 1,
     locktime: 0,
     vin: [{ txid: opts.input.txid, vout: opts.input.vout, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
-    vout: [{ value: outValue, scriptPubKey: buildTransferScript(opts.toPubkey, opts.multiplier) }],
+    vout: [{ value: outValue, scriptPubKey: buildTransferScript(opts.toPubkey, opts.multiplier, origin) }],
   };
   tx.vin[0].scriptSig = signSpend(secp, opts.input.scriptCode, opts.input.privKey, tx, 0);
   return tx;
@@ -796,9 +869,13 @@ function buildMeltTx(secp, opts) {
     );
   }
 
+  // First spend of a mint assigns the lineage; a transfer carries its own
+  // forward. See originForSpend.
+  const origin = originForSpend(opts.input.scriptCode, opts.input.txid, opts.input.vout);
+
   // Covenant at index 0, remainder at index 1.
   const vout = [
-    { value: dustValue, scriptPubKey: buildTransferScript(opts.toPubkey, opts.multiplier) },
+    { value: dustValue, scriptPubKey: buildTransferScript(opts.toPubkey, opts.multiplier, origin) },
     { value: remainder, scriptPubKey: opts.remainderScript }
   ];
 
@@ -868,7 +945,13 @@ function signMakerOrder(secp, opts) {
  * broadcasting -- this only assembles the transaction, it doesn't
  * complete it.
  *
- * @param order the object returned by signMakerOrder
+ * @param order the object returned by signMakerOrder. Its `origin` is the
+ *   32-byte lineage of the position being sold. The taker CANNOT derive this:
+ *   for a transfer it lives in the maker's scriptPubKey, which the taker never
+ *   sees (an order carries only the maker's scriptSig), and deriving it from
+ *   the maker's outpoint is right only when the position is a fresh mint. So
+ *   the lineage has to travel with the order -- the relay reads it off the
+ *   position and publishes it, the same way it publishes backing_value.
  * @param opts {
  *   toPubkey, multiplier: the covenant the taker wants the token sent to,
  *   tokenValue: the position's full value (satoshis) -- the maker's
@@ -880,6 +963,17 @@ function signMakerOrder(secp, opts) {
  * }
  */
 function fillOrder(order, opts) {
+  // The lineage comes from the order, not from the maker's outpoint: see the
+  // note on @param order. Deriving it here would silently produce a fillable-
+  // looking transaction that consensus rejects for every position except a
+  // fresh mint's first sale.
+  const origin = order.origin !== undefined
+    ? order.origin
+    : originForSpend(order.input.scriptCode, order.input.txid, order.input.vout);
+  if (!(origin instanceof Uint8Array) || origin.length !== 32) {
+    throw new Error('fillOrder needs the order\'s 32-byte lineage origin');
+  }
+
   const tx = {
     version: 1,
     locktime: 0,
@@ -889,7 +983,7 @@ function fillOrder(order, opts) {
     ],
     vout: [
       order.paymentScript !== undefined ? { value: order.paymentValue, scriptPubKey: order.paymentScript } : null,
-      { value: opts.tokenValue, scriptPubKey: buildTransferScript(opts.toPubkey, opts.multiplier) },
+      { value: opts.tokenValue, scriptPubKey: buildTransferScript(opts.toPubkey, opts.multiplier, origin) },
     ].filter(Boolean),
   };
   if (opts.changeValue) {
@@ -978,7 +1072,8 @@ export {
   hexToBytes,
   bytesToHex,
   concatBytes,
-  randomSalt,
+  deriveOrigin,
+  originForSpend,
   configureSecp,
   buildMintScript,
   buildTransferScript,

@@ -247,7 +247,7 @@ async function main() {
       const mintPubKey = secp.getPublicKey(mintPrivKey, true);
       const salt = new Uint8Array(20);
       crypto.getRandomValues(salt);
-      const mintScript = UAP.buildMintScript(mintPubKey, multiplier, salt);
+      const mintScript = UAP.buildMintScript(mintPubKey, multiplier);
 
       const utxo = await freshUtxo();
       const valueSats = satoshisFromCoins(utxo.amount);

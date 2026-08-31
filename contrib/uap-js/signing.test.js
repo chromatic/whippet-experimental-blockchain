@@ -677,7 +677,8 @@ for (let i = 0; i < 24; i++) {
   const priv = privFor(i);
   const pub = getPub(priv, true);
   const pubPoint = decompressOrParse(pub);
-  const scriptCode = UAP.buildTransferScript(pub, 500 + i);
+  const origin = new Uint8Array(32).fill(0x99); // dummy origin for signing tests
+  const scriptCode = UAP.buildTransferScript(pub, 500 + i, origin);
   const tx = makeTx(i);
   const hashType = [UAP.SIGHASH_ALL, UAP.SIGHASH_NONE, UAP.SIGHASH_ALL | UAP.SIGHASH_ANYONECANPAY][i % 3];
 
@@ -729,7 +730,8 @@ for (let i = 0; i < 6; i++) {
   const priv = privFor(100 + i);
   const pub = getPub(priv, true);
   const pubPoint = decompressOrParse(pub);
-  const scriptCode = UAP.buildTransferScript(pub, 1000 + i);
+  const origin = new Uint8Array(32).fill(0x99); // dummy origin for signing tests
+  const scriptCode = UAP.buildTransferScript(pub, 1000 + i, origin);
   const tx = makeTx(200 + i);
   const hashType = UAP.SIGHASH_ALL;
 
@@ -755,7 +757,8 @@ for (let i = 0; i < 6; i++) {
 {
   const priv = privFor(7);
   const pub = getPub(priv, true);
-  const scriptCode = UAP.buildTransferScript(pub, 42);
+  const origin = new Uint8Array(32).fill(0x99); // dummy origin for signing tests
+  const scriptCode = UAP.buildTransferScript(pub, 42, origin);
   const tx = makeTx(7);
   for (const hashType of [
     UAP.SIGHASH_ALL,
@@ -789,7 +792,8 @@ for (let i = 0; i < 6; i++) {
 {
   const priv = privFor(999);
   const pub = getPub(priv, true);
-  const scriptCode = UAP.buildTransferScript(pub, 7);
+  const origin = new Uint8Array(32).fill(0x99); // dummy origin for signing tests
+  const scriptCode = UAP.buildTransferScript(pub, 7, origin);
 
   const found = {
     shortR: null,   // r encoded in fewer than 32 bytes
@@ -892,7 +896,8 @@ for (let i = 0; i < 6; i++) {
   for (let i = 0; i < 40; i++) {
     const priv = privFor(500 + i);
     const pub = getPub(priv, true);
-    const scriptCode = UAP.buildTransferScript(pub, 1 + i);
+    const origin = new Uint8Array(32).fill(0x99); // dummy origin for signing tests
+    const scriptCode = UAP.buildTransferScript(pub, 1 + i, origin);
     const tx = makeTx(500 + i);
     const push = unwrapSinglePush(UAP.signSpend(secp, scriptCode, priv, tx, 0), `lowS#${i}`);
     const p = parseDerStrict(push.subarray(0, push.length - 1), `lowS#${i}`);
