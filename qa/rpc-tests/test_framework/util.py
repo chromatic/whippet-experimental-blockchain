@@ -707,7 +707,30 @@ def mine_large_block(node, utxos=None):
     if len(utxos) < num:
         utxos.clear()
         utxos.extend(node.listunspent())
-    fee = 100 * node.getnetworkinfo()["relayfee"]
+    # Each of these transactions is padded to ~66-68KB (see
+    # gen_return_txouts() above). Upstream Bitcoin sizes the fee as a flat
+    # 100x relayfee because its block-inclusion minimum (blockmintxfee,
+    # DEFAULT_BLOCK_MIN_TX_FEE) is the same rate as its relay minimum
+    # (DEFAULT_MIN_RELAY_TX_FEE) -- 1000 sat/kB either way -- so a fee
+    # comfortably above the relay floor is also comfortably above the
+    # mining floor. On Whippet the two floors are not the same rate:
+    # DEFAULT_BLOCK_MIN_TX_FEE is RECOMMENDED_MIN_TX_FEE (COIN/100), while
+    # DEFAULT_MIN_RELAY_TX_FEE is RECOMMENDED_MIN_TX_FEE/10 (see
+    # src/policy/policy.h and src/validation.h) -- the block-inclusion
+    # floor is 10x the relay floor. A fee sized only off relayfee (as
+    # upstream does) clears the relay floor but sits far below the
+    # block-inclusion floor, so CreateNewBlock's addPackageTxs() bails out
+    # of fee-based tx selection on the very first of these transactions it
+    # considers ("packageFees < blockMinFeeRate.GetFee(packageSize)" in
+    # miner.cpp) and never fills the block: one transaction sneaks in via
+    # the separate priority pass (these inputs are freshly-matured coinbase
+    # spends, so have enormous priority), and the rest sit in the mempool
+    # forever no matter how many more get created. Scale the fee to the
+    # transaction's actual size and clear the (10x higher) block-inclusion
+    # floor with several times' headroom instead of a flat multiple of
+    # relayfee.
+    approx_size_kb = Decimal(len(txouts) // 2 + 200) / Decimal(1000)
+    fee = 30 * node.getnetworkinfo()["relayfee"] * approx_size_kb
     create_lots_of_big_transactions(node, txouts, utxos, num, fee=fee)
     node.generate(1)
 

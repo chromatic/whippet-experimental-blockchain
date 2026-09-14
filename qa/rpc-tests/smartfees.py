@@ -20,6 +20,25 @@ P2SH_2 = "2NBdpwq8Aoo1EEKEXPNrKvr5xQr3M9UfcZA" # P2SH of "OP_2 OP_DROP"
 # 4 bytes of OP_TRUE and push 2-byte redeem script of "OP_1 OP_DROP" or "OP_2 OP_DROP"
 SCRIPT_SIG = ["0451025175", "0451025275"]
 
+# The change output below (total_in - amount - fee) can be arbitrarily
+# small, since small_txpuzzle_randfee stops gathering inputs as soon as
+# it has *just* enough to cover amount+fee. Upstream Bitcoin gets away
+# with that because its dust threshold is a few hundred satoshi, so an
+# almost-empty change output still clears it. Whippet's soft dust limit
+# (nDustLimit / DEFAULT_DUST_LIMIT in src/policy/policy.h) is a full
+# 0.01 WHT, and GetWhippetMinRelayFee() (src/whippet-fees.cpp) charges
+# a full nDustLimit on top of the ordinary relay fee for every dust
+# output a transaction has. Combined with this node's default
+# -limitfreerelay=0 (zero relay allowance for anything classified as a
+# free transaction), a transaction with a dust change output gets
+# accepted locally by the node that creates it, but every peer it
+# reaches over the wire answers with a permanent "reject code 66: rate
+# limited free transaction" and never relays it onward -- it just sits
+# in the originating node's mempool forever, no matter how long
+# sync_mempools() waits. Require enough spare change to clear the dust
+# limit with room to spare so this never happens.
+MIN_CHANGE = Decimal("0.02")
+
 def small_txpuzzle_randfee(from_node, conflist, unconflist, amount, min_fee, fee_increment):
     '''
     Create and send a transaction with a random fee.
@@ -38,17 +57,17 @@ def small_txpuzzle_randfee(from_node, conflist, unconflist, amount, min_fee, fee
     fee = min_fee - fee_increment + satoshi_round(rand_fee)
     inputs = []
     total_in = Decimal("0.00000000")
-    while total_in <= (amount + fee) and len(conflist) > 0:
+    while total_in <= (amount + fee + MIN_CHANGE) and len(conflist) > 0:
         t = conflist.pop(0)
         total_in += t["amount"]
         inputs.append({ "txid" : t["txid"], "vout" : t["vout"]} )
-    if total_in <= amount + fee:
-        while total_in <= (amount + fee) and len(unconflist) > 0:
+    if total_in <= amount + fee + MIN_CHANGE:
+        while total_in <= (amount + fee + MIN_CHANGE) and len(unconflist) > 0:
             t = unconflist.pop(0)
             total_in += t["amount"]
             inputs.append({ "txid" : t["txid"], "vout" : t["vout"]} )
-        if total_in <= amount + fee:
-            raise RuntimeError("Insufficient funds: need %d, have %d"%(amount+fee, total_in))
+        if total_in <= amount + fee + MIN_CHANGE:
+            raise RuntimeError("Insufficient funds: need %d, have %d"%(amount+fee+MIN_CHANGE, total_in))
     outputs = {}
     outputs = OrderedDict([(P2SH_1, total_in - amount - fee),
                            (P2SH_2, amount)])
@@ -212,7 +231,21 @@ class EstimateFeeTest(BitcoinTestFramework):
         self.sync_all()
 
     def transact_and_mine(self, numblocks, mining_node):
-        min_fee = Decimal("0.00001")
+        # Upstream Bitcoin uses 0.00001 BTC here because that's exactly
+        # DEFAULT_MIN_RELAY_TX_FEE (1000 satoshi/kB) on that chain: the whole
+        # point of this constant is to sit right at the relay-fee floor so
+        # the fee-estimation ladder above it is meaningful. Whippet's floor
+        # is 100x higher (see DEFAULT_MIN_RELAY_TX_FEE = RECOMMENDED_MIN_TX_FEE/10
+        # in src/policy/policy.h and src/validation.h, RECOMMENDED_MIN_TX_FEE
+        # itself being COIN/100), i.e. 0.001 WHT/kB -- confirmed against a
+        # running regtest node via `getnetworkinfo`'s "relayfee" field.
+        # Using the Bitcoin-scale constant here makes most of the generated
+        # transactions relay-fee-filtered by node0 (which runs default
+        # policy) while still being locally accepted by node1/node2 (which
+        # opt into free/low-priority transactions), so the three mempools
+        # never converge and sync_mempools() times out. Scale to match this
+        # chain's actual floor instead.
+        min_fee = Decimal("0.001")
         # We will now mine numblocks blocks generating on average 100 transactions between each block
         # We shuffle our confirmed txout set before each set of transactions
         # small_txpuzzle_randfee will use the transactions that have inputs already in the chain when possible
@@ -221,8 +254,24 @@ class EstimateFeeTest(BitcoinTestFramework):
             random.shuffle(self.confutxo)
             for j in range(random.randrange(100-50,100+50)):
                 from_index = random.randint(1,2)
+                # Upstream Bitcoin uses 0.005 BTC here, comfortably above its
+                # dust threshold (a few hundred satoshi). On Whippet the soft
+                # dust limit (nDustLimit, DEFAULT_DUST_LIMIT in
+                # src/policy/policy.h) is 0.01 WHT, so a 0.005 output is dust.
+                # GetWhippetMinRelayFee() (src/whippet-fees.cpp) adds a full
+                # nDustLimit to the fee a transaction needs in order to *not*
+                # be treated as a free transaction, and this node's default
+                # -limitfreerelay=0 gives free transactions zero relay
+                # allowance -- they get accepted locally (sendrawtransaction
+                # doesn't rate-limit your own submissions) but every peer
+                # that receives one over the wire replies with a permanent
+                # "reject code 66: rate limited free transaction" and never
+                # relays it further. The transaction just sits in the
+                # originating node's mempool forever; no amount of waiting
+                # fixes it. Use an output comfortably above the dust limit so
+                # these transactions are never mistaken for free ones.
                 (txhex, fee) = small_txpuzzle_randfee(self.nodes[from_index], self.confutxo,
-                                                      self.memutxo, Decimal("0.005"), min_fee, min_fee)
+                                                      self.memutxo, Decimal("0.05"), min_fee, min_fee)
                 tx_kbytes = (len(txhex) // 2) / 1000.0
                 self.fees_per_kb.append(float(fee)/tx_kbytes)
             sync_mempools(self.nodes[0:3], wait=.1)
