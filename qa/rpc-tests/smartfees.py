@@ -254,22 +254,9 @@ class EstimateFeeTest(BitcoinTestFramework):
             random.shuffle(self.confutxo)
             for j in range(random.randrange(100-50,100+50)):
                 from_index = random.randint(1,2)
-                # Upstream Bitcoin uses 0.005 BTC here, comfortably above its
-                # dust threshold (a few hundred satoshi). On Whippet the soft
-                # dust limit (nDustLimit, DEFAULT_DUST_LIMIT in
-                # src/policy/policy.h) is 0.01 WHT, so a 0.005 output is dust.
-                # GetWhippetMinRelayFee() (src/whippet-fees.cpp) adds a full
-                # nDustLimit to the fee a transaction needs in order to *not*
-                # be treated as a free transaction, and this node's default
-                # -limitfreerelay=0 gives free transactions zero relay
-                # allowance -- they get accepted locally (sendrawtransaction
-                # doesn't rate-limit your own submissions) but every peer
-                # that receives one over the wire replies with a permanent
-                # "reject code 66: rate limited free transaction" and never
-                # relays it further. The transaction just sits in the
-                # originating node's mempool forever; no amount of waiting
-                # fixes it. Use an output comfortably above the dust limit so
-                # these transactions are never mistaken for free ones.
+                # 0.005 (upstream's amount) is below Whippet's 0.01 dust
+                # limit; see MIN_CHANGE above for why a dust output never
+                # relays here.
                 (txhex, fee) = small_txpuzzle_randfee(self.nodes[from_index], self.confutxo,
                                                       self.memutxo, Decimal("0.05"), min_fee, min_fee)
                 tx_kbytes = (len(txhex) // 2) / 1000.0
