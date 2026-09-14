@@ -69,6 +69,16 @@ can take hours. Plan for the downtime before you restart the node, not
 after -- this is not something to discover by accident during a deployment
 window.
 
+**Do not point this at a block-pruned node.** This is a separate axis from
+`-txindex`, and `-txindex` does not rescue it. Both lookup paths end in
+`ReadBlockFromDisk` (`src/validation.cpp`): the UTXO fallback finds the
+containing block and rereads the transaction from it, and the transaction
+index stores a position *into* a block file rather than the transaction
+itself. A node running `-prune` has discarded those files, so verification
+fails for any position old enough to have been pruned -- and fails in the
+most confusing possible way, since recent positions keep working and only
+older ones stop. Initial sync needs the full range of blocks in any case.
+
 **Either way, this indexer checks for itself rather than assuming.** At
 startup (and every poll tick afterward, until it gets a definitive answer)
 it proves whether confirmed-transaction lookup actually works, by fetching
