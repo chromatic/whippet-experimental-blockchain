@@ -275,11 +275,11 @@ static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, cons
 {
     const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
     if (!tchecker || !tchecker->txTo)
-        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        return set_error(serror, SCRIPT_ERR_UAP_NO_TX_CONTEXT);
 
     const CTransaction& tx = *tchecker->txTo;
     if (tx.vout.empty())
-        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        return set_error(serror, SCRIPT_ERR_UAP_NO_TX_CONTEXT);
 
     // Sum every input belonging to this lineage, not merely this one. That
     // is what lets two positions of the same token be combined. The old rule
@@ -299,7 +299,7 @@ static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, cons
     for (int32_t i = 0; i < nInputs; i++) {
         CScript prevScript;
         if (!checker.GetInputScriptPubKey((unsigned int)i, prevScript))
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            return set_error(serror, SCRIPT_ERR_UAP_INPUT_UNREADABLE);
         valtype inPubkey, inOrigin;
         CScriptNum inMult(0);
         bool fInIsMint;
@@ -308,7 +308,7 @@ static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, cons
             continue;
         }
         if ((unsigned int)i >= tx.vin.size())
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            return set_error(serror, SCRIPT_ERR_UAP_NO_TX_CONTEXT);
         // A mint input's lineage is its own outpoint; a transfer carries it.
         const valtype inLineage = fInIsMint ? UapOriginFromOutpoint(tx.vin[i].prevout) : inOrigin;
         // ParseUapOutputScript has already bounded the multiplier to
@@ -318,9 +318,9 @@ static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, cons
             continue;
         CAmount inAmount = 0;
         if (!checker.GetInputAmount((unsigned int)i, inAmount))
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            return set_error(serror, SCRIPT_ERR_UAP_INPUT_UNREADABLE);
         if (inAmount < 0 || nValueIn > MAX_MONEY - inAmount)
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            return set_error(serror, SCRIPT_ERR_UAP_VALUE_OVERFLOW);
         nValueIn += inAmount;
     }
 
@@ -345,7 +345,7 @@ static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, cons
         // finding where a reader looks for it rather than deducing it from
         // two comparisons that happen not to admit an empty origin.
         if (fIsMint)
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            return set_error(serror, SCRIPT_ERR_UAP_MINT_SHAPED_OUTPUT);
         if (outMult != mult || outOrigin != origin) {
             // A different lineage. Permitted only if it also has an input
             // here: spending that input runs this same check for *its*
@@ -355,18 +355,18 @@ static bool CheckUapOutputConservation(const BaseSignatureChecker& checker, cons
             // nothing at all -- tokens from nothing -- since no other
             // conservation check would ever consider it.
             if (!setInputLineages.count(std::make_pair((int64_t)outMult.getint(), outOrigin)))
-                return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                return set_error(serror, SCRIPT_ERR_UAP_UNBACKED_LINEAGE_OUTPUT);
             continue;
         }
         if (out.nValue < 0 || nValueOut > MAX_MONEY - out.nValue)
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            return set_error(serror, SCRIPT_ERR_UAP_VALUE_OVERFLOW);
         nValueOut += out.nValue;
         fHasMatchingCovenantOutput = true;
     }
     if (!fHasMatchingCovenantOutput)
-        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        return set_error(serror, SCRIPT_ERR_UAP_LINEAGE_NOT_CONTINUED);
     if (nValueOut > nValueIn)
-        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        return set_error(serror, SCRIPT_ERR_UAP_CONSERVATION_VIOLATION);
     return true;
 }
 
@@ -383,12 +383,12 @@ static bool CheckUapOneShot(const BaseSignatureChecker& checker, unsigned int nI
             continue;
         CScript prevScript;
         if (!checker.GetInputScriptPubKey((unsigned int)i, prevScript))
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            return set_error(serror, SCRIPT_ERR_UAP_INPUT_UNREADABLE);
         valtype pubkey, origin;
         CScriptNum mult(0);
         bool fIsMint;
         if (ParseUapOutputScript(prevScript, pubkey, mult, origin, fIsMint))
-            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+            return set_error(serror, SCRIPT_ERR_UAP_ONE_SHOT_VIOLATION);
     }
     return true;
 }
@@ -1258,12 +1258,12 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
 
                     const TransactionSignatureChecker* tchecker = dynamic_cast<const TransactionSignatureChecker*>(&checker);
                     if (!tchecker || !tchecker->txTo || tchecker->nIn >= tchecker->txTo->vin.size())
-                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                        return set_error(serror, SCRIPT_ERR_UAP_NO_TX_CONTEXT);
                     const CAmount nValueIn = tchecker->amount;
 
                     // 2. Entry fee: a fresh mint must lock at least 1,000 coin.
                     if (fIsMint && nValueIn < 1000 * COIN)
-                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                        return set_error(serror, SCRIPT_ERR_UAP_MINT_ENTRY_FEE);
 
                     // 3. Origin: exactly 32 bytes (transfers only). Every
                     //    lineage comparison consensus makes is a comparison of
@@ -1281,7 +1281,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     //    that the suite stays green without it; see
                     //    covenant_with_wrong_width_origin_is_unspendable.
                     if (!fIsMint && scriptOrigin.size() != UAP_ORIGIN_SIZE)
-                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                        return set_error(serror, SCRIPT_ERR_UAP_ORIGIN_SIZE);
 
                     // 4. Multiplier range + overflow guard: multiplier must
                     //    fit safely within what CScriptNum::getint() can
@@ -1290,12 +1290,12 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                     //    guard itself both rely on downstream), and
                     //    (base coin * multiplier) <= 2^48.
                     if (multiplier < 0 || multiplier > MAX_UAP_MULTIPLIER)
-                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                        return set_error(serror, SCRIPT_ERR_UAP_MULTIPLIER_RANGE);
                     const int64_t base_coin = nValueIn / COIN;
                     const int64_t mult = static_cast<int64_t>(multiplier.getint());
                     const int64_t kMaxVirtualBalance = (int64_t)1 << 48;
                     if (mult > 0 && base_coin > 0 && base_coin > kMaxVirtualBalance / mult)
-                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                        return set_error(serror, SCRIPT_ERR_UAP_VIRTUAL_BALANCE_BOUND);
 
                     // 5. One-shot (mint only): no sibling input may already
                     //    be spending a UAP mint/transfer position.
@@ -1376,7 +1376,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, un
                                     } else {
                                         int64_t balance;
                                         if (__builtin_mul_overflow((int64_t)out.nValue, (int64_t)outMult.getint(), &balance)) {
-                                            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                                            return set_error(serror, SCRIPT_ERR_UAP_VALUE_OVERFLOW);
                                         }
                                         stack.push_back(CScriptNum(balance).getvch());
                                     }

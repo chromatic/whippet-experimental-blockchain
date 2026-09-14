@@ -176,6 +176,7 @@ BOOST_AUTO_TEST_CASE(mint_rejects_entry_fee_below_threshold)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(spendTx, 0, {mintScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_MINT_ENTRY_FEE);
 }
 
 BOOST_AUTO_TEST_CASE(mint_rejects_non_covenant_output)
@@ -200,6 +201,7 @@ BOOST_AUTO_TEST_CASE(mint_rejects_non_covenant_output)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(spendTx, 0, {mintScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_LINEAGE_NOT_CONTINUED);
 }
 
 BOOST_AUTO_TEST_CASE(mint_rejects_multiplier_mismatch_in_output)
@@ -224,6 +226,7 @@ BOOST_AUTO_TEST_CASE(mint_rejects_multiplier_mismatch_in_output)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(spendTx, 0, {mintScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_UNBACKED_LINEAGE_OUTPUT);
 }
 
 BOOST_AUTO_TEST_CASE(mint_rejects_value_created_out_of_thin_air)
@@ -247,6 +250,7 @@ BOOST_AUTO_TEST_CASE(mint_rejects_value_created_out_of_thin_air)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(spendTx, 0, {mintScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_CONSERVATION_VIOLATION);
 }
 
 // A transfer output spends the same way a mint output does, minus the
@@ -302,6 +306,7 @@ BOOST_AUTO_TEST_CASE(mint_rejects_sibling_uap_input)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(spendTx, 0, {mintScript, otherUapScript}, {nValueIn, 5 * COIN}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_ONE_SHOT_VIOLATION);
 }
 
 // A transfer may coexist with ordinary, non-UAP outputs in the same
@@ -360,6 +365,7 @@ BOOST_AUTO_TEST_CASE(transfer_rejects_no_continuing_covenant)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(spendTx, 0, {transferScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_LINEAGE_NOT_CONTINUED);
 }
 
 // ---------------------------------------------------------------------------
@@ -799,6 +805,7 @@ BOOST_AUTO_TEST_CASE(rejects_output_of_a_lineage_with_no_input)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(tx, 0, {transferScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_UNBACKED_LINEAGE_OUTPUT);
 }
 
 // The same, at a matching multiplier: the phantom lineage differs from the
@@ -827,6 +834,7 @@ BOOST_AUTO_TEST_CASE(rejects_phantom_lineage_sharing_the_multiplier)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(tx, 0, {transferScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_UNBACKED_LINEAGE_OUTPUT);
 }
 
 // A position may be split into several outputs of one lineage.
@@ -889,6 +897,7 @@ BOOST_AUTO_TEST_CASE(spend_rejects_a_mint_shaped_output)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(tx, 0, {transferScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_MINT_SHAPED_OUTPUT);
 }
 
 // A covenant whose origin is not 32 bytes is unspendable. Two independent
@@ -925,6 +934,7 @@ BOOST_AUTO_TEST_CASE(covenant_with_wrong_width_origin_is_unspendable)
         ScriptError err;
         BOOST_CHECK_MESSAGE(!VerifyUapInput(tx, 0, {transferScript}, {nValueIn}, err),
             "a covenant with a " << bad.size() << "-byte origin was spendable");
+        BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_ORIGIN_SIZE);
     }
 }
 
@@ -955,6 +965,7 @@ BOOST_AUTO_TEST_CASE(no_prevout_context_fails_closed)
     bool okBlind = VerifyScript(tx.vin[0].scriptSig, transferScript, NULL, FLAGS,
         MutableTransactionSignatureChecker(&tx, 0, nValueIn), &errBlind);
     BOOST_CHECK_MESSAGE(!okBlind, "a UAP spend verified without prevout context");
+    BOOST_CHECK_EQUAL(errBlind, SCRIPT_ERR_UAP_INPUT_UNREADABLE);
 
     // ...and it is genuinely valid once the context is supplied, so the
     // rejection above is about the missing context and nothing else.
@@ -992,6 +1003,7 @@ BOOST_AUTO_TEST_CASE(unavailable_prevout_value_is_rejected)
 
     ScriptError err;
     BOOST_CHECK(!VerifyUapInput(tx, 0, prevScripts, prevAmounts, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_VALUE_OVERFLOW);
 }
 
 // Height-gated activation: an otherwise fully valid mint spend must be
@@ -1088,6 +1100,69 @@ BOOST_AUTO_TEST_CASE(mint_accepts_multiplier_at_int32_max)
     ScriptError err;
     bool ok = VerifyUapInput(spendTx, 0, {mintScript}, {nValueIn}, err);
     BOOST_CHECK_MESSAGE(ok, ScriptErrorString(err));
+}
+
+// A negative multiplier is the one way to breach the [0, MAX_UAP_MULTIPLIER]
+// bound while still fitting CScriptNum's default 4-byte encoding -- anything
+// *above* MAX_UAP_MULTIPLIER (== INT32_MAX) cannot even be pushed onto the
+// stack without tripping CScriptNum's own overflow check first (see
+// mint_rejects_multiplier_above_int32_max, which never reaches this rule at
+// all). This is the only case that pins the "multiplier < 0" half of rule 4
+// down to its own, specific error rather than the interpreter's generic
+// script-number exception.
+BOOST_AUTO_TEST_CASE(mint_rejects_negative_multiplier)
+{
+    CKey minter, recipient;
+    minter.MakeNewKey(true);
+    recipient.MakeNewKey(true);
+
+    const COutPoint mintPoint = Point(0xf4);
+    const int64_t negativeMultiplier = -1;
+    CScript mintScript = MintScript(minter.GetPubKey(), negativeMultiplier);
+    const CAmount nValueIn = 1000 * COIN;
+
+    CMutableTransaction spendTx;
+    spendTx.vin.resize(1);
+    spendTx.vin[0].prevout = mintPoint;
+    spendTx.vout.resize(1);
+    spendTx.vout[0].nValue = nValueIn;
+    spendTx.vout[0].scriptPubKey = TransferScript(recipient.GetPubKey(), OriginOf(mintPoint), negativeMultiplier);
+    spendTx.vin[0].scriptSig = SignSpend(mintScript, minter, spendTx, 0);
+
+    ScriptError err;
+    BOOST_CHECK(!VerifyUapInput(spendTx, 0, {mintScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_MULTIPLIER_RANGE);
+}
+
+// The multiplier-times-base-coin bound (rule 4's other half): a multiplier
+// within [0, MAX_UAP_MULTIPLIER] can still push the position's virtual
+// balance (base coin * multiplier) past 2^48, which is the range
+// OP_INSPECT's virtual-balance selector and this guard both rely on staying
+// inside. 200,000 coin at the maximum multiplier clears 2^48 comfortably
+// while the multiplier itself stays in range, isolating this half of the
+// rule from mint_rejects_negative_multiplier above.
+BOOST_AUTO_TEST_CASE(mint_rejects_virtual_balance_above_bound)
+{
+    CKey minter, recipient;
+    minter.MakeNewKey(true);
+    recipient.MakeNewKey(true);
+
+    const COutPoint mintPoint = Point(0xf5);
+    const int64_t hugeMultiplier = MAX_UAP_MULTIPLIER;
+    CScript mintScript = MintScript(minter.GetPubKey(), hugeMultiplier);
+    const CAmount nValueIn = 200000 * COIN; // base_coin = 200,000
+
+    CMutableTransaction spendTx;
+    spendTx.vin.resize(1);
+    spendTx.vin[0].prevout = mintPoint;
+    spendTx.vout.resize(1);
+    spendTx.vout[0].nValue = nValueIn;
+    spendTx.vout[0].scriptPubKey = TransferScript(recipient.GetPubKey(), OriginOf(mintPoint), hugeMultiplier);
+    spendTx.vin[0].scriptSig = SignSpend(mintScript, minter, spendTx, 0);
+
+    ScriptError err;
+    BOOST_CHECK(!VerifyUapInput(spendTx, 0, {mintScript}, {nValueIn}, err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_VIRTUAL_BALANCE_BOUND);
 }
 
 // Solver()'s UAP recognition in standard.cpp triggers on a script's LAST
@@ -1472,6 +1547,36 @@ BOOST_AUTO_TEST_CASE(small_multipliers_are_usable_end_to_end)
         BOOST_CHECK_MESSAGE(!ProbeParsesAsUapOutput(nonCanonical),
             where << ": consensus still accepts the non-canonical data-push encoding");
     }
+}
+
+// OP_INSPECT selector 11 ("output virtual balance") computes
+// nValue * multiplier as an int64_t (see the __builtin_mul_overflow guard
+// fixed for 32-bit portability in a2b7cc9). A UAP output whose declared
+// nValue and multiplier multiply past INT64_MAX must report the overflow
+// rather than let it wrap into a bogus, silently-wrong balance -- this is
+// the same overflow-guard family as CheckUapOutputConservation's summation
+// guards, just for the one caller outside that function.
+BOOST_AUTO_TEST_CASE(inspect_virtual_balance_reports_overflow)
+{
+    CKey holder;
+    holder.MakeNewKey(true);
+
+    // nValue at MAX_MONEY times a multiplier near MAX_UAP_MULTIPLIER
+    // overflows int64_t (their product is far past INT64_MAX).
+    const CAmount hugeValue = MAX_MONEY;
+    CScript candidate = TransferScript(holder.GetPubKey(), OriginOf(Point(0xf6)), MAX_UAP_MULTIPLIER);
+
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vout.resize(1);
+    tx.vout[0].nValue = hugeValue;
+    tx.vout[0].scriptPubKey = candidate;
+
+    CScript probe = CScript() << (int64_t)0 << (int64_t)11 << OP_INSPECT;
+    std::vector<valtype> stack;
+    ScriptError err;
+    BOOST_CHECK(!EvalScript(stack, probe, FLAGS, MutableTransactionSignatureChecker(&tx, 0, hugeValue), SIGVERSION_BASE, &err));
+    BOOST_CHECK_EQUAL(err, SCRIPT_ERR_UAP_VALUE_OVERFLOW);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

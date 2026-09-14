@@ -87,6 +87,30 @@ const char* ScriptErrorString(const ScriptError serror)
             return "Witness provided for non-witness script";
         case SCRIPT_ERR_WITNESS_PUBKEYTYPE:
             return "Using non-compressed keys in segwit";
+        case SCRIPT_ERR_UAP_NO_TX_CONTEXT:
+            return "UAP covenant check requires the spending transaction, which is not available here";
+        case SCRIPT_ERR_UAP_INPUT_UNREADABLE:
+            return "UAP covenant check could not read an input's scriptPubKey or amount";
+        case SCRIPT_ERR_UAP_VALUE_OVERFLOW:
+            return "Arithmetic overflow computing a UAP covenant value";
+        case SCRIPT_ERR_UAP_MINT_SHAPED_OUTPUT:
+            return "A spend may not create a new UAP mint output; only spending a fresh outpoint may originate a lineage";
+        case SCRIPT_ERR_UAP_UNBACKED_LINEAGE_OUTPUT:
+            return "Output names a UAP lineage with no corresponding input in this transaction";
+        case SCRIPT_ERR_UAP_LINEAGE_NOT_CONTINUED:
+            return "No output continues the UAP lineage being spent";
+        case SCRIPT_ERR_UAP_CONSERVATION_VIOLATION:
+            return "UAP lineage outputs exceed its inputs";
+        case SCRIPT_ERR_UAP_ONE_SHOT_VIOLATION:
+            return "A UAP mint's other inputs may not themselves spend a UAP position";
+        case SCRIPT_ERR_UAP_MINT_ENTRY_FEE:
+            return "UAP mint does not meet the minimum entry fee";
+        case SCRIPT_ERR_UAP_ORIGIN_SIZE:
+            return "UAP transfer origin is not exactly 32 bytes";
+        case SCRIPT_ERR_UAP_MULTIPLIER_RANGE:
+            return "UAP multiplier is out of range";
+        case SCRIPT_ERR_UAP_VIRTUAL_BALANCE_BOUND:
+            return "UAP virtual balance exceeds the maximum";
         case SCRIPT_ERR_UNKNOWN_ERROR:
         case SCRIPT_ERR_ERROR_COUNT:
         default: break;
