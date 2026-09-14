@@ -194,6 +194,9 @@ Marketplace stack
   fetch. Orders whose position is already being spent by an unconfirmed
   transaction are hidden, which closes a double-fill race that previously
   surfaced as `bad-txns-inputs-missingorspent` *after* the loser had committed.
+  That includes the fill the relay has just broadcast itself: the book is
+  updated before the broadcast is acknowledged, rather than on the next
+  mempool poll, which is what leaves the tightest version of the race open.
 * **`uap-js` / `uap-web`** — a self-custody browser wallet: mint, transfer,
   sell, fill and cancel. `buildMeltTx` redeems a position's backing to
   spendable WHIP, which was consensus-legal from the start but had no
