@@ -146,6 +146,36 @@ outright. `CheckUapOutputCreation` refuses the same transaction, and refuses
 it first, so that is the reason a node reports — but it is not what made the
 position unspendable.
 
+
+Every covenant rule reports its own error
+--------------------------------------------
+
+The covenant checks previously returned `SCRIPT_ERR_INVALID_STACK_OPERATION`
+from nineteen different sites, so a rejected transaction said only that
+something about it was wrong. Each rule now has its own code —
+`SCRIPT_ERR_UAP_CONSERVATION_VIOLATION`, `SCRIPT_ERR_UAP_MINT_ENTRY_FEE`,
+`SCRIPT_ERR_UAP_LINEAGE_NOT_CONTINUED` and nine more. The rules themselves
+are unchanged; only what they say about a failure is. A wallet can now tell a
+malformed transaction from an underfunded mint from an attempt to create value.
+
+Backing is recoverable, and that is a property of the design
+---------------------------------------------------------------
+
+A position's backing is not a burned fee. Conservation requires that a
+lineage's outputs carry no more value than its inputs — not exactly as much —
+so a holder may spend their own position down to a dust covenant output and
+take the rest back as ordinary WHIP. `buildMeltTx` does this.
+
+This only ever reaches the melter's own position: it requires that position's
+key, backing is held per-position rather than pooled, and 1 satoshi at
+multiplier M is M token units no matter what anyone else does. Nobody can
+reduce the supply of a token they do not hold, and nobody can dilute what a
+holder already owns. A melt always leaves a permanent dust remainder, so a
+lineage cannot be melted out of existence.
+
+The 1,000-coin mint entry fee is a floor, not a fixed amount. A mint may lock
+more, and a token's backing is whatever its minter chose to lock.
+
 Token metadata: `name` removed, tickers restricted to `[A-Z0-9]{1,8}`
 ------------------------------------------------------------------------
 
@@ -197,8 +227,23 @@ Marketplace stack
   That includes the fill the relay has just broadcast itself: the book is
   updated before the broadcast is acknowledged, rather than on the next
   mempool poll, which is what leaves the tightest version of the race open.
+
+  It also serves the raw bytes of a confirmed transaction, which is what lets
+  a wallet verify a position for itself, and probes that lookup at startup
+  rather than assuming it: `GET /status` reports it as `ok`, `broken` or
+  `unchecked`. A relay must not run against a **pruned** node. `-txindex` does
+  not rescue that — both lookup paths end at `ReadBlockFromDisk`, and pruning
+  has deleted the block file either way — so verification of older positions
+  fails while recent ones keep working, which reads as an intermittent wallet
+  fault rather than a node configured to discard what is being asked for.
 * **`uap-js` / `uap-web`** — a self-custody browser wallet: mint, transfer,
-  sell, fill and cancel. `buildMeltTx` redeems a position's backing to
+  sell, fill and cancel. Before filling an order it fetches the position's
+  transaction bytes, hashes them, and checks the hash against the txid the
+  order names, then reads the covenant out of the output itself. A relay that
+  under-reports a position's backing — the one lie an order's own signature
+  does not cover — is caught here rather than after the coins have moved. If
+  the relay cannot serve those bytes, the fill refuses rather than proceeding
+  on the relay's word. `buildMeltTx` redeems a position's backing to
   spendable WHIP, which was consensus-legal from the start but had no
   implementation, so a minter's coins were locked until somebody bought them.
 * **`uaptx`** — the Go port of the signing and taker-fill paths, checked
@@ -286,7 +331,7 @@ reason rather than the fact of rejection.
 Release Information
 ===================
 
-**Release Date:** August 31, 2026
+**Release Date:** September 14, 2026
 **Version:** 1.3.0
 **GitHub Tag:** v1.3.0
 **Consensus activation:** block 82,000 (`UAPMintHeight`)
