@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -852,4 +853,89 @@ func TestOrderPublishesItsPositionsLineage(t *testing.T) {
 	if len(relisted) != 1 || relisted[0].Origin != lineage {
 		t.Errorf("listing served origin %q for a blob that carried none", relisted[0].Origin)
 	}
+}
+
+// TestPublishIgnoresWhatTheOrderClaimsAboutItsPosition.
+//
+// An order arrives over HTTP, or from a mirror peer, as JSON the relay did
+// not write. Three of its fields describe the POSITION rather than the
+// offer: pubkey, backing_value and origin. A buyer reads all three to decide
+// whether to fill -- what the token is, and whether it is backed at all --
+// and none of them is covered by the maker's signature, which commits only
+// to the outpoint and the asking price.
+//
+// So they must come off the position every time, never from the submission.
+// A relay that trusted them would let anyone advertise a dust position as
+// fully backed, or as belonging to a lineage buyers already trust, for the
+// cost of one HTTP request.
+//
+// TestOrderBackingValueDerivedFromPosition covers the field being ABSENT.
+// This covers it being present and false, which is the hostile case and the
+// one a refactor to "fill it in if it's missing" would quietly reopen.
+//
+// Teeth: change any of the three assignments in publishOrder to fill in only
+// when the submitted value is empty, and this goes red.
+func TestPublishIgnoresWhatTheOrderClaimsAboutItsPosition(t *testing.T) {
+	idx := NewIndex()
+
+	const realBacking = int64(5000)
+	realOrigin := strings.Repeat("11", 32)
+	pos := &Position{
+		TxID: txid("mint1"), Vout: 0, PubKey: "02aa",
+		Multiplier: 1000, Value: realBacking, Height: 10,
+		Origin: realOrigin,
+	}
+	seedPosition(t, idx, pos)
+
+	liedOrigin := strings.Repeat("22", 32)
+	order := &Order{
+		TxID: pos.TxID, Vout: pos.Vout, Multiplier: pos.Multiplier,
+		ScriptSig: signedPush(t), PaymentScript: "5678", PaymentValue: 700000000,
+
+		// Everything below is the attacker's, and all of it is a lie: a dust
+		// position dressed up as a well-backed one, in somebody else's
+		// lineage, under somebody else's key.
+		PubKey:       "02ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		BackingValue: 500000000,
+		Origin:       liedOrigin,
+	}
+	if err := idx.PublishOrder(order); err != nil {
+		t.Fatalf("PublishOrder: %v", err)
+	}
+
+	check := func(where string, o Order) {
+		t.Helper()
+		if o.BackingValue != realBacking {
+			t.Errorf("%s: backing_value %d, want %d -- the relay served the "+
+				"maker's claim instead of the position's value",
+				where, o.BackingValue, realBacking)
+		}
+		if o.Origin != realOrigin {
+			t.Errorf("%s: origin %s, want %s -- the order was published into "+
+				"a lineage its position does not belong to",
+				where, o.Origin, realOrigin)
+		}
+		if o.PubKey != pos.PubKey {
+			t.Errorf("%s: pubkey %s, want %s", where, o.PubKey, pos.PubKey)
+		}
+	}
+
+	// The struct the caller handed in is corrected in place, so a mirror
+	// peer relaying it onward cannot pass the lie along either.
+	check("the submitted order", *order)
+
+	got, ok, err := idx.GetOrder(pos.TxID, pos.Vout)
+	if err != nil || !ok {
+		t.Fatalf("GetOrder: %v, found=%v", err, ok)
+	}
+	check("GetOrder", got)
+
+	orders, err := idx.ListOrders(nil)
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if len(orders) != 1 {
+		t.Fatalf("expected 1 order, got %d", len(orders))
+	}
+	check("ListOrders", orders[0])
 }
