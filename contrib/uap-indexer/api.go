@@ -495,6 +495,13 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 			return
 		}
 
+		// The node has it, so the positions it spends are being spent --
+		// record that before answering, so a second taker polling the book
+		// the instant this returns already sees the order as gone. Waiting
+		// for the mempool poller would leave it open for up to a full poll
+		// interval, which is exactly the window a double fill lands in.
+		idx.noteBroadcast(txid)
+
 		// Return the txid as a JSON string
 		writeJSON(w, http.StatusOK, txid)
 	}

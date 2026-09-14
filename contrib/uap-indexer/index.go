@@ -117,6 +117,14 @@ type Index struct {
 	// unconfirmed transactions spending them. Rebuilt on each poll of the
 	// mempool and guarded by mu alongside every other write.
 	pendingSpends *PendingSpendSet
+
+	// broadcastHook, when set, is called with the txid of every transaction
+	// this relay successfully broadcasts, before the caller is told it
+	// succeeded. main() wires it to NotePendingSpends so that an order is
+	// off the book the moment its fill reaches the mempool, rather than up
+	// to one poll interval later -- see the note there. Read under mu;
+	// set once at startup.
+	broadcastHook func(txid string)
 }
 
 // satMul multiplies, pinning to MaxInt64 on overflow rather than wrapping.

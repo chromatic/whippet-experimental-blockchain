@@ -107,6 +107,11 @@ func (idx *Index) UpdatePendingSpends(rpc *RPCClient) error {
 	// Build a new pending set.
 	newPending := NewPendingSpendSet()
 
+	// What the current set believes, indexed by spending txid, so a
+	// transaction we fail to fetch below can keep the entries it already
+	// has instead of losing them to the rebuild.
+	carryForward := idx.pendingSpendsByTxid()
+
 	idx.mu.RLock()
 	store := idx.store
 	idx.mu.RUnlock()
@@ -144,9 +149,19 @@ func (idx *Index) UpdatePendingSpends(rpc *RPCClient) error {
 			var err error
 			tx, err = rpc.GetRawTransaction(txid)
 			if err != nil {
-				// A single tx fetch failure should not fail the whole update.
-				// Log it (in real code), but continue with the rest of the mempool.
-				// For now, skip this tx silently.
+				// A single tx fetch failure must not fail the whole update --
+				// but this is a wholesale rebuild, so simply skipping the
+				// transaction would DROP whatever it already had pending and
+				// re-open an order that is in fact being filled. That is the
+				// exact outcome the RPC-failure branch above refuses to
+				// accept; a per-transaction hiccup deserves the same answer.
+				//
+				// So carry forward what the current set already says about
+				// this txid. It is still in the mempool -- getrawmempool just
+				// listed it -- and only our view of its inputs is missing.
+				for _, outpoint := range carryForward[txid] {
+					newPending.Set(outpoint, txid)
+				}
 				continue
 			}
 			txCache[txid] = tx
@@ -183,4 +198,79 @@ func (ps *PendingSpendSet) Keys() []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// pendingSpendsByTxid groups the current pending set by spending txid.
+// Used by UpdatePendingSpends to survive a per-transaction fetch failure
+// without dropping what it already knew.
+func (idx *Index) pendingSpendsByTxid() map[string][]string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	out := make(map[string][]string)
+	for _, outpoint := range idx.pendingSpends.Keys() {
+		if txid := idx.pendingSpends.Get(outpoint); txid != "" {
+			out[txid] = append(out[txid], outpoint)
+		}
+	}
+	return out
+}
+
+// NotePendingSpends adds the known positions spent by `txid` to the pending
+// set, without disturbing anything else in it.
+//
+// UpdatePendingSpends already discovers these on its next poll. This exists
+// because "next poll" is up to a whole poll interval away, and the single
+// most likely moment for two takers to collide is the few seconds right
+// after one of them broadcasts: that is when the order was most recently
+// visible on the book, and when the second taker is most likely to be
+// looking at it. The relay performed that broadcast itself, so it already
+// knows -- leaving the book stale until a timer catches up is throwing away
+// knowledge it has in hand.
+//
+// Additive, never a rebuild: this runs on the broadcast path, concurrently
+// with the poller, and must not clobber what that has found.
+func (idx *Index) NotePendingSpends(rpc *RPCClient, txid string) error {
+	tx, err := rpc.GetRawTransaction(txid)
+	if err != nil {
+		return err
+	}
+
+	idx.mu.RLock()
+	store := idx.store
+	idx.mu.RUnlock()
+	if store == nil {
+		return nil
+	}
+
+	for _, vin := range tx.Vin {
+		if vin.Coinbase != "" {
+			continue
+		}
+		outpoint := positionKey(vin.TxID, vin.Vout)
+		pos, found, err := store.Position(outpoint)
+		if err != nil || !found || pos.Spent {
+			continue
+		}
+		idx.SetPendingSpend(outpoint, txid)
+	}
+	return nil
+}
+
+// SetBroadcastHook installs the callback run after every successful
+// broadcast. Called once at startup, before the HTTP server is serving.
+func (idx *Index) SetBroadcastHook(fn func(txid string)) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.broadcastHook = fn
+}
+
+// noteBroadcast runs the broadcast hook, if one is installed. Called by the
+// HTTP layer, which has no business knowing what the hook does.
+func (idx *Index) noteBroadcast(txid string) {
+	idx.mu.RLock()
+	fn := idx.broadcastHook
+	idx.mu.RUnlock()
+	if fn != nil {
+		fn(txid)
+	}
 }

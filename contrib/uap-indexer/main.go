@@ -210,6 +210,17 @@ func main() {
 		}
 	}()
 
+	// An order must leave the book the moment its fill reaches the mempool,
+	// not on the next tick of the poller below. The relay does the broadcast
+	// itself, so it learns of the spend first -- see NotePendingSpends.
+	idx.SetBroadcastHook(func(txid string) {
+		if err := idx.NotePendingSpends(rpc, txid); err != nil {
+			// Not fatal, and not the broadcaster's problem: the transaction
+			// is already in the mempool either way. The poller will find it.
+			log.Printf("pending-spend note for %s failed: %v", txid, err)
+		}
+	})
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 

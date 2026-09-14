@@ -282,6 +282,26 @@ async function main() {
     const fillTxid = await broadcastTxid(t);
     check(/^[0-9a-f]{64}$/.test(fillTxid), `the fill was broadcast (${fillTxid.slice(0, 16)}…)`);
 
+    // The double-fill window. The fill is in the mempool and nowhere else:
+    // no block has been mined, and the relay's mempool poller runs on a
+    // timer that has almost certainly not ticked since the broadcast
+    // returned a moment ago. A second taker reading the book right now must
+    // not still be offered this position -- they would sign a fill, pay a
+    // fee, and have the node refuse it.
+    //
+    // What closes it is the relay noting the spend on the broadcast it
+    // performed itself, rather than waiting to rediscover it (see
+    // NotePendingSpends in contrib/uap-indexer/mempool.go). Asserting it
+    // here, before mine(1), is the only place the timing is real.
+    const bookDuringFill = await st.api.get('/api/orders');
+    check(!bookDuringFill.some((o) => o.txid === P1.txid && o.vout === P1.vout),
+      'the order left the book the instant its fill was broadcast');
+    const duringFill = await st.api.get(`/api/orders/${P1.txid}/${P1.vout}`);
+    checkEqual(duringFill.status, 'pending_fill',
+      'a taker who already had the order open is told a fill is in flight');
+    checkEqual(duringFill.pending_txid, fillTxid,
+      'and is told which transaction to watch');
+
     await mine(1);
     const fillTx = await tx(fillTxid);
     check(fillTx.confirmations >= 1, 'the node confirmed the fill');
