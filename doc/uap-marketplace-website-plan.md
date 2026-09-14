@@ -496,6 +496,19 @@ built from the verified value, not the relay's.
   opens; it is the same fail-closed behavior every other network call in
   the wallet already has.
 
+  A live position always has an unspent output, so `/api/rawtx` in fact
+  works against a completely default node in the case that matters here —
+  confirmed by hand against a real regtest node; see
+  `contrib/uap-indexer/README.md`, "Node requirements", for exactly what
+  was tested and why. `-txindex=1` remains the recommended, unconditional
+  fix for the edge this relies on incidentally (a stale, already-spent
+  query), and `uap-indexer` checks for itself at startup rather than
+  assuming either way — a loud log banner plus `GET /status` reporting
+  `"rawtx_lookup": "broken"` if confirmed-transaction lookup genuinely
+  isn't available — specifically so an operator finds out before a buyer
+  does, rather than every fill on an otherwise-healthy
+  relay failing with no obvious cause.
+
 **What this explicitly does not claim:** verification proves the relay's
 description of *this specific position* matches the chain. It says nothing
 about whether the order itself is a good deal, whether the token has real

@@ -170,6 +170,25 @@ func main() {
 		log.Printf("resuming from height %d (%s), %d positions known", s.TipHeight, s.TipHash, s.PositionCount)
 	}
 
+	// Fail fast, at the operator, rather than at whichever buyer happens to
+	// be first to try filling an order. GET /rawtx -- and therefore every
+	// wallet's fill-time position verification -- depends on this node
+	// being able to look up a CONFIRMED transaction, which a default
+	// whippetd cannot do (see probeRawTxLookup in txindex.go for exactly
+	// what "cannot" means here and why the check itself needs no existing
+	// position to run against). This does not refuse to start: an indexer
+	// whose fills are broken still has a useful order book and token pages
+	// for everyone to read, and taking those down too would make a
+	// misconfiguration strictly worse. It logs loudly instead, and the same
+	// fact is exposed at /status ("rawtx_lookup") for anything monitoring
+	// this process to catch on its own.
+	if checked, ok, detail := probeRawTxLookup(rpc); checked {
+		idx.SetRawTxLookupStatus(ok, detail)
+		logRawTxLookupStatus(ok, detail)
+	} else {
+		log.Printf("could not yet verify confirmed-transaction lookup (%s); will keep trying", detail)
+	}
+
 	var rl *RateLimiter
 	if cfg.rateLimit > 0 {
 		rl = NewRateLimiter(cfg.rateLimit, cfg.rateBurst)
@@ -232,6 +251,18 @@ pollLoop:
 	for {
 		if err := syncOnce(rpc, idx, cfg.startHeight, &blocksApplied); err != nil {
 			log.Printf("sync error: %v", err)
+		}
+
+		// Retry the startup probe above until it reaches a definitive answer --
+		// the only reason it wouldn't have already is a chain that had no
+		// blocks past genesis yet, or a node that was briefly unreachable,
+		// both of which resolve on their own as the chain (and this loop)
+		// keeps going.
+		if !idx.RawTxLookupChecked() {
+			if checked, ok, detail := probeRawTxLookup(rpc); checked {
+				idx.SetRawTxLookupStatus(ok, detail)
+				logRawTxLookupStatus(ok, detail)
+			}
 		}
 
 		// Poll the mempool to detect unconfirmed fills and prevent double-fills.
@@ -337,4 +368,40 @@ func syncOnce(rpc *RPCClient, idx *Index, startHeight int64, blocksApplied *int)
 		}
 	}
 	return nil
+}
+
+// logRawTxLookupStatus reports probeRawTxLookup's verdict at the volume it
+// deserves. A working node gets one line; a broken one gets a banner,
+// because the failure mode on the other end of this -- every purchase on
+// this relay silently refused, at the moment of sale, with no indication
+// anything is wrong with the relay itself -- is exactly the "surfaces at
+// the buyer rather than the operator" outcome this whole check exists to
+// avoid. An operator grepping logs for "ERROR" or skimming the last few
+// lines at startup should not be able to miss this.
+func logRawTxLookupStatus(ok bool, detail string) {
+	if ok {
+		log.Printf("confirmed-transaction lookup verified working (position verification is available to wallets)")
+		return
+	}
+	log.Printf("############################################################")
+	log.Printf("# UAP-INDEXER STARTUP WARNING: every fill will be refused.")
+	log.Printf("#")
+	log.Printf("# This node cannot look up a confirmed transaction's raw")
+	log.Printf("# bytes. Node said: %q", detail)
+	log.Printf("#")
+	log.Printf("# GET /rawtx is how every wallet verifies a position before")
+	log.Printf("# building a fill (see doc/uap-marketplace-website-plan.md,")
+	log.Printf("# \"Trust model\"). Without it, the wallet's own verification")
+	log.Printf("# refuses every purchase on this relay -- no funds are at")
+	log.Printf("# risk, but nothing can be bought until this is fixed.")
+	log.Printf("#")
+	log.Printf("# Fix: restart whippetd with -txindex=1 (see")
+	log.Printf("# contrib/uap-indexer/README.md, \"Node requirements\").")
+	log.Printf("# This forces a one-time reindex that can take HOURS on an")
+	log.Printf("# existing node -- plan for that before restarting it.")
+	log.Printf("#")
+	log.Printf("# Everything else on this relay -- the order book, token")
+	log.Printf("# pages, minting, transfers -- keeps working normally. This")
+	log.Printf("# is also reported at GET /status (\"rawtx_lookup\":\"broken\").")
+	log.Printf("############################################################")
 }

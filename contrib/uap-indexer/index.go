@@ -125,6 +125,44 @@ type Index struct {
 	// to one poll interval later -- see the note there. Read under mu;
 	// set once at startup.
 	broadcastHook func(txid string)
+
+	// rawTxLookup* record whether this relay's node can actually answer
+	// getrawtransaction for a CONFIRMED transaction -- what GET /rawtx (and
+	// therefore every wallet's fill-time position verification, see
+	// verifyPosition in contrib/uap-web/market.js) depends on. A default
+	// whippetd only answers that for mempool transactions; confirmed ones
+	// need either -txindex=1 or (the common case for an still-unsold UAP
+	// position) an unspent output the node's UTXO set can still locate.
+	// See probeRawTxLookup in txindex.go, which sets these once main() has
+	// verified one way or the other, and Status.RawTxLookup, which is how
+	// an operator watching /status (as the README already tells them to)
+	// finds out without waiting for a buyer to report failed purchases.
+	rawTxLookupChecked bool
+	rawTxLookupOK      bool
+	rawTxLookupDetail  string
+}
+
+// SetRawTxLookupStatus records the result of probeRawTxLookup (txindex.go).
+// Safe to call repeatedly -- main()'s poll loop does, until the first
+// definitive answer -- and safe to call from a goroutine other than the one
+// serving HTTP, same as every other write on Index.
+func (idx *Index) SetRawTxLookupStatus(ok bool, detail string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.rawTxLookupChecked = true
+	idx.rawTxLookupOK = ok
+	idx.rawTxLookupDetail = detail
+}
+
+// RawTxLookupChecked reports whether probeRawTxLookup has yet reached a
+// definitive answer. main()'s poll loop uses this to know whether it still
+// needs to retry -- there is nothing to probe with on a chain that has no
+// blocks past genesis, so a freshly-started regtest relay may need a few
+// poll ticks before this becomes true.
+func (idx *Index) RawTxLookupChecked() bool {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.rawTxLookupChecked
 }
 
 // satMul multiplies, pinning to MaxInt64 on overflow rather than wrapping.
@@ -703,6 +741,31 @@ type Status struct {
 
 	// StoreErr is the latched error's message, empty when Healthy is true.
 	StoreErr string `json:"store_error,omitempty"`
+
+	// RawTxLookup reports whether this relay's node can look up a
+	// CONFIRMED transaction's raw bytes -- what GET /rawtx, and therefore
+	// every wallet's fill-time position verification, depends on. One of:
+	//
+	//   "ok"        - verified working.
+	//   "broken"    - verified NOT working (see RawTxLookupDetail for the
+	//                 node's own error). The node needs -txindex=1 (see
+	//                 README.md, "Node requirements"). Every fill will be
+	//                 refused by the wallet's own verification until this
+	//                 is fixed -- no funds are at risk, because that
+	//                 refusal is exactly what verifyPosition is for, but
+	//                 nothing on this relay can be bought until it is.
+	//   "unchecked" - not yet verified: either the node hasn't answered
+	//                 the probe yet, or the chain has no blocks past
+	//                 genesis to test against yet.
+	//
+	// Deliberately independent of Healthy: this relay keeps indexing and
+	// keeps serving positions/orders/tokens normally either way, so an
+	// operator's automation that only cares about "should I page someone"
+	// need not change. This field exists so the same automation, or a
+	// human glancing at /status, can also catch a fill-breaking
+	// misconfiguration before a buyer does.
+	RawTxLookup       string `json:"rawtx_lookup"`
+	RawTxLookupDetail string `json:"rawtx_lookup_detail,omitempty"`
 }
 
 // TokenInfo represents a UAP lineage aggregated across its unspent positions.
@@ -725,6 +788,15 @@ func (idx *Index) StatusSnapshot() (Status, error) {
 	}
 	if idx.storeErr != nil {
 		s.StoreErr = idx.storeErr.Error()
+	}
+	switch {
+	case !idx.rawTxLookupChecked:
+		s.RawTxLookup = "unchecked"
+	case idx.rawTxLookupOK:
+		s.RawTxLookup = "ok"
+	default:
+		s.RawTxLookup = "broken"
+		s.RawTxLookupDetail = idx.rawTxLookupDetail
 	}
 	idx.mu.RUnlock()
 

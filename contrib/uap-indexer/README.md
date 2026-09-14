@@ -25,6 +25,79 @@ cross-compiling and static linking stay as simple as they were. It costs
 about 4 MB of binary; `make dist` UPX-compresses the result to around
 4.5 MB total, which `make size` checks.
 
+## Node requirements
+
+Point this at any `whippetd` node's RPC port -- that much is unconditional,
+and every RPC method this indexer calls works against a completely default
+node configuration, with one field-tested exception explained below.
+
+`GET /rawtx/{txid}` serves a transaction's raw, hex-encoded bytes so a
+wallet can verify a position for itself instead of trusting this relay's
+description of it -- it hashes those bytes and compares against the txid
+an order names, before trusting anything parsed out of them (see
+`doc/uap-marketplace-website-plan.md`, "Trust model", for the full
+reasoning). That needs `getrawtransaction` to work for a transaction that
+is *confirmed*, and by whippetd's own documentation, it "by default only
+works for mempool transactions."
+
+In practice it works for a confirmed one too, **without any special node
+flag**, as long as at least one of that transaction's outputs is still
+unspent: `GetTransaction`'s "allow slow" path (`src/validation.cpp`) falls
+back to the node's own UTXO set, finds the containing block from there,
+and rereads the transaction from disk. A live, unsold UAP position is
+exactly that case -- unspent is what "for sale" means -- and this was
+confirmed directly against a real regtest node with no `-txindex`: a
+confirmed transaction's raw bytes come back correctly for as long as any
+one of its outputs is unspent, and only fail once every output has been
+spent. So the fill path this indexer exists to support does not, in fact,
+require `-txindex` on a default node.
+
+**Recommended anyway: run `whippetd` with `-txindex=1`.** The unspent-output
+fallback above is real and verified, but it is also incidental to
+`getrawtransaction`'s documented contract, not a guarantee -- it stops
+working the moment a queried transaction's outputs are all spent (a stale
+order the relay hasn't pruned yet, or any future lookup this indexer grows
+that isn't scoped to live positions), and nothing says a future `whippetd`
+release keeps relying on it. `-txindex` makes confirmed-transaction lookup
+unconditionally correct instead of correct-for-now-because-of-how-the-UTXO-set-happens-to-work,
+which is worth the disk and reindex cost below for anything running this
+in production.
+
+**Turning it on an existing node is not free.** `-txindex=1` forces a full
+one-time reindex of the entire chain on the next `whippetd` startup, which
+can take hours. Plan for the downtime before you restart the node, not
+after -- this is not something to discover by accident during a deployment
+window.
+
+**Either way, this indexer checks for itself rather than assuming.** At
+startup (and every poll tick afterward, until it gets a definitive answer)
+it proves whether confirmed-transaction lookup actually works, by fetching
+the current tip block's own coinbase -- guaranteed by coinbase maturity to
+still be unspent on any chain, so this needs no existing UAP position to
+test against. The result is logged (one quiet line when it works, an
+impossible-to-miss banner when it doesn't) and reported at `GET /status`
+as `"rawtx_lookup"`: `"ok"`, `"broken"` (with the node's own error message
+under `"rawtx_lookup_detail"`), or `"unchecked"` while the chain has no
+blocks past genesis to test with yet. If it ever does come back broken --
+a node running neither `-txindex` nor able to serve even a guaranteed-
+unspent coinbase suggests something more fundamentally wrong than a missing
+flag -- the order book, token pages, minting, and transfers all keep
+working normally regardless; only fills are affected, and a wallet's own
+verification refuses those cleanly rather than letting a buyer pay for
+less than they were promised.
+
+**Turning it on an existing node is not free.** `-txindex=1` forces a full
+one-time reindex of the entire chain on the next `whippetd` startup, which
+can take hours. Plan for the downtime before you restart the node, not
+after — this is not something to discover by accident during a deployment
+window.
+
+Every other RPC method this indexer calls (`getblockcount`, `getblockhash`,
+`getblock` at verbosity 2, `getrawmempool`, `sendrawtransaction`,
+`estimatesmartfee`, and `getrawtransaction` for the mempool-only case) works
+against a completely default node configuration. `-txindex` is the only
+node-side requirement this service has.
+
 ## Running
 
 ```
@@ -290,14 +363,18 @@ behaviour.
 ## HTTP API
 
 - `GET /status` — `{tip_height, tip_hash, position_count, order_count,
-  healthy}`, plus `store_error` when there is one. `healthy` goes false
-  once a write error has latched and the indexer has stopped following the
-  chain; the response is then `503 Service Unavailable` and the tip fields
-  are frozen at their last good values. The database stays readable
-  throughout, so every other endpoint keeps answering 200 with data that
-  is merely stale — this endpoint is the only place that distinguishes
-  stale from current. Health checks can key on either the status code or
-  the `healthy` field; both are always present.
+  healthy, rawtx_lookup}`, plus `store_error`/`rawtx_lookup_detail` when
+  relevant. `healthy` goes false once a write error has latched and the
+  indexer has stopped following the chain; the response is then `503
+  Service Unavailable` and the tip fields are frozen at their last good
+  values. The database stays readable throughout, so every other endpoint
+  keeps answering 200 with data that is merely stale — this endpoint is
+  the only place that distinguishes stale from current. Health checks can
+  key on either the status code or the `healthy` field; both are always
+  present. `rawtx_lookup` is `"ok"`, `"broken"`, or `"unchecked"` and is
+  independent of `healthy` — see "Node requirements" above for what it
+  means and why a broken result does not affect this endpoint's status
+  code.
 - `GET /positions?pubkey=<hex>[&unspent=true]` — all known positions
   (mint or transfer outputs) for a recipient pubkey, optionally filtered
   to unspent only
