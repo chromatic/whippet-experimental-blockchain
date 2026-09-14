@@ -12,6 +12,7 @@
 #include "net.h"
 #include "netbase.h"
 #include "chainparams.h"
+#include "net_processing.h"
 
 class CAddrManSerializationMock : public CAddrMan
 {
@@ -211,6 +212,29 @@ BOOST_AUTO_TEST_CASE(ipv4_peer_with_ipv6_addrMe_test)
 
     // suppress no-checks-run warning; if this test fails, it's by triggering a sanitizer
     BOOST_CHECK(1);
+}
+
+
+BOOST_AUTO_TEST_CASE(block_download_timeout_is_patient_enough_for_a_busy_node)
+{
+    // A node applying a long rollback, or connecting a run of large blocks,
+    // can go minutes without draining its receive buffer. The timer runs from
+    // when the download started rather than from the last byte received, so
+    // that node will exhaust the window while its peer is serving it
+    // perfectly well -- and then disconnect that peer. pruning.py's
+    // reorg_back() is exactly this: seven minutes of rollback, one
+    // disconnected peer, no chain.
+    const int64_t nMainnetSpacing = 6;
+    const int64_t timeout = GetBlockDownloadTimeout(nMainnetSpacing, 0);
+    BOOST_CHECK_GE(timeout, 10 * 60 * 1000000LL);
+
+    // Regtest's spacing is smaller still, so the floor decides there too, and
+    // must give the same window rather than a shorter one.
+    BOOST_CHECK_EQUAL(GetBlockDownloadTimeout(1, 0), timeout);
+
+    // More peers serving us means more of our downstream link is spoken for,
+    // so the window widens rather than narrows.
+    BOOST_CHECK_GT(GetBlockDownloadTimeout(nMainnetSpacing, 1), timeout);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

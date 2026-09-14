@@ -22,11 +22,41 @@ static const unsigned int DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN = 100;
  *  Timeout = base + per_header * (expected number of headers) */
 static constexpr int64_t HEADERS_DOWNLOAD_TIMEOUT_BASE = 15 * 60 * 1000000; // 15 minutes
 static constexpr int64_t HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER = 1000; // 1ms/header
-/** Sets a hard minimum to the multiplier used for block download 
- * timeouts, only triggers on regtest, where nPowTargetTimespan
- * is set to 1 second.
+/** Block download timeout base, expressed in millionths of the block interval. */
+static constexpr int64_t BLOCK_DOWNLOAD_TIMEOUT_BASE = 5000000;
+/** Additional block download timeout per parallel downloading peer. */
+static constexpr int64_t BLOCK_DOWNLOAD_TIMEOUT_PER_PEER = 2500000;
+
+/** Sets a hard floor under the multiplier used for block download timeouts.
+ *
+ * Upstream scales the window by the block interval, which on Bitcoin's 600
+ * second spacing yields a ten minute window. That scaling does not survive a
+ * six second block: the interval shrank by a hundred, the work of moving and
+ * connecting a block did not, and neither did the time a peer's link can
+ * legitimately take. The floor is what actually decides the window here --
+ * mainnet's spacing of 6 is below it, so mainnet and regtest both land on the
+ * floor -- and it is set to restore upstream's absolute ten minutes rather
+ * than a hundredth of it.
+ *
+ * It wants to stay generous. The timer runs from when the download started,
+ * not from the last byte received, so it measures wall clock rather than
+ * progress: a node that is itself busy -- applying a long rollback, connecting
+ * large blocks -- can exhaust the window while a peer is serving it perfectly
+ * well, and disconnect the one peer that had what it needed. Detecting a peer
+ * that genuinely is not delivering is the stalling logic's job (see
+ * BLOCK_STALLING_TIMEOUT), and that fires in seconds. This is only a backstop.
  */
-static constexpr int64_t MIN_BLOCK_DOWNLOAD_MULTIPLIER = 10; // 10 seconds
+static constexpr int64_t MIN_BLOCK_DOWNLOAD_MULTIPLIER = 120; // a ten minute window, as upstream has
+
+/** The block download timeout, in microseconds, for a peer we are downloading
+ * from while nOtherPeersWithValidatedDownloads others are also serving us.
+ * Factored out of SendMessages() so it can be reasoned about on its own.
+ */
+static constexpr int64_t GetBlockDownloadTimeout(int64_t nPowTargetSpacing, int nOtherPeersWithValidatedDownloads)
+{
+    return (nPowTargetSpacing > MIN_BLOCK_DOWNLOAD_MULTIPLIER ? nPowTargetSpacing : MIN_BLOCK_DOWNLOAD_MULTIPLIER) *
+        (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER * nOtherPeersWithValidatedDownloads);
+}
 
 /** The maximum rate of address records we're willing to process on average.
  * Is bypassed for whitelisted connections. */

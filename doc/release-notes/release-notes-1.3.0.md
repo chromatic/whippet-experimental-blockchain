@@ -176,6 +176,28 @@ lineage cannot be melted out of existence.
 The 1,000-coin mint entry fee is a floor, not a fixed amount. A mint may lock
 more, and a token's backing is whatever its minter chose to lock.
 
+
+A busy node no longer disconnects the peer feeding it
+--------------------------------------------------------
+
+The per-block download timeout was 50 seconds. Upstream scales that window by
+the block interval, which gives Bitcoin ten minutes; at a six second block the
+same expression gives a hundredth of it. The block interval shrank by a
+hundred, but the work of moving and connecting a block did not, and neither did
+the time a peer's link can legitimately take.
+
+The timer also runs from when the download began rather than from the last byte
+received, so it measures wall clock rather than progress. A node that is itself
+the bottleneck — applying a long rollback, connecting a run of large blocks —
+exhausts the window while its peer is serving it perfectly well, and then
+disconnects that peer. `qa/rpc-tests/pruning.py` reproduces exactly this: seven
+minutes of rollback, the one peer holding the needed chain dropped, and no
+recovery, because nothing asks the remaining peer.
+
+The floor is raised to restore upstream's absolute ten minute window. Detecting
+a peer that genuinely is not delivering is the stalling logic's job, and that
+still fires in seconds; this timeout is only a backstop.
+
 Token metadata: `name` removed, tickers restricted to `[A-Z0-9]{1,8}`
 ------------------------------------------------------------------------
 
@@ -293,19 +315,6 @@ balance can be nearly double the documented ceiling. A position under 1 WHIP
 has `base_coin == 0`, which short-circuits the guard entirely. Neither is
 exploitable — the multiplication is separately overflow-checked — but a
 contract written against a strict 2^48 ceiling would be wrong.
-
-**The block-download timeout is 50 seconds, and a busy node blames its peer
-for it.** `MIN_BLOCK_DOWNLOAD_MULTIPLIER` (`src/net_processing.h`) puts a floor
-under the per-block download window, which works out to 50 seconds on both
-mainnet and regtest. The same expression on Bitcoin gives 3,000 seconds, so the
-timeout effectively never fires there. The timer measures wall-clock since the
-download began rather than whether progress is being made, so a node that is
-itself the bottleneck -- mid-reorg, or connecting large blocks -- can exhaust
-the window and disconnect a peer that was serving it correctly. `pruning.py`
-reproduces this and is disabled in `qa/pull-tester/rpc-tests.py` until the
-timeout is retuned; the comment there has the detail. On a live network a node
-recovers by finding another peer, so the visible cost is churn rather than a
-stall, but the constant predates this release and wants revisiting.
 
 **`OP_INSPECT` and `OP_INSPECT_SELF` are not height-gated** the way
 `OP_MINT`/`OP_MINT_TRANSFER` are: `SCRIPT_VERIFY_UAP_MINT` gates only the
