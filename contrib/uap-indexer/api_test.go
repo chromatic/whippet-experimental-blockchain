@@ -999,11 +999,13 @@ func TestUndoRemovesMintMetadata(t *testing.T) {
 
 // FakeBroadcaster records calls for testing and allows injected errors.
 type FakeBroadcaster struct {
-	Sent                     []string // Hex strings of sent transactions
-	SendRawTransactionError  error
-	SendRawTransactionResult string
-	EstimateSmartFeeError    error
-	EstimateSmartFeeResult   int64
+	Sent                       []string // Hex strings of sent transactions
+	SendRawTransactionError    error
+	SendRawTransactionResult   string
+	EstimateSmartFeeError      error
+	EstimateSmartFeeResult     int64
+	GetRawTransactionHexError  error
+	GetRawTransactionHexResult string
 }
 
 func (f *FakeBroadcaster) SendRawTransaction(hex string) (txid string, err error) {
@@ -1019,6 +1021,13 @@ func (f *FakeBroadcaster) EstimateSmartFee(blocks int) (satPerKB int64, err erro
 		return 0, f.EstimateSmartFeeError
 	}
 	return f.EstimateSmartFeeResult, nil
+}
+
+func (f *FakeBroadcaster) GetRawTransactionHex(txid string) (hex string, err error) {
+	if f.GetRawTransactionHexError != nil {
+		return "", f.GetRawTransactionHexError
+	}
+	return f.GetRawTransactionHexResult, nil
 }
 
 // TestBroadcastValidHexReachesNode verifies a valid hex body is sent to the node
@@ -1773,5 +1782,200 @@ func TestStatusReportsUnhealthyWhenStoreErrorLatched(t *testing.T) {
 	// something that would hide how far behind the index has fallen.
 	if status.TipHeight != -1 {
 		t.Errorf("tip in the unhealthy response: got %d, want -1 (nothing committed yet)", status.TipHeight)
+	}
+}
+
+// ---- /rawtx: serves the exact bytes of a transaction, hex encoded --------
+//
+// This endpoint exists so a wallet can verify a position for itself: a
+// txid is a commitment to the bytes that hash to it, so a wallet that
+// already has the txid (from a maker's signed order) can double-SHA256
+// this response and compare, rather than trusting the relay's JSON
+// description of the position (value, multiplier, origin). See
+// TestRawTxUnderreportingRelayDoesNotChangeTheServedBytes below for why
+// that specific property is the one worth pinning here.
+
+func TestRawTxValidTxidReturnsHex(t *testing.T) {
+	idx := NewIndex()
+	readRL := NewRateLimiter(30, 10)
+	wantHex := "0100000001abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"
+	fake := &FakeBroadcaster{GetRawTransactionHexResult: wantHex}
+	server := newAPIServer(idx, nil, readRL, false, fake)
+
+	txid := strings.Repeat("ab", 32)
+	req := httptest.NewRequest(http.MethodGet, "/rawtx/"+txid, nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Hex string `json:"hex"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Hex != wantHex {
+		t.Errorf("hex mismatch: got %q, want %q", resp.Hex, wantHex)
+	}
+}
+
+// TestRawTxUnderreportingRelayDoesNotChangeTheServedBytes is the teeth for
+// the whole point of this endpoint: it must serve the node's actual bytes,
+// not anything the relay's own (possibly hostile) view of the position
+// would compute or summarize. The handler cannot "under-report" a value
+// because it never touches the parsed fields at all -- it round-trips
+// whatever whippetd hands back for verbosity 0. This test pins that: it
+// fails if a future change starts deriving the response from Position /
+// Order fields instead of forwarding the RPC's raw hex untouched.
+func TestRawTxUnderreportingRelayDoesNotChangeTheServedBytes(t *testing.T) {
+	idx := NewIndex()
+	readRL := NewRateLimiter(30, 10)
+	// Deliberately does NOT match any position's stored value -- if the
+	// handler were built from the index rather than from the node's raw
+	// bytes, this test would have no way to tell.
+	nodeHex := "02000000019999999999999999999999999999999999999999999999999999999999999999"
+	fake := &FakeBroadcaster{GetRawTransactionHexResult: nodeHex}
+	server := newAPIServer(idx, nil, readRL, false, fake)
+
+	txid := strings.Repeat("cd", 32)
+	req := httptest.NewRequest(http.MethodGet, "/api/rawtx/"+txid, nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	var resp struct {
+		Hex string `json:"hex"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Hex != nodeHex {
+		t.Errorf("served hex does not match the node's raw bytes verbatim: got %q, want %q", resp.Hex, nodeHex)
+	}
+}
+
+func TestRawTxInvalidTxidReturns400(t *testing.T) {
+	idx := NewIndex()
+	readRL := NewRateLimiter(30, 10)
+	fake := &FakeBroadcaster{}
+	server := newAPIServer(idx, nil, readRL, false, fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/rawtx/not-a-txid", nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected HTTP 400 for a malformed txid, got %d", w.Code)
+	}
+	if len(fake.Sent) != 0 {
+		t.Error("an invalid txid must never reach the node")
+	}
+}
+
+func TestRawTxNodeRejectionReturns404(t *testing.T) {
+	idx := NewIndex()
+	readRL := NewRateLimiter(30, 10)
+	fake := &FakeBroadcaster{
+		GetRawTransactionHexError: &NodeRejection{
+			Method:  "getrawtransaction",
+			Code:    -5,
+			Message: "No such mempool or blockchain transaction",
+		},
+	}
+	server := newAPIServer(idx, nil, readRL, false, fake)
+
+	txid := strings.Repeat("ef", 32)
+	req := httptest.NewRequest(http.MethodGet, "/rawtx/"+txid, nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected HTTP 404 for a node rejection (no such tx), got %d", w.Code)
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if !strings.Contains(errResp["error"], "No such mempool") {
+		t.Errorf("node error message not present verbatim: got %q", errResp["error"])
+	}
+}
+
+func TestRawTxNodeUnreachableReturns502(t *testing.T) {
+	idx := NewIndex()
+	readRL := NewRateLimiter(30, 10)
+	fake := &FakeBroadcaster{
+		GetRawTransactionHexError: fmt.Errorf("rpc request: connection refused"),
+	}
+	server := newAPIServer(idx, nil, readRL, false, fake)
+
+	txid := strings.Repeat("11", 32)
+	req := httptest.NewRequest(http.MethodGet, "/rawtx/"+txid, nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected HTTP 502 for a transport error, got %d", w.Code)
+	}
+}
+
+func TestRawTxNilBroadcasterReturns503(t *testing.T) {
+	idx := NewIndex()
+	readRL := NewRateLimiter(30, 10)
+	server := newAPIServer(idx, nil, readRL, false, nil)
+
+	txid := strings.Repeat("22", 32)
+	req := httptest.NewRequest(http.MethodGet, "/rawtx/"+txid, nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected HTTP 503 with no broadcaster configured, got %d", w.Code)
+	}
+}
+
+func TestRawTxPostReturns405(t *testing.T) {
+	idx := NewIndex()
+	readRL := NewRateLimiter(30, 10)
+	fake := &FakeBroadcaster{}
+	server := newAPIServer(idx, nil, readRL, false, fake)
+
+	txid := strings.Repeat("33", 32)
+	req := httptest.NewRequest(http.MethodPost, "/rawtx/"+txid, nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected HTTP 405 for POST, got %d", w.Code)
+	}
+}
+
+func TestRawTxUsesReadLimiter(t *testing.T) {
+	idx := NewIndex()
+	// A read limiter with room for exactly one request.
+	readRL := NewRateLimiter(1, 1)
+	fake := &FakeBroadcaster{GetRawTransactionHexResult: "ab"}
+	server := newAPIServer(idx, nil, readRL, false, fake)
+
+	txid := strings.Repeat("44", 32)
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/rawtx/"+txid, nil)
+		req.RemoteAddr = "1.2.3.4:5555"
+		w := httptest.NewRecorder()
+		server.ServeHTTP(w, req)
+		if i == 0 && w.Code != http.StatusOK {
+			t.Fatalf("first request: expected HTTP 200, got %d", w.Code)
+		}
+		if i == 1 && w.Code != http.StatusTooManyRequests {
+			t.Errorf("second request: expected HTTP 429 from the read limiter, got %d", w.Code)
+		}
 	}
 }

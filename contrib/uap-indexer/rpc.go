@@ -162,3 +162,19 @@ func (c *RPCClient) GetRawTransaction(txid string) (*RPCTx, error) {
 	err := c.call("getrawtransaction", []interface{}{txid, 1}, &tx)
 	return &tx, err
 }
+
+// GetRawTransactionHex returns the exact serialized bytes of a transaction,
+// hex-encoded, from the mempool or blockchain (verbosity 0).
+//
+// This is deliberately not GetRawTransaction with a .Hex field bolted on.
+// The whole point of serving raw hex to a caller who is about to hash it
+// (see /rawtx in api.go) is that the bytes are the ones the txid actually
+// commits to -- verbosity 1's decoded JSON is whippetd's own re-rendering
+// of the transaction and is not what hashes to the txid. Keeping this as a
+// separate call makes it impossible to wire the API handler to the wrong
+// one by accident.
+func (c *RPCClient) GetRawTransactionHex(txid string) (string, error) {
+	var hex string
+	err := c.call("getrawtransaction", []interface{}{txid, 0}, &hex)
+	return hex, err
+}

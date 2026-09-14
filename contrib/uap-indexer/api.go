@@ -14,11 +14,26 @@ import (
 )
 
 // NodeBroadcaster is the only node capability the HTTP layer is allowed to
-// reach. Deliberately two methods: this interface is the security boundary
-// between the public API and the node's RPC, and widening it widens that.
+// reach. This interface is the security boundary between the public API and
+// the node's RPC, and widening it widens that -- so it stays narrow by
+// design and each addition earns its place.
+//
+// GetRawTransactionHex was added for /rawtx (see rawtxHandler below): a
+// taker's wallet cannot trust the relay's own description of a position
+// (its value, multiplier, origin) because a lying relay's claims about
+// those fields fail *open*, not closed -- the resulting fill transaction
+// is still consensus-valid, just worth less than the taker thinks. The
+// fix pushes verification onto data the wallet can check itself: the raw
+// bytes of the transaction that created the position, hashed and compared
+// against the txid the order names. Handing the HTTP layer a full RPC
+// client to get those bytes would reopen exactly the boundary this
+// interface exists to keep shut, so the capability is added here instead,
+// one method at a time, same as SendRawTransaction and EstimateSmartFee
+// were.
 type NodeBroadcaster interface {
 	SendRawTransaction(hex string) (txid string, err error)
 	EstimateSmartFee(blocks int) (satPerKB int64, err error)
+	GetRawTransactionHex(txid string) (hex string, err error)
 }
 
 // RecommendedMinTxFee is the minimum transaction fee from src/policy/policy.h.
@@ -551,6 +566,67 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 	mux.HandleFunc("/feerate", feerateHandler)
 	mux.HandleFunc("/api/feerate", feerateHandler)
 
+	// GET /rawtx/{txid} -- the exact serialized bytes of a transaction, hex
+	// encoded, straight from the node.
+	//
+	// This exists so a wallet can verify a position for itself instead of
+	// trusting the relay's description of it: a txid is a commitment to the
+	// bytes that hash to it, so a caller who already knows the txid (from an
+	// order the maker signed) can double-SHA256 this response, compare the
+	// (byte-reversed) result, and if it matches, parse the verified bytes
+	// rather than the relay's JSON. See doc/uap-marketplace-website-plan.md
+	// for the trust model this closes.
+	rawtxHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if !checkRateLimit(readRL, trustProxy, w, r) {
+			return
+		}
+
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/api/rawtx/") {
+			path = strings.TrimPrefix(path, "/api/rawtx/")
+		} else {
+			path = strings.TrimPrefix(path, "/rawtx/")
+		}
+		// isTxid is the same validator the broadcast path trusts to gate
+		// what it forwards to the node; a rawtx lookup takes an
+		// attacker-controlled path segment just as directly, so it gets the
+		// same gate rather than handing an unvalidated string to RPC.
+		if !isTxid(path) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid txid"})
+			return
+		}
+
+		if broadcaster == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "node unavailable"})
+			return
+		}
+
+		hexStr, err := broadcaster.GetRawTransactionHex(path)
+		if err != nil {
+			// Mirrors broadcastHandler's split: a node rejection here means
+			// whippetd looked and found no such transaction (wrong txid,
+			// pruned, never broadcast) -- the caller's problem, safe to
+			// quote. Anything else means the call never reached the node,
+			// which is the operator's problem and must not be reported as
+			// "no such transaction".
+			var rejection *NodeRejection
+			if errors.As(err, &rejection) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": rejection.Message})
+				return
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "node unreachable: " + err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{"hex": hexStr})
+	}
+	mux.HandleFunc("/rawtx/", rawtxHandler)
+	mux.HandleFunc("/api/rawtx/", rawtxHandler)
+
 	// Wrap everything with security headers middleware
 	apiWithHeaders := securityHeadersMiddleware(mux)
 	webWithHeaders := securityHeadersMiddleware(http.HandlerFunc(serveWeb()))
@@ -570,6 +646,7 @@ func newAPIServer(idx *Index, writeRL *RateLimiter, readRL *RateLimiter, trustPr
 	finalMux.Handle("/token/", apiWithHeaders)
 	finalMux.Handle("/broadcast", apiWithHeaders)
 	finalMux.Handle("/feerate", apiWithHeaders)
+	finalMux.Handle("/rawtx/", apiWithHeaders)
 
 	// Register the web handler with security headers for root and unknown paths
 	finalMux.Handle("/", webWithHeaders)
