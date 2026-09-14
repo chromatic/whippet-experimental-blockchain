@@ -126,6 +126,12 @@ jobs:
             dep-opts: "NO_WALLET=1"
             config-opts: "--with-gui=qt5 --enable-glibc-back-compat --disable-wallet LDFLAGS=-static-libstdc++"
             goal: install
+          # Only this job runs the -extended set, of the three that run
+          # rpc-tests.py. pruning.py alone can take ~2 hours, and the extended
+          # tests exercise node behaviour (relay policy, block assembly, disk
+          # pruning) rather than anything architecture- or flag-specific, so
+          # one native x86_64 run covers them. This is the DEBUG_LOCKORDER
+          # build, the one most likely to turn a subtle bug into a hard failure.
           - name: x86_64-linux-dbg
             host: x86_64-unknown-linux-gnu
             container: ubuntu:20.04
@@ -134,7 +140,7 @@ jobs:
             test-script: |
               make check $MAKEJOBS VERBOSE=1
               qa/pull-tester/install-deps.sh
-              qa/pull-tester/rpc-tests.py --coverage
+              qa/pull-tester/rpc-tests.py -extended --coverage
             check-security: true
             check-symbols: false
             dep-opts: "DEBUG=1"
