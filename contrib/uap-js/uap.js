@@ -244,6 +244,174 @@ function buildTransferScript(pubkey, multiplier, origin) {
   return concatBytes(pushData(pubkey), pushMultiplier(multiplier), pushData(origin), Uint8Array.of(OP_MINT_TRANSFER));
 }
 
+// ---- reading a UAP output back (the inverse of buildMintScript /
+// buildTransferScript) ----
+//
+// This mirrors ParseUAPScript in contrib/uap-indexer/script.go closely
+// enough that the two should be read side by side; script.go's own
+// comment on isMinimalPush explains why minimality matters here as more
+// than pedantry: the node's SCRIPT_VERIFY_MINIMALDATA rule requires this
+// exact canonical encoding at spend time, so a script that doesn't use it
+// is not a position the network will let anyone move, no matter what
+// value or multiplier it appears to hold.
+//
+// script.go's copy exists for the indexer's own (non-authoritative)
+// bookkeeping. This copy exists so a wallet can check a relay's claims
+// about a position's multiplier and origin against the position's actual,
+// hash-verified scriptPubKey before trusting them -- see verifyPosition in
+// uap-web/market.js.
+
+/** A single decoded script element: a data push, or a bare opcode. */
+function scriptPush(isPush, opcode, data) {
+  return { isPush, opcode, data: data || new Uint8Array(0) };
+}
+
+/**
+ * Decode every element of a script. Throws on a truncated push. OP_0 is
+ * reported as a (zero-length) push, matching Go's readPushes; OP_1..OP_16
+ * and OP_1NEGATE are NOT pushes here -- they push a value only when
+ * *executed*, and the multiplier field is the one place a UAP script may
+ * use them, handled specially by the multiplier decoding below.
+ */
+function readPushes(script) {
+  const out = [];
+  let i = 0;
+  while (i < script.length) {
+    const b = script[i];
+    i++;
+    if (b >= 1 && b <= 0x4b) {
+      if (i + b > script.length) throw new Error(`truncated push at offset ${i - 1}`);
+      out.push(scriptPush(true, b, script.slice(i, i + b)));
+      i += b;
+    } else if (b === OP_PUSHDATA1) {
+      if (i + 1 > script.length) throw new Error('truncated PUSHDATA1');
+      const n = script[i];
+      i += 1;
+      if (i + n > script.length) throw new Error('truncated PUSHDATA1 payload');
+      out.push(scriptPush(true, b, script.slice(i, i + n)));
+      i += n;
+    } else if (b === OP_PUSHDATA2) {
+      if (i + 2 > script.length) throw new Error('truncated PUSHDATA2');
+      const n = script[i] | (script[i + 1] << 8);
+      i += 2;
+      if (i + n > script.length) throw new Error('truncated PUSHDATA2 payload');
+      out.push(scriptPush(true, b, script.slice(i, i + n)));
+      i += n;
+    } else if (b === OP_PUSHDATA4) {
+      if (i + 4 > script.length) throw new Error('truncated PUSHDATA4');
+      const n = (script[i] | (script[i + 1] << 8) | (script[i + 2] << 16) | (script[i + 3] << 24)) >>> 0;
+      i += 4;
+      if (i + n > script.length) throw new Error('truncated PUSHDATA4 payload');
+      out.push(scriptPush(true, b, script.slice(i, i + n)));
+      i += n;
+    } else if (b === OP_0) {
+      out.push(scriptPush(true, b, new Uint8Array(0)));
+    } else {
+      out.push(scriptPush(false, b));
+    }
+  }
+  return out;
+}
+
+/** CScript::operator<<(vector<uchar>)'s minimal-push rule, read back. */
+function isMinimalPush(p) {
+  const n = p.data.length;
+  if (n === 0) return p.opcode === OP_0;
+  if (n === 1 && p.data[0] >= 1 && p.data[0] <= 16) return p.opcode === 0x50 + p.data[0];
+  if (n === 1 && p.data[0] === 0x81) return p.opcode === 0x4f; // OP_1NEGATE
+  if (n <= 75) return p.opcode === n;
+  if (n <= 255) return p.opcode === OP_PUSHDATA1;
+  if (n <= 65535) return p.opcode === OP_PUSHDATA2;
+  return true;
+}
+
+/** CScriptNum's own minimality rule -- separate from isMinimalPush. */
+function isMinimalScriptNum(data) {
+  if (data.length === 0) return true;
+  if ((data[data.length - 1] & 0x7f) === 0) {
+    return data.length > 1 && (data[data.length - 2] & 0x80) !== 0;
+  }
+  return true;
+}
+
+/** Decode a CScriptNum byte string: little-endian magnitude, sign in the
+ * high bit of the last byte. Throws if longer than 8 bytes (matches
+ * script.go's scriptNumToInt64, and CScriptNum's own default nMaxNumSize). */
+function scriptNumToInt64(data) {
+  if (data.length === 0) return 0;
+  if (data.length > 8) throw new Error(`script number too long (${data.length} bytes)`);
+  let result = 0n;
+  for (let i = 0; i < data.length; i++) {
+    result |= BigInt(data[i]) << BigInt(8 * i);
+  }
+  if (data[data.length - 1] & 0x80) {
+    result &= ~(0x80n << BigInt(8 * (data.length - 1)));
+    result = -result;
+  }
+  return Number(result);
+}
+
+/**
+ * Recognize a UAP mint or transfer output script and decode its fields, or
+ * return null for anything else (including a malformed script -- most
+ * outputs on the chain are not UAP outputs at all, and that is not an
+ * error).
+ *
+ * @param scriptPubKey Uint8Array
+ * @returns null, or { pubkey: Uint8Array, multiplier: number,
+ *                      origin: Uint8Array (32 bytes, empty for a mint),
+ *                      isMint: boolean }
+ */
+function parseUapScript(scriptPubKey) {
+  if (scriptPubKey.length < 2) return null;
+  const last = scriptPubKey[scriptPubKey.length - 1];
+  if (last !== OP_MINT && last !== OP_MINT_TRANSFER) return null;
+  const isMint = last === OP_MINT;
+
+  let pushes;
+  try {
+    pushes = readPushes(scriptPubKey);
+  } catch (_) {
+    return null; // malformed script; not a UAP output we can trust
+  }
+
+  const wantLen = isMint ? 3 : 4;
+  if (pushes.length !== wantLen) return null;
+
+  const pk = pushes[0];
+  if (!pk.isPush || !isMinimalPush(pk) || (pk.data.length !== 33 && pk.data.length !== 65)) return null;
+
+  // See pushMultiplier above for why this is the only encoding accepted:
+  // it is the same one MINIMALDATA enforces when the covenant is spent.
+  let multiplier;
+  const mult = pushes[1];
+  if (!mult.isPush && mult.opcode >= 0x51 && mult.opcode <= 0x60) {
+    multiplier = mult.opcode - 0x50; // OP_1 .. OP_16
+  } else if (mult.isPush && isMinimalPush(mult) && isMinimalScriptNum(mult.data)) {
+    try {
+      multiplier = scriptNumToInt64(mult.data);
+    } catch (_) {
+      return null;
+    }
+  } else {
+    return null;
+  }
+  if (!Number.isInteger(multiplier) || multiplier < 0 || multiplier > 2147483647) return null;
+
+  let origin;
+  if (isMint) {
+    if (pushes[2].isPush || pushes[2].opcode !== OP_MINT) return null;
+    origin = new Uint8Array(0);
+  } else {
+    const originElem = pushes[2];
+    if (!originElem.isPush || !isMinimalPush(originElem) || originElem.data.length !== 32) return null;
+    origin = originElem.data.slice();
+    if (pushes[3].isPush || pushes[3].opcode !== OP_MINT_TRANSFER) return null;
+  }
+
+  return { pubkey: pk.data.slice(), multiplier, origin, isMint };
+}
+
 // A token's ticker lives in an OP_RETURN on its mint transaction:
 //
 //   OP_RETURN "WUAP" <version> <ticker> <metadata_hash>
@@ -425,6 +593,161 @@ function serializeTx(tx) {
 
 function txToHex(tx) {
   return bytesToHex(serializeTx(tx));
+}
+
+/**
+ * Read a Bitcoin CompactSize ("varint") starting at bytes[pos].
+ * Mirrors ReadCompactSize in src/serialize.h and is the exact inverse of
+ * encodeVarInt above.
+ *
+ * The 0xff (8-byte) form is included even though encodeVarInt never emits
+ * it -- this reads bytes a real node produced, not only bytes this library
+ * built, and a value that large is rejected rather than silently
+ * truncated: Number can only represent integers exactly up to 2^53, so a
+ * count near 2^64 would otherwise wrap into a small, wrong, and NOT
+ * obviously wrong number.
+ *
+ * @returns { value, next } -- the decoded value and the offset just past it
+ */
+function readVarInt(bytes, pos) {
+  if (pos >= bytes.length) throw new Error('truncated transaction: varint');
+  const first = bytes[pos];
+  if (first < 0xfd) return { value: first, next: pos + 1 };
+  if (first === 0xfd) {
+    if (pos + 3 > bytes.length) throw new Error('truncated transaction: varint (0xfd)');
+    return { value: bytes[pos + 1] | (bytes[pos + 2] << 8), next: pos + 3 };
+  }
+  if (first === 0xfe) {
+    if (pos + 5 > bytes.length) throw new Error('truncated transaction: varint (0xfe)');
+    const value = (bytes[pos + 1] | (bytes[pos + 2] << 8) | (bytes[pos + 3] << 16) | (bytes[pos + 4] << 24)) >>> 0;
+    return { value, next: pos + 5 };
+  }
+  // first === 0xff
+  if (pos + 9 > bytes.length) throw new Error('truncated transaction: varint (0xff)');
+  const view = new DataView(bytes.buffer, bytes.byteOffset + pos + 1, 8);
+  const big = view.getBigUint64(0, true);
+  if (big > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('varint too large to represent exactly as a JS number');
+  }
+  return { value: Number(big), next: pos + 9 };
+}
+
+function readUint32LE(bytes, pos) {
+  if (pos + 4 > bytes.length) throw new Error('truncated transaction: uint32');
+  return (bytes[pos] | (bytes[pos + 1] << 8) | (bytes[pos + 2] << 16) | (bytes[pos + 3] << 24)) >>> 0;
+}
+
+/**
+ * Bitcoin's CAmount is a signed 64-bit little-endian integer (the exact
+ * inverse of encodeInt64LE above). Thrown rather than silently rounded if
+ * the value can't be represented exactly as a JS number -- for a satoshi
+ * amount that would mean quietly trusting a wrong number in a comparison
+ * this library exists to make trustworthy.
+ */
+function readInt64LE(bytes, pos) {
+  if (pos + 8 > bytes.length) throw new Error('truncated transaction: int64');
+  const view = new DataView(bytes.buffer, bytes.byteOffset + pos, 8);
+  const v = view.getBigInt64(0, true);
+  if (v > BigInt(Number.MAX_SAFE_INTEGER) || v < BigInt(Number.MIN_SAFE_INTEGER)) {
+    throw new Error('output value cannot be represented exactly as a JS number');
+  }
+  return Number(v);
+}
+
+/**
+ * Parse a raw, legacy (non-segwit) transaction: the inverse of serializeTx.
+ *
+ * This exists so a wallet need not trust a relay's *description* of a
+ * transaction -- its parsed JSON, or fields like a position's value,
+ * multiplier and origin -- only the relay's claim to have the right
+ * *bytes*. Bytes are self-checking: hash256'ing them and comparing against
+ * a txid the wallet already has independently (e.g. from a maker's signed
+ * order) either matches, in which case these are provably the real
+ * transaction, or it doesn't, in which case the caller must refuse before
+ * ever reaching this function. See txidFromBytes below, and market.js in
+ * uap-web for where that check happens.
+ *
+ * Accepts either a hex string or a Uint8Array. Throws if the input is
+ * truncated, or if there are bytes left over once every field has been
+ * read -- a transaction with trailing garbage is not the transaction it
+ * claims to be, and silently ignoring the tail would hide that.
+ *
+ * @returns { version, vin: [{txid, vout, scriptSig, sequence}],
+ *            vout: [{value, scriptPubKey}], locktime }
+ */
+function deserializeTx(data) {
+  const bytes = typeof data === 'string' ? hexToBytes(data) : data;
+
+  let pos = 0;
+  const version = readUint32LE(bytes, pos);
+  pos += 4;
+
+  const vinCount = readVarInt(bytes, pos);
+  pos = vinCount.next;
+  const vin = [];
+  for (let i = 0; i < vinCount.value; i++) {
+    if (pos + 32 > bytes.length) throw new Error('truncated transaction: input txid');
+    const txidLE = bytes.slice(pos, pos + 32);
+    pos += 32;
+    const txid = bytesToHex(reverseBytes(txidLE));
+
+    const vout = readUint32LE(bytes, pos);
+    pos += 4;
+
+    const scriptLen = readVarInt(bytes, pos);
+    pos = scriptLen.next;
+    if (pos + scriptLen.value > bytes.length) throw new Error('truncated transaction: input scriptSig');
+    const scriptSig = bytes.slice(pos, pos + scriptLen.value);
+    pos += scriptLen.value;
+
+    const sequence = readUint32LE(bytes, pos);
+    pos += 4;
+
+    vin.push({ txid, vout, scriptSig, sequence });
+  }
+
+  const voutCount = readVarInt(bytes, pos);
+  pos = voutCount.next;
+  const vout = [];
+  for (let i = 0; i < voutCount.value; i++) {
+    const value = readInt64LE(bytes, pos);
+    pos += 8;
+
+    const spkLen = readVarInt(bytes, pos);
+    pos = spkLen.next;
+    if (pos + spkLen.value > bytes.length) throw new Error('truncated transaction: output scriptPubKey');
+    const scriptPubKey = bytes.slice(pos, pos + spkLen.value);
+    pos += spkLen.value;
+
+    vout.push({ value, scriptPubKey });
+  }
+
+  const locktime = readUint32LE(bytes, pos);
+  pos += 4;
+
+  if (pos !== bytes.length) {
+    throw new Error(`trailing bytes after transaction: ${bytes.length - pos} unconsumed of ${bytes.length}`);
+  }
+
+  return { version, vin, vout, locktime };
+}
+
+/**
+ * The txid of raw transaction bytes: double-SHA256, byte-reversed to the
+ * display order every RPC and block explorer uses.
+ *
+ * Deliberately hashes the bytes handed in, not a re-serialization of a
+ * parsed tx object -- the whole point of verifying a relay's raw hex is
+ * that these are the exact bytes that hash to the txid, and re-encoding
+ * first would verify this library's own serializer against itself instead
+ * of verifying what the relay actually sent.
+ *
+ * @param data hex string or Uint8Array of a raw transaction
+ * @returns 64-character hex txid (display/big-endian order)
+ */
+function txidFromBytes(data) {
+  const bytes = typeof data === 'string' ? hexToBytes(data) : data;
+  return bytesToHex(reverseBytes(hash256(bytes)));
 }
 
 const SIGHASH_NONE = 2;
@@ -1078,12 +1401,15 @@ export {
   buildMintScript,
   buildTransferScript,
   buildMetadataScript,
+  parseUapScript,
   normalizeTicker,
   MAX_METADATA_PAYLOAD_BYTES,
   MAX_METADATA_SCRIPT_BYTES,
   MAX_TICKER_BYTES,
   serializeTx,
   txToHex,
+  deserializeTx,
+  txidFromBytes,
   signatureHash,
   signSpend,
   signP2PKHInput,

@@ -1,5 +1,6 @@
 import assert from 'assert';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import * as UAP from './uap.js';
 
 function bytes(...vals) {
@@ -1576,4 +1577,174 @@ console.log('uap.js: all tests passed');
   if (!threw) throw new Error('originForSpend accepted a non-covenant scriptCode');
 
   console.log('uap.js: lineage is taken from the covenant spent, not the outpoint');
+}
+
+// ---- deserializeTx / txidFromBytes: reading a transaction back, and
+// verifying its identity ----
+//
+// The natural first test for a deserializer is that it round-trips
+// serializeTx's own output. That alone would not prove much about real
+// chain data, so the real teeth is in the fixture-based round trip below
+// and in the parseUapScript tests: together they cover both directions
+// (build -> parse) and the identity check a wallet actually leans on.
+{
+  const pubkey = new Uint8Array(33).fill(7);
+  const origin = new Uint8Array(32).fill(0x42);
+  const scriptPubKey = UAP.buildTransferScript(pubkey, 1000, origin);
+  const tx = {
+    version: 2,
+    locktime: 12345,
+    vin: [
+      { txid: 'ab'.repeat(32), vout: 3, scriptSig: UAP.hexToBytes('4830450221'), sequence: 0xfffffffe },
+      { txid: 'cd'.repeat(32), vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff },
+    ],
+    vout: [
+      { value: 100000000, scriptPubKey },
+      { value: 5000000000, scriptPubKey: UAP.hexToBytes('76a914' + 'aa'.repeat(20) + '88ac') },
+    ],
+  };
+  const hex = UAP.txToHex(tx);
+  const parsed = UAP.deserializeTx(hex);
+
+  assert.strictEqual(parsed.version, tx.version);
+  assert.strictEqual(parsed.locktime, tx.locktime);
+  assert.strictEqual(parsed.vin.length, 2);
+  assert.strictEqual(parsed.vin[0].txid, 'ab'.repeat(32));
+  assert.strictEqual(parsed.vin[0].vout, 3);
+  assert.strictEqual(UAP.bytesToHex(parsed.vin[0].scriptSig), '4830450221');
+  assert.strictEqual(parsed.vin[0].sequence, 0xfffffffe);
+  assert.strictEqual(parsed.vin[1].txid, 'cd'.repeat(32));
+  assert.strictEqual(parsed.vout.length, 2);
+  assert.strictEqual(parsed.vout[0].value, 100000000);
+  assert.strictEqual(UAP.bytesToHex(parsed.vout[0].scriptPubKey), UAP.bytesToHex(scriptPubKey));
+  assert.strictEqual(parsed.vout[1].value, 5000000000);
+
+  // Re-serializing what we parsed must reproduce the exact original bytes:
+  // a deserializer that silently normalizes anything (e.g. re-minimalizing
+  // a push) would pass every field-by-field check above and still not be
+  // a faithful inverse.
+  assert.strictEqual(UAP.txToHex(parsed), hex, 'deserializeTx . txToHex must round-trip exactly');
+
+  console.log('uap.js: deserializeTx round-trips txToHex output exactly');
+}
+
+// deserializeTx rejects truncated input rather than returning a partial,
+// silently-wrong transaction.
+{
+  const full = UAP.hexToBytes(UAP.txToHex({
+    version: 1, locktime: 0,
+    vin: [{ txid: '11'.repeat(32), vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+    vout: [{ value: 1000, scriptPubKey: UAP.hexToBytes('51') }],
+  }));
+  const truncated = full.slice(0, full.length - 3);
+  assert.throws(() => UAP.deserializeTx(truncated), /truncated transaction/,
+    'a truncated transaction must be refused, not parsed short');
+
+  // Trailing garbage is refused too -- those bytes are not part of the
+  // transaction the txid commits to, so silently dropping them would let
+  // a comparison against a verified length pass when it should not.
+  const withGarbage = UAP.concatBytes(full, UAP.hexToBytes('deadbeef'));
+  assert.throws(() => UAP.deserializeTx(withGarbage), /trailing bytes/,
+    'trailing bytes after a well-formed transaction must be refused');
+
+  console.log('uap.js: deserializeTx refuses truncated input and trailing garbage');
+}
+
+// txidFromBytes: hashes the exact bytes handed in and reports them in
+// display (byte-reversed) order, matching what every RPC/explorer calls
+// the txid.
+{
+  const tx = {
+    version: 1, locktime: 0,
+    vin: [{ txid: '22'.repeat(32), vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+    vout: [{ value: 1000, scriptPubKey: UAP.hexToBytes('51') }],
+  };
+  const hex = UAP.txToHex(tx);
+  const bytes = UAP.hexToBytes(hex);
+  // Compare against node's own crypto module -- an independent
+  // implementation of SHA256 -- rather than only checking this function
+  // against itself, so a bug shared between txidFromBytes and hash256
+  // (sha256.js) cannot hide from this test.
+  const nodeHash256 = (b) => crypto.createHash('sha256').update(
+    crypto.createHash('sha256').update(b).digest()
+  ).digest();
+  const expectedTxid = UAP.bytesToHex(Uint8Array.from(nodeHash256(bytes)).reverse());
+  const txidFromHex = UAP.txidFromBytes(hex);
+  assert.strictEqual(txidFromHex, expectedTxid, 'txidFromBytes must match double-SHA256, byte-reversed, computed independently');
+  const txidFromArray = UAP.txidFromBytes(bytes);
+  assert.strictEqual(txidFromHex, txidFromArray, 'hex and Uint8Array input must produce the same txid');
+  assert.match(txidFromHex, /^[0-9a-f]{64}$/, 'txid must be 64 lowercase hex characters');
+
+  const corrupted = Uint8Array.from(bytes);
+  corrupted[corrupted.length - 1] ^= 0xff;
+  assert.notStrictEqual(UAP.txidFromBytes(corrupted), txidFromHex,
+    'flipping a byte anywhere in the transaction must change its txid');
+
+  console.log('uap.js: txidFromBytes is deterministic and sensitive to every byte');
+}
+
+// parseUapScript: the inverse of buildMintScript / buildTransferScript.
+{
+  const pubkey = new Uint8Array(33).fill(9);
+  const origin = new Uint8Array(32).fill(0x11);
+
+  // Round trip a transfer script for a variety of multipliers, including
+  // the OP_1..OP_16 special-cased range and values that require a data
+  // push.
+  for (const multiplier of [0, 1, 16, 17, 1000, 2147483647]) {
+    const script = UAP.buildTransferScript(pubkey, multiplier, origin);
+    const parsed = UAP.parseUapScript(script);
+    assert(parsed !== null, `parseUapScript rejected a valid transfer script for multiplier ${multiplier}`);
+    assert.strictEqual(parsed.isMint, false);
+    assert.strictEqual(parsed.multiplier, multiplier);
+    assert.strictEqual(UAP.bytesToHex(parsed.pubkey), UAP.bytesToHex(pubkey));
+    assert.strictEqual(UAP.bytesToHex(parsed.origin), UAP.bytesToHex(origin));
+  }
+
+  // Round trip a mint script too: no origin, isMint true.
+  const mintScript = UAP.buildMintScript(pubkey, 42);
+  const parsedMint = UAP.parseUapScript(mintScript);
+  assert(parsedMint !== null);
+  assert.strictEqual(parsedMint.isMint, true);
+  assert.strictEqual(parsedMint.multiplier, 42);
+  assert.strictEqual(parsedMint.origin.length, 0);
+
+  // An ordinary P2PKH output is not a UAP output at all -- null, not a
+  // thrown error, matching script.go's "most outputs are not UAP outputs"
+  // contract.
+  const p2pkh = UAP.hexToBytes('76a914' + 'aa'.repeat(20) + '88ac');
+  assert.strictEqual(UAP.parseUapScript(p2pkh), null);
+
+  // A truncated / malformed script that happens to end in OP_MINT_TRANSFER
+  // must not crash the parser or be misread as a valid one.
+  const malformed = UAP.concatBytes(new Uint8Array([0x21]), new Uint8Array(10), new Uint8Array([UAP.OP_MINT_TRANSFER]));
+  assert.strictEqual(UAP.parseUapScript(malformed), null);
+
+  console.log('uap.js: parseUapScript round-trips buildMintScript/buildTransferScript');
+}
+
+// The teeth for the wallet-side defect this whole feature exists to close:
+// parseUapScript must disagree with a lying order whenever the order's
+// claimed multiplier or origin does not match the position's actual,
+// verified scriptPubKey. This is exercised end-to-end (relay-shaped
+// mismatch -> wallet refusal) in uap-web/market.test.js; this half just
+// pins that the two fields parseUapScript reports are exactly the ones
+// that must be compared, and that they come back as the real, decoded
+// values rather than something derived from the caller's expectations.
+{
+  const pubkey = new Uint8Array(33).fill(5);
+  const realOrigin = new Uint8Array(32).fill(0xaa);
+  const claimedOrigin = new Uint8Array(32).fill(0xbb); // what a lying order might claim
+  const script = UAP.buildTransferScript(pubkey, 1000, realOrigin);
+  const parsed = UAP.parseUapScript(script);
+
+  assert.notStrictEqual(UAP.bytesToHex(parsed.origin), UAP.bytesToHex(claimedOrigin),
+    'sanity: the fixture is set up so real and claimed origin differ');
+  // A caller comparing parsed.origin against an order's claimed origin
+  // would catch this; parseUapScript's job is only to report the truth,
+  // which this asserts it does.
+  assert.strictEqual(UAP.bytesToHex(parsed.origin), UAP.bytesToHex(realOrigin));
+  assert.strictEqual(parsed.multiplier, 1000);
+
+  console.log('uap.js: parseUapScript reports the real multiplier/origin, not a caller\'s claim');
 }
