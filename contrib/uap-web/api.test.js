@@ -469,6 +469,50 @@ test('getFeeRate validates response is a number', async () => {
 });
 
 // =============================================================================
+// GETRAWTX
+// =============================================================================
+
+test('getRawTx makes a GET request to /rawtx/{txid}', async () => {
+  const calls = [];
+  const txid = 'ab'.repeat(32);
+  const fetchFake = async (url, options) => {
+    calls.push({ url, options });
+    return { status: 200, json: async () => ({ hex: '0100' }) };
+  };
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: fetchFake });
+
+  const hex = await client.getRawTx(txid);
+
+  assertEqual(calls.length, 1, 'one fetch call');
+  assert(calls[0].url.includes(`/rawtx/${txid}`), 'URL contains /rawtx/{txid}');
+  assertEqual(hex, '0100');
+});
+
+test('getRawTx validates the response carries a well-formed hex field', async () => {
+  const fetchFake = FakeFetch.returning(200, { hex: 'not-hex-and-odd-length' });
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: fetchFake });
+
+  // This client-side check only guards shape (a hex string), not truth --
+  // it exists so a malformed relay response fails immediately with a clear
+  // reason instead of reaching uap.deserializeTx with garbage. Odd length
+  // is used here specifically because it can never be valid hex.
+  await assertThrows(
+    () => client.getRawTx('ab'.repeat(32)),
+    'hex'
+  );
+});
+
+test('getRawTx surfaces a 404 (no such transaction) with the node message', async () => {
+  const fetchFake = FakeFetch.returning(404, { error: 'No such mempool or blockchain transaction' });
+  const client = new api.API({ baseUrl: 'http://api.local', fetchImpl: fetchFake });
+
+  await assertThrows(
+    () => client.getRawTx('ab'.repeat(32)),
+    'No such mempool'
+  );
+});
+
+// =============================================================================
 // CANCELORDER
 // =============================================================================
 

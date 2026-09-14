@@ -221,6 +221,37 @@ export class API {
   }
 
   /**
+   * Get the raw, hex-encoded bytes of a transaction.
+   *
+   * This is the primitive the fill path verifies a position with (see
+   * verifyPosition in market.js): a txid is a commitment to the bytes that
+   * hash to it, so a caller who already has the txid independently -- the
+   * order names it, and the maker's signature commits to it -- can hash
+   * this response and know whether the relay is telling the truth, rather
+   * than trusting whatever fields it chooses to put in a JSON /position
+   * response.
+   *
+   * Only the shape of the response is validated here (a hex string) -- NOT
+   * that it hashes to the requested txid. That check belongs to the
+   * caller, which is the one that knows what txid it asked for.
+   *
+   * @param {string} txid - Transaction ID
+   * @returns {Promise<string>} Raw transaction hex
+   */
+  async getRawTx(txid) {
+    const result = await this.request(`/rawtx/${txid}`);
+
+    if (result === null || typeof result !== 'object' || Array.isArray(result)) {
+      throw new Error('getRawTx: expected an object');
+    }
+    if (typeof result.hex !== 'string' || !/^([0-9a-f]{2})+$/i.test(result.hex)) {
+      throw new Error('getRawTx: response missing a well-formed hex field');
+    }
+
+    return result.hex;
+  }
+
+  /**
    * Get UTXOs for an address.
    * @param {string} address - Address
    * @returns {Promise<Array>} Array of UTXO objects

@@ -56,6 +56,153 @@ export function describeOrder(order) {
 }
 
 /**
+ * Verify a position for ourselves instead of trusting the relay's
+ * description of it.
+ *
+ * The relay (`apiClient.getPosition`) is the wallet's only source of chain
+ * data, and most of its lies fail closed: a fabricated payment_value or
+ * script_sig just makes the resulting fill transaction invalid, and the
+ * node refuses it. `position.value` does not fail closed. Consensus for a
+ * UAP covenant only requires outputs to sum to no more than inputs (see
+ * CheckUapOutputConservation in src/script/interpreter.cpp) -- less is a
+ * melt, which is allowed. So a relay that UNDER-reports a position's value
+ * makes the taker build a covenant output smaller than the position it
+ * actually spends; the difference is silently burned to miner fees, and
+ * the taker pays full price for a position worth less than advertised.
+ * `origin` and `multiplier` are exposed to the same trust problem on this
+ * path (buildFillTx takes both from the order, not derived).
+ *
+ * The fix needs no trust in the relay at all. A txid is a commitment to
+ * the bytes that hash to it, and the taker already has the position's
+ * outpoint independently -- it is what the maker's own signature commits
+ * to (script_sig), not something the relay could swap out without the
+ * signature failing to verify at broadcast time. So:
+ *
+ *   1. Fetch the raw bytes of the transaction that created the position.
+ *   2. Hash them and confirm the result IS that txid. A relay cannot
+ *      produce different bytes with the same hash, so this step alone
+ *      makes every field read out of the bytes below trustworthy.
+ *   3. Parse the verified bytes and read the claimed output's value and
+ *      scriptPubKey from them -- not from the relay's JSON.
+ *   4. Decode the scriptPubKey and compare its multiplier and origin
+ *      against what the order claims. Any disagreement, in value,
+ *      multiplier, or origin, means the relay's JSON does not match the
+ *      chain, and every one of those numbers came from the same
+ *      untrustworthy source -- so ANY mismatch refuses the whole fill
+ *      rather than guessing which field to believe.
+ *
+ * Throws with a specific, user-facing reason on any failure. Never
+ * returns a "close enough" answer.
+ *
+ * @param {Object} options
+ * @param {Object} options.api - API client exposing getRawTx(txid)
+ * @param {Object} options.order - Order object from the relay
+ * @param {Object} options.position - Position object from the relay
+ * @returns {Promise<Object>} { value, scriptPubKey, multiplier, origin, pubkey } -- all read from the verified bytes, not the relay's JSON
+ */
+export async function verifyPosition({ api, order, position }) {
+  if (!order || typeof order.txid !== 'string' || typeof order.vout !== 'number') {
+    throw new Error('verifyPosition: order is missing a txid/vout to verify against');
+  }
+
+  const rawHex = await api.getRawTx(order.txid);
+
+  // Step 1+2: the bytes must actually hash to the txid we asked for. This
+  // is the whole trick -- everything past this line is read from bytes we
+  // have independently confirmed the relay cannot have forged, no matter
+  // how hostile it is.
+  const actualTxid = uap.txidFromBytes(rawHex);
+  if (actualTxid !== order.txid) {
+    throw new Error(
+      `Position verification failed: the relay served transaction bytes that ` +
+      `hash to ${actualTxid}, not the order's txid ${order.txid}. Refusing to ` +
+      `trust anything else this relay says about this position.`
+    );
+  }
+
+  let tx;
+  try {
+    tx = uap.deserializeTx(rawHex);
+  } catch (e) {
+    throw new Error(
+      `Position verification failed: could not parse the (hash-verified) ` +
+      `transaction ${order.txid}: ${e.message}`
+    );
+  }
+
+  // Step 3: read the output the order claims to be selling, from the
+  // verified bytes -- not from apiClient.getPosition's JSON.
+  const output = tx.vout[order.vout];
+  if (!output) {
+    throw new Error(
+      `Position verification failed: transaction ${order.txid} has no output ` +
+      `${order.vout}, but the order claims to be selling it.`
+    );
+  }
+
+  const parsed = uap.parseUapScript(output.scriptPubKey);
+  if (!parsed) {
+    throw new Error(
+      `Position verification failed: ${order.txid}:${order.vout} is not a UAP ` +
+      `mint or transfer covenant on chain. Refusing to fill an order against it.`
+    );
+  }
+
+  // A position for sale may be a fresh, never-transferred mint (script
+  // OP_MINT) or an already-transferred covenant (OP_MINT_TRANSFER); both
+  // are legitimately sellable, and fillOrder builds an OP_MINT_TRANSFER
+  // output from either. Only a transfer script carries its origin as
+  // bytes -- a mint output carries none at all, because a mint IS the
+  // start of a lineage. Its origin is derived the same way originForSpend
+  // (uap-js) derives it when signing: SHA256(the outpoint being spent).
+  // Comparing against anything else here would reject every legitimate
+  // first sale of a freshly minted token.
+  const actualOrigin = parsed.isMint
+    ? uap.bytesToHex(uap.deriveOrigin(order.txid, order.vout))
+    : uap.bytesToHex(parsed.origin);
+
+  // Step 4: cross-check every field the fill path takes on trust from the
+  // relay against the verified truth. This covers `position.value` (the
+  // defect this function exists to close) as well as `order.origin` and
+  // `order.multiplier`, which buildFillTx also takes from the relay
+  // unverified. All three came from the same untrustworthy source, so any
+  // one of them disagreeing with the chain is reason enough to refuse the
+  // whole fill -- there is no way to know which of the relay's other
+  // claims (payment_value, script_sig, ...) are still good.
+  if (typeof order.origin !== 'string' || order.origin.toLowerCase() !== actualOrigin) {
+    throw new Error(
+      `Position verification failed: order claims origin ${order.origin}, but ` +
+      `the position's real scriptPubKey carries ${actualOrigin}. Refusing to ` +
+      `fill -- this relay cannot be trusted about this order.`
+    );
+  }
+  if (order.multiplier !== parsed.multiplier) {
+    throw new Error(
+      `Position verification failed: order claims multiplier ${order.multiplier}, ` +
+      `but the position's real scriptPubKey carries ${parsed.multiplier}. ` +
+      `Refusing to fill -- this relay cannot be trusted about this order.`
+    );
+  }
+  if (position && typeof position.value === 'number' && position.value !== output.value) {
+    throw new Error(
+      `Position verification failed: the relay reported this position as worth ` +
+      `${position.value} satoshis, but its real, on-chain value is ${output.value} ` +
+      `satoshis. Refusing to fill -- building against the relay's figure would ` +
+      `either burn the difference to fees (if it under-reports) or fail at the ` +
+      `node (if it over-reports).`
+    );
+  }
+
+  return {
+    value: output.value,
+    scriptPubKey: output.scriptPubKey,
+    multiplier: parsed.multiplier,
+    origin: actualOrigin,
+    pubkey: uap.bytesToHex(parsed.pubkey)
+  };
+}
+
+/**
  * Validate that a taker can fill an order and return a plan.
  *
  * Returns { ok: true, plan } or { ok: false, errors: [...] }.

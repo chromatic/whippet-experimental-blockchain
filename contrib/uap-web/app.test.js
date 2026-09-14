@@ -1236,13 +1236,29 @@ test('with no error, the send review screen shows none', () => {
 // FILL PUBLISH (replaces alert() for fill failures)
 // =============================================================================
 
+// The position FILL_ORDER claims to sell, as it actually exists on chain:
+// a real OP_MINT_TRANSFER covenant, serialized so its bytes hash to a real
+// txid. publishFill now verifies the position for itself (see
+// verifyPosition in market.js) before it will build anything, so any
+// fixture used with it needs bytes that survive that check -- a made-up
+// txid like the old 'aa'.repeat(32) no longer gets past the door.
+const FILL_POSITION_VALUE = 100 * COIN;
+const FILL_POSITION_SCRIPT = uap.buildTransferScript(THEIR_PUBKEY, 100, uap.hexToBytes(FIXTURE_ORIGIN));
+const FILL_POSITION_RAW_HEX = uap.txToHex({
+  version: 1,
+  locktime: 0,
+  vin: [{ txid: '01'.repeat(32), vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+  vout: [{ value: FILL_POSITION_VALUE, scriptPubKey: FILL_POSITION_SCRIPT }]
+});
+const FILL_ORDER_TXID = uap.txidFromBytes(FILL_POSITION_RAW_HEX);
+
 // A maker's standing offer, in the shape GET /orders returns. script_sig and
 // payment_script are not optional decoration: buildFillTx hex-decodes both to
 // assemble the maker's already-signed input and the output their
 // SIGHASH_SINGLE signature commits to, so an order missing either cannot be
 // filled at all.
 const FILL_ORDER = {
-  txid: 'aa'.repeat(32),
+  txid: FILL_ORDER_TXID,
   vout: 0,
   multiplier: 100,
   payment_value: 50 * COIN,
@@ -1257,14 +1273,20 @@ const FILL_ORDER = {
   script_sig: '47' + 'aa'.repeat(70) + '83'
 };
 
+// A relay double the fixture above is built from: honest about the txid
+// (so verification's hash check passes) and honest about every field
+// checked here, used as the getRawTx stand-in for every test that isn't
+// itself testing a lying relay.
+const honestRelay = { getRawTx: async () => FILL_POSITION_RAW_HEX };
+
 test('a failed fill broadcast is reported, not swallowed', async () => {
   const fillPlan = { fee: 10000, change: 100 * COIN };
   const order = FILL_ORDER;
-  const position = { value: 100 * COIN };
+  const position = { value: FILL_POSITION_VALUE };
   const takerUtxos = SEND_UTXOS;
 
   const result = await app.publishFill({
-    api: { broadcast: async () => { throw new Error('relay unreachable'); } },
+    api: { ...honestRelay, broadcast: async () => { throw new Error('relay unreachable'); } },
     secp: secp256k1,
     plan: fillPlan,
     privKey: SEND_PRIVKEY,
@@ -1280,11 +1302,11 @@ test('a successful fill reports success and sends the transaction onward', async
   let broadcast = null;
   const fillPlan = { fee: 10000, change: 100 * COIN };
   const order = FILL_ORDER;
-  const position = { value: 100 * COIN };
+  const position = { value: FILL_POSITION_VALUE };
   const takerUtxos = SEND_UTXOS;
 
   const result = await app.publishFill({
-    api: { broadcast: async (hex) => { broadcast = hex; return 'bb'.repeat(32); } },
+    api: { ...honestRelay, broadcast: async (hex) => { broadcast = hex; return 'bb'.repeat(32); } },
     secp: secp256k1,
     plan: fillPlan,
     privKey: SEND_PRIVKEY,
@@ -1295,6 +1317,156 @@ test('a successful fill reports success and sends the transaction onward', async
   assertEqual(result.ok, true, result.error);
   assert(broadcast !== null, 'a successful fill must be broadcast');
   assertEqual(result.txid, 'bb'.repeat(32), 'the node-assigned txid must be reported back');
+});
+
+// ---- the most important test in this file ---------------------------------
+//
+// A relay that under-reports a position's value must be refused, not
+// silently corrected and not built anyway. Without verification, this is
+// exactly the defect described at the top of market.js: the taker would
+// sign a covenant output smaller than the position actually backing it,
+// the difference vanishing into the miner's fee, while paying full price
+// for a position now worth less than advertised. Nothing about that
+// transaction is consensus-invalid, so nothing at the node catches it --
+// this check is the only thing that does.
+test('a relay under-reporting a position value is refused, not built', async () => {
+  const fillPlan = { fee: 10000, change: 100 * COIN };
+  const order = FILL_ORDER;
+  // The relay's /position response claims less than the position (verified
+  // above via FILL_POSITION_RAW_HEX) is actually worth.
+  const position = { value: FILL_POSITION_VALUE - 1 * COIN };
+  const takerUtxos = SEND_UTXOS;
+
+  let broadcastCalled = false;
+  const result = await app.publishFill({
+    api: { ...honestRelay, broadcast: async () => { broadcastCalled = true; return 'cc'.repeat(32); } },
+    secp: secp256k1,
+    plan: fillPlan,
+    privKey: SEND_PRIVKEY,
+    order,
+    position,
+    takerUtxos
+  });
+
+  assertEqual(result.ok, false, 'an under-reported position value must refuse the fill, not build it anyway');
+  assert(!broadcastCalled, 'a refused fill must never reach the broadcast step');
+  assert(/on-chain value/.test(result.error), `expected the refusal to name the mismatch, got: ${result.error}`);
+});
+
+test('a relay lying about an order\'s origin is refused', async () => {
+  const fillPlan = { fee: 10000, change: 100 * COIN };
+  const order = { ...FILL_ORDER, origin: uap.bytesToHex(uap.deriveOrigin('ff'.repeat(32), 9)) };
+  const position = { value: FILL_POSITION_VALUE };
+
+  const result = await app.publishFill({
+    api: { ...honestRelay, broadcast: async () => 'dd'.repeat(32) },
+    secp: secp256k1,
+    plan: fillPlan,
+    privKey: SEND_PRIVKEY,
+    order,
+    position,
+    takerUtxos: SEND_UTXOS
+  });
+
+  assertEqual(result.ok, false, 'a lineage mismatch must refuse the fill');
+  assert(/origin/.test(result.error), `expected the refusal to name the origin mismatch, got: ${result.error}`);
+});
+
+test('a relay lying about an order\'s multiplier is refused', async () => {
+  const fillPlan = { fee: 10000, change: 100 * COIN };
+  const order = { ...FILL_ORDER, multiplier: 999 };
+  const position = { value: FILL_POSITION_VALUE };
+
+  const result = await app.publishFill({
+    api: { ...honestRelay, broadcast: async () => 'ee'.repeat(32) },
+    secp: secp256k1,
+    plan: fillPlan,
+    privKey: SEND_PRIVKEY,
+    order,
+    position,
+    takerUtxos: SEND_UTXOS
+  });
+
+  assertEqual(result.ok, false, 'a multiplier mismatch must refuse the fill');
+  assert(/multiplier/.test(result.error), `expected the refusal to name the multiplier mismatch, got: ${result.error}`);
+});
+
+test('a relay serving transaction bytes for the wrong txid is refused', async () => {
+  const fillPlan = { fee: 10000, change: 100 * COIN };
+  const order = FILL_ORDER;
+  const position = { value: FILL_POSITION_VALUE };
+  // A relay that hands back some other (also well-formed) transaction's
+  // bytes instead of the one the order names -- the hash check must catch
+  // this before anything downstream ever looks at its contents.
+  const wrongTxBytes = uap.txToHex({
+    version: 1, locktime: 0,
+    vin: [{ txid: '02'.repeat(32), vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+    vout: [{ value: FILL_POSITION_VALUE, scriptPubKey: FILL_POSITION_SCRIPT }]
+  });
+
+  const result = await app.publishFill({
+    api: { getRawTx: async () => wrongTxBytes, broadcast: async () => 'ff'.repeat(32) },
+    secp: secp256k1,
+    plan: fillPlan,
+    privKey: SEND_PRIVKEY,
+    order,
+    position,
+    takerUtxos: SEND_UTXOS
+  });
+
+  assertEqual(result.ok, false, 'a txid/bytes mismatch must refuse the fill');
+  assert(/hash to/.test(result.error), `expected the refusal to name the hash mismatch, got: ${result.error}`);
+});
+
+// A position that has never been transferred is still a covenant script,
+// just OP_MINT rather than OP_MINT_TRANSFER, and it carries no origin
+// bytes at all -- a mint IS the start of a lineage. verifyPosition has to
+// derive that lineage's origin the same way uap-js's originForSpend does
+// (SHA256 of the outpoint being spent) rather than rejecting every mint
+// position as "not a transfer covenant". This exact scenario -- selling a
+// token straight off its mint, with no transfer in between -- is exactly
+// what contrib/uap-web/e2e's live-node fill test exercises, and an earlier
+// version of verifyPosition failed it while every one of these mocked
+// unit tests above still passed.
+test('a freshly minted position (never transferred) can still be filled', async () => {
+  const mintTxid = 'aa'.repeat(32); // Arbitrary but fixed: only its hash-derived origin matters here.
+  const mintVout = 0;
+  const mintValue = 1000 * COIN;
+  const mintMultiplier = 100;
+  const mintScript = uap.buildMintScript(THEIR_PUBKEY, mintMultiplier);
+  const mintRawHex = uap.txToHex({
+    version: 1, locktime: 0,
+    vin: [{ txid: '03'.repeat(32), vout: 0, scriptSig: new Uint8Array(0), sequence: 0xffffffff }],
+    vout: [{ value: mintValue, scriptPubKey: mintScript }]
+  });
+  const mintTxidComputed = uap.txidFromBytes(mintRawHex);
+
+  const order = {
+    txid: mintTxidComputed,
+    vout: mintVout,
+    multiplier: mintMultiplier,
+    payment_value: 50 * COIN,
+    payment_script: uap.bytesToHex(addr.buildP2PKHScript(THEIR_PUBKEY)),
+    // The origin a maker selling straight off a mint would sign and the
+    // relay would publish: derived from the outpoint, per originForSpend.
+    origin: uap.bytesToHex(uap.deriveOrigin(mintTxidComputed, mintVout)),
+    script_sig: '47' + 'aa'.repeat(70) + '83'
+  };
+  const position = { value: mintValue };
+
+  let broadcast = null;
+  const result = await app.publishFill({
+    api: { getRawTx: async () => mintRawHex, broadcast: async (hex) => { broadcast = hex; return 'bb'.repeat(32); } },
+    secp: secp256k1,
+    plan: { fee: 10000, change: 100 * COIN },
+    privKey: SEND_PRIVKEY,
+    order,
+    position,
+    takerUtxos: SEND_UTXOS
+  });
+
+  assertEqual(result.ok, true, `a legitimate mint-backed order must be fillable: ${result.error}`);
+  assert(broadcast !== null, 'a successful fill against a mint position must be broadcast');
 });
 
 // =============================================================================

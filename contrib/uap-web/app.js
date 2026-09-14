@@ -8,7 +8,7 @@ import { myOrders, planCancel, describeCancelFailure, cancelSignInput } from './
 import * as dom from './dom.js';
 import { API, pollForConfirmation, staleInfo } from './api.js';
 import { planMint, buildMintTx } from './mint.js';
-import { describeOrder, planFill, buildFillTx } from './market.js';
+import { describeOrder, planFill, buildFillTx, verifyPosition } from './market.js';
 import {
   planTransfer,
   buildTransferTx,
@@ -1740,6 +1740,16 @@ async function renderMarketFill() {
  */
 export async function publishFill({ api, secp, plan, privKey, order, position, takerUtxos }) {
   try {
+    // Verify the position against the chain before building anything that
+    // spends real money against it. See verifyPosition in market.js for
+    // why this cannot be skipped: position.value, order.origin and
+    // order.multiplier are all relay-supplied, and an under-reported value
+    // in particular fails closed nowhere on its own -- the resulting fill
+    // is still consensus-valid, just worth less than the taker thinks.
+    // This throws (refusing the fill, loudly) on any mismatch, so nothing
+    // below runs against unverified data.
+    const verified = await verifyPosition({ api, order, position });
+
     uap.configureSecp(secp);
     const built = await buildFillTx({
       secp,
@@ -1747,7 +1757,10 @@ export async function publishFill({ api, secp, plan, privKey, order, position, t
       privKey,
       pubKey: secp.getPublicKey(privKey, true),
       order,
-      position,
+      // Build against the verified value, not the relay's -- see
+      // verifyPosition. Everything else buildFillTx reads off `position`
+      // is untouched.
+      position: { ...position, value: verified.value },
       takerUtxos
     });
     // Resolves only on a 2xx -- the node has accepted it into its mempool.
