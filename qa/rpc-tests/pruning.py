@@ -376,7 +376,22 @@ class PruneTest(BitcoinTestFramework):
         print ("Syncing node 5 to test wallet")
         connect_nodes(self.nodes[0], 5)
         nds = [self.nodes[0], self.nodes[5]]
-        sync_blocks(nds, wait=5, timeout=300)
+        # Upstream allows 300s for node 5 to sync the whole chain. That is not
+        # enough here, and not because anything is broken: measured on an idle
+        # machine with an -O2 build and an NVMe disk, node 5 sustains about 4
+        # blocks a second against the ~4000 blocks this test has built, which
+        # is roughly 1000 seconds. The blocks are the reason -- mine_large_block
+        # fills each one with 14 transactions of 129 outputs, so this is ~2.7GB
+        # of real block processing, not idle waiting. The download window is
+        # full (16 in flight) throughout; the receiver is simply the limit.
+        #
+        # Regtest's own -checkblockindex accounts for about a tenth of that:
+        # CheckBlockIndex() rebuilds a multimap of the entire block tree on
+        # every connected block, so its cost grows linearly with height (5.8s
+        # per 1000 blocks at height 1000, 25.3s per 1000 at height 4000). It is
+        # deliberately left on -- this test does deep reorgs and prunes block
+        # files, which is exactly what that check is there to police.
+        sync_blocks(nds, wait=5, timeout=1800)
         self.stop_node(5) #stop and start to trigger rescan
         start_node(5, self.options.tmpdir, ["-debug=1","-prune=2200"])
         print ("Success")
