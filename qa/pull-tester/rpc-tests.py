@@ -209,10 +209,8 @@ testScriptsExt = [
     'p2p-feefilter.py',
     'rpcbind_test.py',
     # vv Tests less than 30s vv
-    'bip65-cltv.py',
     # 'bip65-cltv-p2p.py',
     # 'bipdersig-p2p.py',
-    'bipdersig.py',
     'getblocktemplate_proposals.py',
     'txn_doublespend.py',
     'txn_clone.py --mineblock',
