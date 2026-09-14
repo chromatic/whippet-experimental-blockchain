@@ -83,6 +83,59 @@ fixed ratio. Value can leave a position, but token quantity leaves in exact
 proportion, which is what makes a position's backing verifiable by anyone
 holding the outpoint.
 
+### Why a position feels permanent to whoever buys one
+
+The rules above have a consequence worth stating on its own, because it is
+the whole reason backing is a meaningful promise rather than a marketing
+claim: **buying a position is not exposure to what anyone else does with
+theirs.**
+
+- **Melting is self-service only.** Rule 1 above requires the signature of
+  the `recipient_pubkey` embedded in *that* position's own script — there is
+  no other way to authorize a spend. Nobody can melt, transfer, or otherwise
+  touch a position they do not hold the key to. Your backing cannot be
+  withdrawn by anyone but you.
+- **Backing is per position, never pooled.** There is no shared reserve that
+  positions draw against. One satoshi at multiplier `M` is `M` token units,
+  in every position carrying that multiplier, always — see "Multiplier and
+  token quantity" above. Another holder's melt does not change your
+  position's declared value, its multiplier, or the ratio between them: it
+  cannot, because their spend is a different transaction touching a
+  different UTXO. Nothing about your position's script or backing is
+  read, written, or referenced by theirs.
+- **A melt shrinks supply and backing together, in the same proportion, and
+  touches nothing else.** `CheckUapOutputConservation` (`src/script/
+  interpreter.cpp`) enforces `nValueOut <= nValueIn` on the lineage being
+  spent, and only on the inputs actually included in that transaction.
+  Melting position A removes exactly A's value and exactly the units that
+  value represented — from total supply and from nothing else. Position B,
+  held by someone else, is not an input to A's spend, so it is not
+  evaluated, not touched, and not diminished. If anything, B's *share* of
+  the lineage's remaining supply goes up, not down, because the denominator
+  just got smaller while B's own numerator did not move.
+- **The honest caveat.** A minter who still holds most of a token's supply
+  can melt their own position down to dust and walk away with most of its
+  backing. Watched from outside, that looks exactly like a rug pull — total
+  supply and total backing both drop sharply, all at once. It is one,
+  though, in an important sense: it is the minter withdrawing money that was
+  always theirs, at the ratio they locked it in at, from a position only
+  they could ever spend. Anyone who *bought* a position from that minter
+  still holds their own coins, at their own multiplier, completely
+  undiminished — the melt is not a claim against their backing, because
+  there was never a claim to make; it was never pooled with the minter's in
+  the first place. The caution this leaves standing is about concentration,
+  not about the mechanism: a token where one address still holds most of the
+  supply is one where that address can walk away with most of the backing,
+  and that is a fact worth checking about a token before buying into it, not
+  a flaw in what buying a position guarantees you once you hold it.
+- **The entry fee is a floor, not a fixed amount.** Rule 2 rejects a mint
+  locking *less* than `1000 * COIN` (`if (fIsMint && nValueIn < 1000 * COIN)`
+  in `src/script/interpreter.cpp`); it does not reject locking more. A mint
+  may lock any amount at or above the floor, and — like every other
+  position — that value is never burned. It is ordinary locked backing,
+  recoverable in full (minus dust and fee) by melting the position, the same
+  as backing added at any later spend.
+
 > Note on the overflow guard: rule 4 computes whole coins as
 > `nValueIn / COIN`, integer division, so a position of 1.99999999 WHIP counts
 > as 1 and a position under 1 WHIP counts as 0 (which short-circuits the guard

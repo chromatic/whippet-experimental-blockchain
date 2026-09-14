@@ -399,6 +399,109 @@ are not supported. Makers wanting to sell part of a holding must first
 split it into a smaller position with an ordinary transfer. Either expose
 a "split" action, or do it transparently as a pre-step in the sell flow.
 
+## Trust model: what the wallet verifies, and what it still trusts
+
+The wallet's only source of chain data is the relay (`uap-indexer`). It has
+no other view of the chain: no light client, no independent header chain,
+nothing. That makes the relay's honesty worth being precise about, field by
+field, rather than asserting "self-custody" and leaving the reader to guess
+how far that actually reaches.
+
+Most of what a hostile relay could lie about **fails closed already**,
+before any special handling: a fabricated `script_sig`, `payment_script`, or
+`payment_value` on an order just produces a transaction the maker never
+signed, which the wallet can still build and broadcast, but the node refuses
+it (the signature does not verify against the tampered fields). The taker
+loses nothing but the broadcast attempt.
+
+One field did not fail closed, until now: `position.value`. A UAP covenant's
+conservation rule only requires outputs to sum to no *more* than the input
+(`nValueOut <= nValueIn` in `CheckUapOutputConservation`,
+`src/script/interpreter.cpp`) — less is a melt, and melts are legal. A relay
+that under-reports a position's value gets the taker to build a covenant
+output smaller than the position actually spent; the shortfall is silently
+burned to miner fees, the transaction is completely valid, and the node has
+no reason to refuse it. `origin` and `multiplier`, also read from the relay
+on the fill path, are exposed to the same problem: nothing about a wrong
+`origin` or `multiplier` alone stops the resulting transaction from
+confirming.
+
+### What the wallet verifies for itself
+
+On the fill path, before signing or broadcasting anything, the wallet
+(`verifyPosition` in `contrib/uap-web/market.js`) does the following:
+
+1. Fetches the raw, hex-encoded bytes of the transaction that created the
+   position, via `GET /api/rawtx/{txid}` (`contrib/uap-indexer`, proxying
+   the node's own `getrawtransaction`).
+2. Double-SHA256s those bytes and confirms the byte-reversed result equals
+   the txid the order names. This is the load-bearing step: a txid is a
+   commitment to the bytes that hash to it, and the taker already has that
+   txid independently — it is part of the outpoint the maker's own
+   `script_sig` commits to, not something the relay could swap out without
+   the maker's signature failing to verify. A relay cannot produce different
+   bytes with the same hash, so once this check passes, everything read out
+   of those bytes below is as trustworthy as the chain itself.
+3. Parses the verified bytes and reads the claimed output's real value and
+   `scriptPubKey` directly from them — never from the relay's `/position`
+   JSON.
+4. Decodes the `scriptPubKey`'s multiplier and origin (deriving the origin
+   from the outpoint instead, for a position sold straight off its mint,
+   which carries none in the script) and compares both against what the
+   order claims, and compares the parsed value against what
+   `apiClient.getPosition` reported.
+
+**Any mismatch — wrong hash, wrong value, wrong multiplier, wrong origin —
+refuses the fill outright**, before anything is signed, with the specific
+reason shown inline on the page. Once this passes, the covenant output is
+built from the verified value, not the relay's.
+
+### What the wallet still takes on trust from the relay
+
+- **Order-book liveness and completeness.** Whether an order is listed at
+  all, and whether a listed order has already been filled or cancelled, is
+  taken entirely from `GET /orders` / `GET /orders/{txid}/{vout}`. The
+  wallet does not independently scan the chain for competing spends of the
+  same position before building a fill.
+  *Consequence of a hostile or merely broken relay:* it can waste a taker's
+  time — e.g. serving a stale order for an already-spent position — but the
+  worst outcome is a broadcast the node rejects (`bad-txns-inputs-spent`),
+  reported inline, same as any other failed broadcast. No funds move on a
+  rejected broadcast.
+- **The maker's terms** (`payment_value`, `payment_script`, `script_sig`).
+  These are not independently re-verified by the wallet, because they do
+  not need to be: they are exactly what the maker's own
+  `SIGHASH_SINGLE|ANYONECANPAY` signature commits to, so a relay that alters
+  any of them produces a signature that fails to verify, and either the
+  wallet's own build step or the node's broadcast check catches it.
+  *Consequence of a hostile relay:* a failed fill, never a wrong one — this
+  is the "fails closed already" case above, not something this feature
+  changed.
+- **Fee-rate estimates** (`GET /feerate`). A relay reporting a bad rate
+  costs the taker in overpaid fees or a slower confirmation.
+  *Consequence of a hostile relay:* wasted fee, at worst, never a wrong
+  covenant value — `market.js` clamps to the policy floor regardless (see
+  `RecommendedMinTxFee`).
+- **Token listing metadata** (`GET /tokens`, `GET /token/{origin}`: ticker,
+  and any off-chain blob resolved from `metadata_hash`). None of this is on
+  the fill path this document describes, and none of it changed here — see
+  `doc/uap-token-metadata.md` for what is and isn't anchored on-chain there.
+  *Consequence of a hostile relay:* it can show a wrong name, ticker, or
+  image for a token; nothing about a position's value or lineage depends on
+  it.
+- **Availability.** A relay can simply refuse to serve `/api/rawtx/{txid}`,
+  or go offline entirely. Verification then cannot proceed and the fill is
+  refused with a "relay unreachable"-shaped error — the same failure mode
+  as any other endpoint being down. This is not a new gap this feature
+  opens; it is the same fail-closed behavior every other network call in
+  the wallet already has.
+
+**What this explicitly does not claim:** verification proves the relay's
+description of *this specific position* matches the chain. It says nothing
+about whether the order itself is a good deal, whether the token has real
+liquidity, or whether the party on the other end of a trade is trustworthy
+in any sense beyond "the covenant they're selling is what they say it is."
+
 ## Phase 7 — polish
 
 - Mobile-first CSS: single column, thumb-reachable actions, 44 px targets,
