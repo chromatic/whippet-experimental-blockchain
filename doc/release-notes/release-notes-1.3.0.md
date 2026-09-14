@@ -294,6 +294,19 @@ has `base_coin == 0`, which short-circuits the guard entirely. Neither is
 exploitable — the multiplication is separately overflow-checked — but a
 contract written against a strict 2^48 ceiling would be wrong.
 
+**The block-download timeout is 50 seconds, and a busy node blames its peer
+for it.** `MIN_BLOCK_DOWNLOAD_MULTIPLIER` (`src/net_processing.h`) puts a floor
+under the per-block download window, which works out to 50 seconds on both
+mainnet and regtest. The same expression on Bitcoin gives 3,000 seconds, so the
+timeout effectively never fires there. The timer measures wall-clock since the
+download began rather than whether progress is being made, so a node that is
+itself the bottleneck -- mid-reorg, or connecting large blocks -- can exhaust
+the window and disconnect a peer that was serving it correctly. `pruning.py`
+reproduces this and is disabled in `qa/pull-tester/rpc-tests.py` until the
+timeout is retuned; the comment there has the detail. On a live network a node
+recovers by finding another peer, so the visible cost is churn rather than a
+stall, but the constant predates this release and wants revisiting.
+
 **`OP_INSPECT` and `OP_INSPECT_SELF` are not height-gated** the way
 `OP_MINT`/`OP_MINT_TRANSFER` are: `SCRIPT_VERIFY_UAP_MINT` gates only the
 latter pair. This is inconsistent rather than harmful here, since there are no
