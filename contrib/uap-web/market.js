@@ -14,27 +14,45 @@ const HARD_DUST_LIMIT = uap.DEFAULT_HARD_DUST_LIMIT;
 const RECOMMENDED_MIN_TX_FEE = uap.RECOMMENDED_MIN_TX_FEE;
 
 /**
- * Describe an order as a human-readable summary.
+ * Describe an order as a one-line summary, for the order book list.
  *
- * The order model from orders.go specifies:
- * - The token being sold (position: txid, vout, multiplier, value)
- * - The payment the maker wants (payment_script, payment_value)
+ * The asking price alone does not tell a buyer anything. A position is its
+ * backing: the satoshis locked in it ARE the token, at a fixed ratio, and
+ * anyone may melt one back down (see buildMeltTx). So the number that makes
+ * an ask legible is what it is backed by -- 40 coins for a position holding
+ * 1000 is a very different offer from 40 coins for a position holding 41 --
+ * and without it the book is a list of prices for unnamed things.
  *
- * This function produces a string like:
- *   "Sell 1000 coins (mult=100) @ 5000000 sats"
+ * The relay serves that as `backing_value`, read off the position at publish
+ * time so a maker cannot overstate it (see orders.go). It is used here rather
+ * than fetched per row, which is what it was added for.
  *
- * Fields:
- * - Token quantity is in the position (not in the order itself)
- * - Payment amount is order.payment_value (in satoshis)
+ * Older relays, and any order stored before backing_value existed, may not
+ * carry it. Those are described without it rather than as "backed by 0",
+ * which would read as a specific and alarming claim rather than an absence.
  *
  * @param {Object} order - Order object from the API
  * @returns {string} Human-readable description
  */
 export function describeOrder(order) {
-  const paymentBtc = (order.payment_value / COIN).toFixed(8);
-  const side = 'SELL';
+  const maker = String(order.pubkey || '').slice(0, 16);
+  const price = (order.payment_value / COIN).toFixed(8);
+  const parts = [`SELL multiplier=${order.multiplier}`];
 
-  return `${side} multiplier=${order.multiplier} @ ${order.payment_value} sats (maker: ${order.pubkey.slice(0, 16)}...)`;
+  if (typeof order.backing_value === 'number' && order.backing_value > 0) {
+    parts.push(`backed by ${(order.backing_value / COIN).toFixed(8)} coins`);
+    // Against par, because par is the floor: the holder can always melt.
+    // An ask below par is a discount to what the position could be redeemed
+    // for; one above it is a premium the buyer is choosing to pay.
+    const ratio = order.payment_value / order.backing_value;
+    parts.push(`@ ${price} coins (${ratio.toFixed(2)}x par)`);
+  } else {
+    parts.push(`@ ${price} coins`);
+    parts.push('backing unknown -- this relay does not publish it');
+  }
+  parts.push(`${order.payment_value} sats`);
+
+  return `${parts.join(' · ')} (maker: ${maker}...)`;
 }
 
 /**

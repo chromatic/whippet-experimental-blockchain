@@ -102,8 +102,45 @@ test('describeOrder distinguishes token quantity from payment amount', () => {
   const desc = describeOrder(TEST_ORDER);
   assert(desc.includes('100'), 'should mention the multiplier');
   assert(desc.includes('5000000'), 'should mention the payment value');
-  // Note: describeOrder receives only the order, which doesn't include position value.
-  // The position value (token amount) is fetched separately by the UI.
+});
+
+// A price with nothing beside it is not information. A position IS its
+// backing -- the locked satoshis are the token, and the holder can always
+// melt them back out -- so an ask is only legible next to what it is backed
+// by. The relay reads backing_value off the position at publish time
+// precisely so the book can show it without a fetch per row.
+test('describeOrder says what the position is backed by', () => {
+  const desc = describeOrder({ ...TEST_ORDER, backing_value: 100 * COIN });
+  assert(desc.includes('backed by 100.00000000'),
+    `the backing should be stated outright, got: ${desc}`);
+});
+
+// Par is the floor, because anyone holding the position could melt it. So
+// the ratio to par is the one number that says whether an ask is a discount
+// or a premium, and it is worth computing once here rather than in the
+// reader's head for every row.
+test('describeOrder prices the ask against par', () => {
+  const atPar = describeOrder({ ...TEST_ORDER, payment_value: 100 * COIN, backing_value: 100 * COIN });
+  assert(atPar.includes('1.00x par'), `at par, got: ${atPar}`);
+
+  const halfPar = describeOrder({ ...TEST_ORDER, payment_value: 50 * COIN, backing_value: 100 * COIN });
+  assert(halfPar.includes('0.50x par'), `a discount to par, got: ${halfPar}`);
+
+  const premium = describeOrder({ ...TEST_ORDER, payment_value: 250 * COIN, backing_value: 100 * COIN });
+  assert(premium.includes('2.50x par'), `a premium over par, got: ${premium}`);
+});
+
+// An order from a relay too old to publish backing_value, or stored before
+// the field existed, must be described as unknown rather than as backed by
+// nothing: "backed by 0.00000000 coins" is a specific and alarming claim,
+// and it would be a false one.
+test('describeOrder does not report a missing backing as zero', () => {
+  const desc = describeOrder(TEST_ORDER);   // no backing_value at all
+  assert(!desc.includes('backed by'),
+    `an absent backing must not be described as a backing, got: ${desc}`);
+  assert(desc.includes('backing unknown'),
+    `and must say so, got: ${desc}`);
+  assert(desc.includes('5000000'), 'while still naming the price');
 });
 
 // =============================================================================
