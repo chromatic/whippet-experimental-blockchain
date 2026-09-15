@@ -354,7 +354,7 @@ reason rather than the fact of rejection.
 Release Information
 ===================
 
-**Release Date:** September 14, 2026
+**Release Date:** September 15, 2026
 **Version:** 1.3.0
 **GitHub Tag:** v1.3.0
 **Consensus activation:** block 82,000 (`UAPMintHeight`)
