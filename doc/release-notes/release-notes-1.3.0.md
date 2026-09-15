@@ -196,7 +196,8 @@ recovery, because nothing asks the remaining peer.
 
 The floor is raised to restore upstream's absolute ten minute window. Detecting
 a peer that genuinely is not delivering is the stalling logic's job, and that
-still fires in seconds; this timeout is only a backstop.
+still fires in seconds; this timeout is only a backstop. `pruning.py` passes
+with the change and now runs as part of the extended suite in CI.
 
 Token metadata: `name` removed, tickers restricted to `[A-Z0-9]{1,8}`
 ------------------------------------------------------------------------
