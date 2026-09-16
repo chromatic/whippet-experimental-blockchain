@@ -65,7 +65,7 @@ build process.
 ## Get the Source Code
 
 To build Whippet from source code, you'll need the source code. Either check it out via `git` or download
-a zip file. (Look at the green "<> Code" button on [the Whippet GitHub repository](https://github.com/whippet/whippet/)).
+a zip file. (Look at the green "<> Code" button on [the Whippet GitHub repository](https://github.com/chromatic/whippet-experimental-blockchain/)).
 
 Make sure this code is available in your Ubuntu directory. If you've unzipped a single downloaded file, you may need to change
 the permissions of all extracted files with command like:
@@ -75,7 +75,7 @@ sudo chmod -R <your_username> .
 If you've downloaded via `git`, do not use `sudo`. Instead prefer something like:
 ```bash
 cd $HOME
-git clone https://github.com/whippet/whippet.git
+git clone https://github.com/chromatic/whippet-experimental-blockchain.git
 git checkout <branchname>
 ```
 ... where `<branchname>` is the name of the branch you want to build, such as

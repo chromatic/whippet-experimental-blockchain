@@ -3,9 +3,9 @@ Release Process
 
 Before every release candidate:
 
-* Update translations (ping wumpus on IRC) see [translation_process.md](https://github.com/whippet/whippet/blob/master/doc/translation_process.md#synchronising-translations).
+* Update translations (ping wumpus on IRC) see [translation_process.md](https://github.com/chromatic/whippet-experimental-blockchain/blob/master/doc/translation_process.md#synchronising-translations).
 
-* Update manpages, see [gen-manpages.sh](https://github.com/whippet/whippet/blob/master/contrib/devtools/README.md#gen-manpagessh).
+* Update manpages, see [gen-manpages.sh](https://github.com/chromatic/whippet-experimental-blockchain/blob/master/contrib/devtools/README.md#gen-manpagessh).
 
 Before every minor and major release:
 
@@ -21,7 +21,7 @@ Before every minor and major release:
 
 Before every major release:
 
-* Update hardcoded [seeds](/contrib/seeds/README.md), see [this pull request](https://github.com/whippet/whippet/pull/7415) for an example.
+* Update hardcoded [seeds](/contrib/seeds/README.md), see [this pull request](https://github.com/chromatic/whippet-experimental-blockchain/pull/7415) for an example.
 * Update [`BLOCK_CHAIN_SIZE`](/src/qt/intro.cpp) to the current size plus some overhead.
 
 ### First time / New builders
@@ -34,7 +34,7 @@ Check out the source code in the following directory hierarchy.
     git clone https://github.com/whippet-core/gitian.sigs.git
     git clone https://github.com/whippet-core/whippet-detached-sigs.git
     git clone https://github.com/devrandom/gitian-builder.git
-    git clone https://github.com/whippet/whippet.git
+    git clone https://github.com/chromatic/whippet-experimental-blockchain.git
 
 ### Whippet maintainers/release engineers, update version in sources
 
@@ -248,7 +248,7 @@ Note: check that SHA256SUMS itself doesn't end up in SHA256SUMS, which is a spur
 
 - Upload zips and installers, as well as `SHA256SUMS.asc` from last step, to the whippet.com Github repo
 
-- Create a [new GitHub release](https://github.com/whippet/whippet/releases/new) with a link to the archived release notes.
+- Create a [new GitHub release](https://github.com/chromatic/whippet-experimental-blockchain/releases/new) with a link to the archived release notes.
 
 - Update whippet.com version - Langerhans to do
 

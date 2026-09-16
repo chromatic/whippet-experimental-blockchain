@@ -5,7 +5,7 @@ of the latest changes on NixOS.
 
 Clone and enter the repo:
 
-    $ git clone https://github.com/whippet/whippet
+    $ git clone https://github.com/chromatic/whippet-experimental-blockchain
     $ cd whippet
 
 Enter the `nix-shell` environment with all the Whippet dependencies present:

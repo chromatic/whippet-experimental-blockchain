@@ -1,6 +1,6 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Whippet Core
-Source: https://github.com/whippet/whippet
+Source: https://github.com/chromatic/whippet-experimental-blockchain
 
 Files: *
 Copyright: 2009-2024, Bitcoin Core and Whippet Core Developers

@@ -26,9 +26,9 @@ Build-Depends: debhelper,
  python,
  libzmq3-dev
 Standards-Version: 3.9.2
-Homepage: http://www.whippet.com/
-Vcs-Git: git://github.com/whippet/whippet.git
-Vcs-Browser: http://github.com/whippet/whippet
+Homepage: https://github.com/chromatic/whippet-experimental-blockchain/
+Vcs-Git: git://github.com/chromatic/whippet-experimental-blockchain.git
+Vcs-Browser: https://github.com/chromatic/whippet-experimental-blockchain
 
 Package: whippetd
 Architecture: any

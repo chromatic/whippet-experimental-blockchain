@@ -80,7 +80,7 @@ What's the point? Three things:
 
 Do you have a question regarding Whippet? An answer is perhaps already in the
 [FAQ](doc/FAQ.md) or the
-[Q&A section](https://github.com/whippet/whippet/discussions/categories/q-a)
+[Q&A section](https://github.com/chromatic/whippet-experimental-blockchain/discussions/categories/q-a)
 of the discussion board!
 
 ## License

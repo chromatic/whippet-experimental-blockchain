@@ -1,6 +1,6 @@
 Whippet Core version 1.3.0 is now available from:
 
-  <https://github.com/whippet/whippet/releases/tag/v1.3.0/>
+  <https://github.com/chromatic/whippet-experimental-blockchain/releases/tag/v1.3.0/>
 
 This release replaces the UAP covenant format. A position now carries an
 explicit *lineage origin* — the identity of the mint it descends from — in
@@ -14,7 +14,7 @@ which is narrower than it looks.
 
 Please report bugs using the issue tracker at GitHub:
 
-  <https://github.com/whippet/whippet/issues>
+  <https://github.com/chromatic/whippet-experimental-blockchain/issues>
 
 
 Compatibility
@@ -360,5 +360,5 @@ Release Information
 **Consensus activation:** block 82,000 (`UAPMintHeight`)
 
 For the latest information, visit:
-- Website: <https://whippet.com/>
-- GitHub: <https://github.com/whippet/whippet/>
+- Website: <https://github.com/chromatic/whippet-experimental-blockchain/>
+- GitHub: <https://github.com/chromatic/whippet-experimental-blockchain/>

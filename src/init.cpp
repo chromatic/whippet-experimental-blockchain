@@ -514,17 +514,15 @@ std::string HelpMessage(HelpMessageMode mode)
 
 std::string LicenseInfo()
 {
-    const std::string URL_SOURCE_CODE = "<https://github.com/whippet/whippet>";
-    const std::string URL_WEBSITE = "<https://whippet.com>";
+    // There is no project website separate from the repository, so the two
+    // sentences upstream prints here would otherwise name the same URL twice.
+    const std::string URL_SOURCE_CODE = "<https://github.com/chromatic/whippet-experimental-blockchain>";
 
     return CopyrightHolders(strprintf(_("Copyright (C) %i-%i"), 2013, COPYRIGHT_YEAR) + " ") + "\n" +
            "\n" +
            strprintf(_("Please contribute if you find %s useful. "
-                       "Visit %s for further information about the software."),
-               PACKAGE_NAME, URL_WEBSITE) +
-           "\n" +
-           strprintf(_("The source code is available from %s."),
-               URL_SOURCE_CODE) +
+                       "The source code and further information are available from %s."),
+               PACKAGE_NAME, URL_SOURCE_CODE) +
            "\n" +
            "\n" +
            _("This is experimental software.") + "\n" +

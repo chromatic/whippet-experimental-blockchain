@@ -9,7 +9,7 @@ whippetd on archlinux:
 
 ```sh
 pacman -S git base-devel boost libevent python db
-git clone https://github.com/whippet/whippet.git
+git clone https://github.com/chromatic/whippet-experimental-blockchain.git
 cd whippet/
 ./autogen.sh
 ./configure --without-gui --without-miniupnpc

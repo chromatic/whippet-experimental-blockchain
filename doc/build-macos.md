@@ -5,7 +5,7 @@ Tested on MacOs Ventura and Sonoma on Intel (x86_64) and Apple Silicon (arm64) m
 ### Clone whippet locally, or check it out, etc. ###
 
 ```sh
-git clone https://github.com/whippet/whippet.git
+git clone https://github.com/chromatic/whippet-experimental-blockchain.git
 ```
 
 ### Set up OSX basic build dependencies. ##

@@ -767,7 +767,7 @@ phase_check_notes() {
     # --- the target version must actually be discussed ---
     #
     # Counted in the prose only. The old count ran over the raw file, where the
-    # boilerplate "<https://github.com/whippet/whippet/releases/tag/v1.3.0/>"
+    # boilerplate "<https://github.com/chromatic/whippet-experimental-blockchain/releases/tag/v1.3.0/>"
     # header alone could supply mentions for a file whose body never names the
     # release at all.
     local mentions ver_re=${VERSION_CORE//./\\.}
