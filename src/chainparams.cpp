@@ -120,8 +120,10 @@ public:
         consensus.nMinimumChainWork = uint256S("0x0");
 
         // By default assume that the signatures in ancestors of this block are valid.
-        // Set to genesis for now; update after establishing checkpoints.
-        consensus.defaultAssumeValid = consensus.hashGenesisBlock;
+        // Block 79000, one block above the last stretch of contested history (a
+        // run of one-block stale tips around 78920-78925) and just under the tip
+        // at the time this was set.
+        consensus.defaultAssumeValid = uint256S("0x947d56182dde4d07af5e0ddeb880ae77d8ab770a2693ee62a610390cea5f5e1a");
 
         // AuxPoW parameters
         consensus.nAuxpowChainId = 0x0062; // 98 - Josh Wise!
@@ -195,9 +197,21 @@ public:
         fRequireStandard = true;
         fMineBlocksOnDemand = false;
 
+        // 78000 is the first checkpoint on this list that is actually ours.
+        // Every other height here was inherited from Dogecoin and names a
+        // Dogecoin block, so none of them can ever be found in mapBlockIndex and
+        // GetLastCheckpoint() fell through to genesis, enforcing nothing at all.
+        // They are inert rather than harmful, and are left in place for now.
+        //
+        // 78000 sits below the run of one-block stale tips around 78920-78925,
+        // the only contested history the chain has, and below the UAPMintHeight
+        // activation at 82000 -- so it fixes the undisputed part and nothing
+        // else. On a chain this lightly mined a checkpoint is standing in for
+        // accumulated work that does not exist yet.
         checkpointData = (CCheckpointData) {
             boost::assign::map_list_of
             (      0, uint256S("e7c8ca400e600680341f25c6a26814101366201a598132ba1d32116f5c5a0d35"))
+            (  78000, uint256S("0x82230c60ae78e053bee0345b31c73a8e68f1129de06d133d79f144be9e0dca37"))
             ( 104679, uint256S("0x35eb87ae90d44b98898fec8c39577b76cb1eb08e1261cfc10706c8ce9a1d01cf"))
             ( 145000, uint256S("0xcc47cae70d7c5c92828d3214a266331dde59087d4a39071fa76ddfff9b7bde72"))
             ( 371337, uint256S("0x60323982f9c5ff1b5a954eac9dc1269352835f47c2c5222691d80f0d50dcf053"))
