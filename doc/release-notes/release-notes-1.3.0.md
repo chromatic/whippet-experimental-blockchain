@@ -199,6 +199,35 @@ a peer that genuinely is not delivering is the stalling logic's job, and that
 still fires in seconds; this timeout is only a backstop. `pruning.py` passes
 with the change and now runs as part of the extended suite in CI.
 
+Mainnet gets its first checkpoint, and an assumevalid
+---------------------------------------------------------
+
+The mainnet checkpoint list was inherited wholesale from Dogecoin. Every
+height above genesis named a *Dogecoin* block, and no such hash can ever
+appear in this chain's `mapBlockIndex`, so `GetLastCheckpoint()` fell through
+to genesis and the checkpoint test in `ContextualCheckBlockHeader()` enforced
+nothing at all. Three releases shipped that way.
+
+Block 78,000 (`82230c60ae78e053bee0345b31c73a8e68f1129de06d133d79f144be9e0dca37`)
+is the first checkpoint on the list that is ours. It sits below the run of
+one-block stale tips around 78,920-78,925 — the only contested history this
+chain has — and below the 82,000 activation, so it fixes the part nobody
+disputes and takes no position on the covenant rules this release changes.
+
+That matters more on a lightly mined chain, not less. There is very little
+accumulated work behind recent history here, which makes reorging it from a
+low height cheap; the checkpoint stands in for work that does not exist yet.
+
+`defaultAssumeValid` is set to block 79,000
+(`947d56182dde4d07af5e0ddeb880ae77d8ab770a2693ee62a610390cea5f5e1a`), which
+skips signature validation for that block's ancestors during initial sync. It
+is a soft commitment — overridable with `-assumevalid=0`, and it never causes
+a chain to be *rejected* — so it can sit closer to the tip, above the
+stale-tip band. It had been pointed at genesis, doing nothing.
+
+The inherited Dogecoin heights are left in place. They are inert, and removing
+them is a separate decision.
+
 Token metadata: `name` removed, tickers restricted to `[A-Z0-9]{1,8}`
 ------------------------------------------------------------------------
 
