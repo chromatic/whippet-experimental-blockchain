@@ -3104,10 +3104,20 @@ bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigne
 bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, bool fCheckPOW)
 {
     // Check proof of work matches claimed amount
-    // We don't have block height as this is called without context (i.e. without
-    // knowing the previous block), but that's okay, as the checks done are permissive
-    // (i.e. doesn't check work limit or whether AuxPoW is enabled)
-    if (fCheckPOW && !CheckAuxPowProofOfWork(block, Params().GetConsensus(0)))
+    // We don't have the block's real height as this is called without context
+    // (i.e. without knowing which block it extends) -- but a block almost
+    // always extends the current tip, so we use chainActive.Height() + 1 as
+    // a best-effort estimate rather than a fixed height. This matters
+    // because nAuxpowChainId is itself height-gated (see chainIdFixConsensus
+    // in chainparams.cpp): a fixed GetConsensus(0) silently rejected every
+    // block once nAuxpowChainId changed at height 80000, since the chain-ID
+    // check inside CheckAuxPowProofOfWork always compared against the
+    // original (height-0) chain ID. The definitive, correctly-scoped check
+    // still happens later in ContextualCheckBlockHeader(), which has the
+    // true height via pindexPrev; this estimate only needs to be right for
+    // the permissive checks done here (it doesn't check work limit or
+    // whether AuxPoW is enabled).
+    if (fCheckPOW && !CheckAuxPowProofOfWork(block, Params().GetConsensus(chainActive.Height() + 1)))
         return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
 
     return true;
