@@ -452,4 +452,55 @@ BOOST_AUTO_TEST_CASE(auxpow_pow)
 
 /* ************************************************************************** */
 
+/**
+ * Regression test for the height-80000 chain-ID validation bug: at height
+ * 80000, chainIdFixConsensus.nAuxpowChainId changes (0x0062 -> 0x5750 on
+ * regtest too), but CheckBlockHeader() used to always validate against
+ * Params().GetConsensus(0) -- the chain ID at height 0 -- which silently
+ * rejected every block once nAuxpowChainId changed at that height,
+ * permanently halting the chain. It now estimates the height as
+ * chainActive.Height() + 1 instead.
+ *
+ * This proves that estimate is actually wired through, without mining
+ * 80,000 real blocks: it points chainActive's tip at a synthetic
+ * height-79999 index (CChain::SetTip only needs nHeight; the loop that
+ * walks pprev stops as soon as pprev is NULL, so a single fake index is
+ * enough), then checks that a block carrying the height-80000 chain ID is
+ * accepted, and one carrying the pre-80000 chain ID is rejected -- exactly
+ * reversed from what a fixed GetConsensus(0) would do.
+ */
+BOOST_AUTO_TEST_CASE(checkblockheader_uses_tip_height_for_chain_id)
+{
+    SelectParams(CBaseChainParams::REGTEST);
+    const Consensus::Params& newParams = Params().GetConsensus(80000);
+    const Consensus::Params& oldParams = Params().GetConsensus(0);
+    BOOST_CHECK(newParams.nAuxpowChainId != oldParams.nAuxpowChainId);
+
+    chainActive.SetTip(NULL);
+    CBlockIndex fakeTip;
+    fakeTip.nHeight = 79999;
+    chainActive.SetTip(&fakeTip);
+    BOOST_CHECK_EQUAL(chainActive.Height(), 79999);
+
+    const arith_uint256 target = (~arith_uint256(0) >> 1);
+
+    CBlockHeader newIdBlock;
+    newIdBlock.nBits = target.GetCompact();
+    newIdBlock.SetBaseVersion(2, newParams.nAuxpowChainId);
+    mineBlock(newIdBlock, true);
+    CValidationState newIdState;
+    BOOST_CHECK(CheckBlockHeader(newIdBlock, newIdState));
+
+    CBlockHeader oldIdBlock;
+    oldIdBlock.nBits = target.GetCompact();
+    oldIdBlock.SetBaseVersion(2, oldParams.nAuxpowChainId);
+    mineBlock(oldIdBlock, true);
+    CValidationState oldIdState;
+    BOOST_CHECK(!CheckBlockHeader(oldIdBlock, oldIdState));
+
+    // Don't leave chainActive pointing at a stack-local CBlockIndex that's
+    // about to go out of scope.
+    chainActive.SetTip(NULL);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
