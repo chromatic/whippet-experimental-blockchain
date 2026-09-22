@@ -1961,7 +1961,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     // is enforced in ContextualCheckBlockHeader(); we wouldn't want to
     // re-enforce that rule here (at least until we make it impossible for
     // GetAdjustedTime() to go backward).
-    if (!CheckBlock(block, state, !fJustCheck, !fJustCheck)) {
+    if (!CheckBlock(block, state, !fJustCheck, !fJustCheck, pindex->nHeight)) {
         if (state.CorruptionPossible()) {
             LogPrintf("%s: Attempt to connect corrupted block %s.\n", __func__, block.GetHash().ToString());
             // We don't write down blocks to disk if they may have been
@@ -3101,29 +3101,35 @@ bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigne
     return true;
 }
 
-bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, bool fCheckPOW)
+bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, bool fCheckPOW, int nHeight)
 {
     // Check proof of work matches claimed amount
-    // We don't have the block's real height as this is called without context
-    // (i.e. without knowing which block it extends) -- but a block almost
-    // always extends the current tip, so we use chainActive.Height() + 1 as
-    // a best-effort estimate rather than a fixed height. This matters
-    // because nAuxpowChainId is itself height-gated (see chainIdFixConsensus
-    // in chainparams.cpp): a fixed GetConsensus(0) silently rejected every
-    // block once nAuxpowChainId changed at height 80000, since the chain-ID
-    // check inside CheckAuxPowProofOfWork always compared against the
-    // original (height-0) chain ID. The definitive, correctly-scoped check
-    // still happens later in ContextualCheckBlockHeader(), which has the
-    // true height via pindexPrev; this estimate only needs to be right for
-    // the permissive checks done here (it doesn't check work limit or
-    // whether AuxPoW is enabled).
-    if (fCheckPOW && !CheckAuxPowProofOfWork(block, Params().GetConsensus(chainActive.Height() + 1)))
+    // Most callers know the block's real height (e.g. ConnectBlock, AcceptBlock,
+    // VerifyDB) and should pass it explicitly. Only when it's truly unknown --
+    // this is called without context, i.e. without knowing which block it
+    // extends -- do we fall back to chainActive.Height() + 1 as a best-effort
+    // estimate, on the assumption that a block almost always extends the
+    // current tip. This matters because nAuxpowChainId is itself height-gated
+    // (see chainIdFixConsensus in chainparams.cpp): a fixed GetConsensus(0)
+    // silently rejected every block once nAuxpowChainId changed at height
+    // 80000, since the chain-ID check inside CheckAuxPowProofOfWork always
+    // compared against the original (height-0) chain ID. Using the current
+    // tip as a stand-in is *not* safe for callers re-checking historical
+    // blocks (VerifyDB) once the tip has moved past a chain-ID boundary --
+    // those must pass the block's real height instead. The definitive,
+    // correctly-scoped check still happens later in
+    // ContextualCheckBlockHeader(), which has the true height via
+    // pindexPrev; this estimate only needs to be right for the permissive
+    // checks done here (it doesn't check work limit or whether AuxPoW is
+    // enabled).
+    int nHeightForChainId = (nHeight >= 0) ? nHeight : (chainActive.Height() + 1);
+    if (fCheckPOW && !CheckAuxPowProofOfWork(block, Params().GetConsensus(nHeightForChainId)))
         return state.DoS(50, false, REJECT_INVALID, "high-hash", false, "proof of work failed");
 
     return true;
 }
 
-bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bool fCheckMerkleRoot)
+bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bool fCheckMerkleRoot, int nHeight)
 {
     // These are checks that are independent of context.
 
@@ -3132,7 +3138,7 @@ bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bo
 
     // Check that the header is valid (particularly PoW).  This is mostly
     // redundant with the call in AcceptBlockHeader.
-    if (!CheckBlockHeader(block, state, fCheckPOW))
+    if (!CheckBlockHeader(block, state, fCheckPOW, nHeight))
         return false;
 
     // Check the merkle root.
@@ -3518,7 +3524,7 @@ static bool AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CValidation
     }
     if (fNewBlock) *fNewBlock = true;
 
-    if (!CheckBlock(block, state) ||
+    if (!CheckBlock(block, state, true, true, pindex->nHeight) ||
         !ContextualCheckBlock(block, state, pindex->pprev)) {
         if (state.IsInvalid() && !state.CorruptionPossible()) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
@@ -3613,7 +3619,7 @@ bool TestBlockValidity(CValidationState& state, const CChainParams& chainparams,
     // NOTE: CheckBlockHeader is called by CheckBlock
     if (!ContextualCheckBlockHeader(block, state, pindexPrev, GetAdjustedTime()))
         return error("%s: Consensus::ContextualCheckBlockHeader: %s", __func__, FormatStateMessage(state));
-    if (!CheckBlock(block, state, fCheckPOW, fCheckMerkleRoot))
+    if (!CheckBlock(block, state, fCheckPOW, fCheckMerkleRoot, indexDummy.nHeight))
         return error("%s: Consensus::CheckBlock: %s", __func__, FormatStateMessage(state));
     if (!ContextualCheckBlock(block, state, pindexPrev))
         return error("%s: Consensus::ContextualCheckBlock: %s", __func__, FormatStateMessage(state));
@@ -3996,7 +4002,7 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
         if (!ReadBlockFromDisk(block, pindex, chainparams.GetConsensus(pindex->nHeight)))
             return error("VerifyDB(): *** ReadBlockFromDisk failed at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
         // check level 1: verify block validity
-        if (nCheckLevel >= 1 && !CheckBlock(block, state))
+        if (nCheckLevel >= 1 && !CheckBlock(block, state, true, true, pindex->nHeight))
             return error("%s: *** found bad block at %d, hash=%s (%s)\n", __func__,
                          pindex->nHeight, pindex->GetBlockHash().ToString(), FormatStateMessage(state));
         // check level 2: verify undo validity

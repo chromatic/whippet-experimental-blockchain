@@ -503,4 +503,62 @@ BOOST_AUTO_TEST_CASE(checkblockheader_uses_tip_height_for_chain_id)
     chainActive.SetTip(NULL);
 }
 
+/**
+ * Regression test for a second bug in the same area: CheckBlockHeader()'s
+ * chainActive.Height() + 1 estimate is only correct when the block being
+ * checked actually extends the current tip. Callers that re-validate
+ * *historical* blocks after the tip has already moved past a chain-ID
+ * boundary -- CVerifyDB::VerifyDB() being the prime example, which walks
+ * backward from the tip checking old blocks on startup -- must pass the
+ * block's real height explicitly instead of relying on the estimate.
+ *
+ * This reproduces exactly what VerifyDB hit in practice: with the tip past
+ * height 80000, re-checking a pre-80000 block (carrying the old chain ID)
+ * without an explicit height used to fail, because the height-80000+
+ * estimate demanded the new chain ID for a block that legitimately has the
+ * old one.
+ */
+BOOST_AUTO_TEST_CASE(checkblockheader_explicit_height_overrides_tip_estimate)
+{
+    SelectParams(CBaseChainParams::REGTEST);
+    const Consensus::Params& newParams = Params().GetConsensus(80000);
+    const Consensus::Params& oldParams = Params().GetConsensus(0);
+    BOOST_CHECK(newParams.nAuxpowChainId != oldParams.nAuxpowChainId);
+
+    // Simulate VerifyDB: the tip is well past the chain-ID boundary...
+    chainActive.SetTip(NULL);
+    CBlockIndex fakeTip;
+    fakeTip.nHeight = 80100;
+    chainActive.SetTip(&fakeTip);
+    BOOST_CHECK_EQUAL(chainActive.Height(), 80100);
+
+    const arith_uint256 target = (~arith_uint256(0) >> 1);
+
+    // ...but the block being re-checked is an old, pre-80000 block carrying
+    // the old chain ID. Without an explicit height, the tip-based estimate
+    // (80101) would wrongly demand the new chain ID and reject it.
+    CBlockHeader oldBlock;
+    oldBlock.nBits = target.GetCompact();
+    oldBlock.SetBaseVersion(2, oldParams.nAuxpowChainId);
+    mineBlock(oldBlock, true);
+
+    CValidationState noHeightState;
+    BOOST_CHECK(!CheckBlockHeader(oldBlock, noHeightState, true, -1));
+
+    CValidationState explicitHeightState;
+    BOOST_CHECK(CheckBlockHeader(oldBlock, explicitHeightState, true, 79999));
+
+    // And the converse: a post-80000 block, re-checked with its own real
+    // height, is accepted even though that height is below the tip.
+    CBlockHeader newBlock;
+    newBlock.nBits = target.GetCompact();
+    newBlock.SetBaseVersion(2, newParams.nAuxpowChainId);
+    mineBlock(newBlock, true);
+
+    CValidationState newBlockState;
+    BOOST_CHECK(CheckBlockHeader(newBlock, newBlockState, true, 80000));
+
+    chainActive.SetTip(NULL);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
