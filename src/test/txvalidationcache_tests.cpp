@@ -197,4 +197,52 @@ BOOST_FIXTURE_TEST_CASE(uap_premature_spend_rejected_without_stalling_the_miner,
     mempool.clear();
 }
 
+namespace {
+
+//! Restores the regtest chain-ID-fix activation height however the test exits.
+struct ChainIdFixHeightGuard {
+    const int nSaved;
+    ChainIdFixHeightGuard() : nSaved(Params().GetConsensus(80000).nHeightEffective) {}
+    ~ChainIdFixHeightGuard() { UpdateRegtestChainIdFixHeight(nSaved); }
+};
+
+} // namespace
+
+// End-to-end regression test for the VerifyDB false-positive found while
+// testing the CheckBlockHeader height-estimate fix (see validation.cpp):
+// once the chain tip has moved past a nAuxpowChainId boundary,
+// CVerifyDB::VerifyDB() re-checking blocks from *before* that boundary must
+// not reject them for carrying the (correct, old) pre-boundary chain ID.
+// This exercises the real code path -- real blocks written to disk via
+// ProcessNewBlock, then read back and re-validated by VerifyDB -- rather
+// than a synthetic CheckBlockHeader() call in isolation, because that's
+// what actually broke: node startup (which always runs VerifyDB, not just
+// -reindex) reported "Corrupted block database detected" and refused to
+// start for any node restarting shortly after its tip crossed the
+// boundary, even though nothing was actually corrupted.
+BOOST_FIXTURE_TEST_CASE(verifydb_survives_chainid_boundary, TestChain240Setup)
+{
+    ChainIdFixHeightGuard heightGuard;
+
+    const CScript scriptPubKey = CScript() << ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG;
+    std::vector<CMutableTransaction> noTxns;
+
+    // Put the chain-ID-fix boundary a few blocks ahead of the current tip,
+    // then mine across it -- pre-boundary blocks keep the old chain ID,
+    // post-boundary blocks pick up the new one, exactly like mainnet at
+    // height 80000.
+    const int nBoundary = chainActive.Height() + 3;
+    UpdateRegtestChainIdFixHeight(nBoundary);
+
+    for (int i = 0; i < 6; i++) {
+        CreateAndProcessBlock(noTxns, scriptPubKey);
+    }
+    BOOST_CHECK(chainActive.Height() >= nBoundary + 2);
+
+    // Mirrors the default startup check (DEFAULT_CHECKLEVEL /
+    // DEFAULT_CHECKBLOCKS in validation.h): re-verify the last 6 blocks,
+    // which now straddle the boundary just crossed.
+    BOOST_CHECK(CVerifyDB().VerifyDB(Params(), pcoinsTip, 3, 6));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

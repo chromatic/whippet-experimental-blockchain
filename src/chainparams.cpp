@@ -521,6 +521,11 @@ public:
     {
         consensus.UAPMintHeight = nHeight;
     }
+
+    void UpdateChainIdFixHeight(int nHeight)
+    {
+        chainIdFixConsensus.nHeightEffective = nHeight;
+    }
 };
 static CRegTestParams regTestParams;
 
@@ -571,4 +576,9 @@ void UpdateRegtestBIP9Parameters(Consensus::DeploymentPos d, int64_t nStartTime,
 void UpdateRegtestUAPMintHeight(int nHeight)
 {
     regTestParams.UpdateUAPMintHeight(nHeight);
+}
+
+void UpdateRegtestChainIdFixHeight(int nHeight)
+{
+    regTestParams.UpdateChainIdFixHeight(nHeight);
 }

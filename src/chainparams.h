@@ -134,4 +134,11 @@ void UpdateRegtestBIP9Parameters(Consensus::DeploymentPos d, int64_t nStartTime,
  */
 void UpdateRegtestUAPMintHeight(int nHeight);
 
+/**
+ * Allows moving the regtest chain-ID-fix activation height (normally fixed
+ * at 80000, matching mainnet) so tests can cross the boundary without
+ * mining 80,000 blocks. Tests must restore the previous value.
+ */
+void UpdateRegtestChainIdFixHeight(int nHeight);
+
 #endif // BITCOIN_CHAINPARAMS_H
