@@ -101,6 +101,14 @@ UniValue getnetworkhashps(const JSONRPCRequest& request)
 
 UniValue generateBlocks(std::shared_ptr<CReserveScript> coinbaseScript, int nGenerate, uint64_t nMaxTries, bool keepScript, int nMineAuxPow)
 {
+    // Mining on top of a chain that a reindex/import hasn't finished
+    // reconstructing yet builds new blocks on a tip that is about to move
+    // once the reindex catches up, producing a fork. If that fork point
+    // falls before a hardcoded checkpoint, the node then refuses the
+    // resulting chain outright (bad-fork-prior-to-checkpoint).
+    if (IsInitialBlockDownload())
+        throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Whippet is downloading blocks...");
+
     // Whippet: Never mine witness tx
     const bool fMineWitnessTx = false;
     static const int nInnerLoopCount = 0xFFFFFFFF; // Allow full nonce range
@@ -769,6 +777,13 @@ UniValue submitblock(const JSONRPCRequest& request)
             + HelpExampleCli("submitblock", "\"mydata\"")
             + HelpExampleRpc("submitblock", "\"mydata\"")
         );
+
+    // Same reasoning as generateBlocks(): accepting a submitted block while
+    // a reindex/import is still reconstructing the chain builds on a tip
+    // that hasn't settled yet, and risks a fork before a checkpoint once
+    // the reindex catches up to the real history.
+    if (IsInitialBlockDownload())
+        throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Whippet is downloading blocks...");
 
     std::shared_ptr<CBlock> blockptr = std::make_shared<CBlock>();
     CBlock& block = *blockptr;
