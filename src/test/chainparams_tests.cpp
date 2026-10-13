@@ -85,4 +85,37 @@ BOOST_AUTO_TEST_CASE(uap_mint_activation_height)
                       Params(CBaseChainParams::TESTNET).GetConsensus(0).UAPMintHeight);
 }
 
+BOOST_AUTO_TEST_CASE(min_block_spacing_floor_activation)
+{
+    // Before this height, nMinBlockSpacing (6s) equals nPowTargetSpacing
+    // (6s), which leaves the LWMA retarget algorithm no room to ever see a
+    // block land under target, so difficulty can only fall to powLimit and
+    // stay there regardless of real hashrate. From this height on, the
+    // floor drops to 4s, giving the algorithm headroom below the 6s target
+    // to respond to hashrate changes.
+    const uint32_t MIN_SPACING_FIX_HEIGHT = 100000;
+    const int64_t OLD_MIN_SPACING = 6;
+    const int64_t NEW_MIN_SPACING = 4;
+
+    for (const std::string& network : {CBaseChainParams::MAIN, CBaseChainParams::TESTNET}) {
+        const CChainParams& params = Params(network);
+
+        BOOST_CHECK_EQUAL(params.GetConsensus(0).nMinBlockSpacing, OLD_MIN_SPACING);
+        BOOST_CHECK_EQUAL(params.GetConsensus(MIN_SPACING_FIX_HEIGHT - 1).nMinBlockSpacing, OLD_MIN_SPACING);
+
+        BOOST_CHECK_EQUAL(params.GetConsensus(MIN_SPACING_FIX_HEIGHT).nMinBlockSpacing, NEW_MIN_SPACING);
+        BOOST_CHECK_EQUAL(params.GetConsensus(MIN_SPACING_FIX_HEIGHT + 1).nMinBlockSpacing, NEW_MIN_SPACING);
+
+        // Must stay below nPowTargetSpacing on both sides of the activation,
+        // or the retarget algorithm loses its headroom again.
+        BOOST_CHECK(params.GetConsensus(MIN_SPACING_FIX_HEIGHT).nMinBlockSpacing
+                    < params.GetConsensus(MIN_SPACING_FIX_HEIGHT).nPowTargetSpacing);
+    }
+
+    // Regtest disables the floor entirely for fast tests, at every height.
+    const CChainParams& regtestParams = Params(CBaseChainParams::REGTEST);
+    BOOST_CHECK_EQUAL(regtestParams.GetConsensus(0).nMinBlockSpacing, 0);
+    BOOST_CHECK_EQUAL(regtestParams.GetConsensus(MIN_SPACING_FIX_HEIGHT).nMinBlockSpacing, 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
