@@ -9,6 +9,23 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
 from test_framework.netutil import *
 
+import socket
+
+
+def have_ipv6_loopback():
+    '''Return True if this host can bind an IPv6 socket to ::1.'''
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    except (OSError, AttributeError):
+        return False
+    try:
+        s.bind(('::1', 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
 
 class RPCBindTest(BitcoinTestFramework):
 
@@ -66,12 +83,20 @@ class RPCBindTest(BitcoinTestFramework):
 
         defaultport = rpc_port(0)
 
+        # Containers (e.g. Docker's default network) may have IPv6 disabled,
+        # in which case the node cannot bind ::1 or ::. Expect only IPv4 there.
+        have_ipv6 = have_ipv6_loopback()
+        if not have_ipv6:
+            print("IPv6 loopback unavailable, skipping IPv6 bind checks")
+
         # check default without rpcallowip (IPv4 and IPv6 localhost)
-        self.run_bind_test(None, '127.0.0.1', [],
-            [('127.0.0.1', defaultport), ('::1', defaultport)])
-        # check default with rpcallowip (IPv6 any)
+        expected = [('127.0.0.1', defaultport)]
+        if have_ipv6:
+            expected.append(('::1', defaultport))
+        self.run_bind_test(None, '127.0.0.1', [], expected)
+        # check default with rpcallowip (IPv6 any, or IPv4 any without IPv6)
         self.run_bind_test(['127.0.0.1'], '127.0.0.1', [],
-            [('::0', defaultport)])
+            [('::0', defaultport)] if have_ipv6 else [('0.0.0.0', defaultport)])
         # check only IPv4 localhost (explicit)
         self.run_bind_test(['127.0.0.1'], '127.0.0.1', ['127.0.0.1'],
             [('127.0.0.1', defaultport)])
@@ -81,12 +106,13 @@ class RPCBindTest(BitcoinTestFramework):
         # check only IPv4 localhost (explicit) with multiple alternative ports on same host
         self.run_bind_test(['127.0.0.1'], '127.0.0.1:32171', ['127.0.0.1:32171', '127.0.0.1:32172'],
             [('127.0.0.1', 32171), ('127.0.0.1', 32172)])
-        # check only IPv6 localhost (explicit)
-        self.run_bind_test(['[::1]'], '[::1]', ['[::1]'],
-            [('::1', defaultport)])
-        # check both IPv4 and IPv6 localhost (explicit)
-        self.run_bind_test(['127.0.0.1'], '127.0.0.1', ['127.0.0.1', '[::1]'],
-            [('127.0.0.1', defaultport), ('::1', defaultport)])
+        if have_ipv6:
+            # check only IPv6 localhost (explicit)
+            self.run_bind_test(['[::1]'], '[::1]', ['[::1]'],
+                [('::1', defaultport)])
+            # check both IPv4 and IPv6 localhost (explicit)
+            self.run_bind_test(['127.0.0.1'], '127.0.0.1', ['127.0.0.1', '[::1]'],
+                [('127.0.0.1', defaultport), ('::1', defaultport)])
         # check only non-loopback interface
         self.run_bind_test([non_loopback_ip], non_loopback_ip, [non_loopback_ip],
             [(non_loopback_ip, defaultport)])
