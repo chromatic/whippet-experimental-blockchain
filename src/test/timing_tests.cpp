@@ -74,6 +74,44 @@ BOOST_AUTO_TEST_CASE(future_drift_default_boundary)
     BOOST_CHECK_EQUAL(reason, "time-too-new");
 }
 
+/** Header check on mainnet parameters for a block at height `parentHeight + 1` with the given nVersion. */
+static std::string MainnetHeaderResult(int parentHeight, int32_t nVersion)
+{
+    const int64_t parentTime = 1800000000;
+    std::vector<CBlockIndex> chain(12);
+    for (size_t i = 0; i < chain.size(); i++) {
+        chain[i].nHeight = parentHeight - 11 + i;
+        chain[i].nTime = parentTime - 6 * (chain.size() - 1 - i);
+        chain[i].nBits = 0x1e0ffff0;
+        chain[i].pprev = i ? &chain[i - 1] : NULL;
+    }
+    CBlockHeader header;
+    header.nVersion = nVersion;
+    header.nTime = parentTime + 6;
+    header.nBits = GetNextWorkRequired(&chain.back(), &header, Params().GetConsensus(parentHeight + 1));
+    CValidationState state;
+    return ContextualCheckBlockHeader(header, state, &chain.back(), header.nTime) ? "accepted" : state.GetRejectReason();
+}
+
+BOOST_AUTO_TEST_CASE(mainnet_header_rules_either_side_of_the_auxpow_height)
+{
+    // Only legacy-format blocks (version 1, or version 2 with no chain ID) are refused from 371337.
+    // A standalone block whose version carries the chain ID is neither legacy nor AuxPoW and stays valid.
+    SelectParams(CBaseChainParams::MAIN);
+    const int32_t chainId = Params().GetConsensus(371337).nAuxpowChainId;
+    const int32_t standalone = (chainId << 16) | 4;
+    const int32_t auxpow = standalone | (1 << 8);
+
+    BOOST_CHECK_EQUAL(MainnetHeaderResult(371335, standalone), "accepted");   // height 371336
+    BOOST_CHECK_EQUAL(MainnetHeaderResult(371335, 1), "accepted");            // legacy still valid before
+    BOOST_CHECK_EQUAL(MainnetHeaderResult(371335, auxpow), "early-auxpow-block");
+
+    BOOST_CHECK_EQUAL(MainnetHeaderResult(371336, standalone), "accepted");   // height 371337
+    BOOST_CHECK_EQUAL(MainnetHeaderResult(371336, auxpow), "accepted");
+    BOOST_CHECK_EQUAL(MainnetHeaderResult(371336, 1), "late-legacy-block");
+    SelectParams(CBaseChainParams::REGTEST);
+}
+
 BOOST_AUTO_TEST_CASE(future_drift_is_set_at_every_height_on_every_network)
 {
     // Each height branch is a copy of a base parameter set; a field missed on the way would be garbage.
