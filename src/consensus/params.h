@@ -70,6 +70,8 @@ struct Params {
     int64_t nPowTargetTimespan;
     /** Minimum seconds between consecutive block timestamps; 0 disables the rule (e.g. for fast tests). */
     int64_t nMinBlockSpacing;
+    /** Maximum seconds a block timestamp may lie ahead of the node's adjusted time. */
+    int64_t nMaxFutureDrift;
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
 
     /** Whippet-specific parameters */

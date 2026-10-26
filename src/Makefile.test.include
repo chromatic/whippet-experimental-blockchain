@@ -5,6 +5,8 @@
 TESTS += test/test_whippet
 bin_PROGRAMS += test/test_whippet
 noinst_PROGRAMS += test/test_whippet_fuzzy
+# Built by `make check` or `make test/timing_ref`, not by a plain `make`: it is a large static binary.
+check_PROGRAMS = test/timing_ref
 TEST_SRCDIR = test
 TEST_BINARY=test/test_whippet$(EXEEXT)
 
@@ -116,6 +118,7 @@ BITCOIN_TESTS =\
   test/pmt_tests.cpp \
   test/policyestimator_tests.cpp \
   test/pow_tests.cpp \
+  test/timing_tests.cpp \
   test/prevector_tests.cpp \
   test/raii_event_tests.cpp \
   test/random_tests.cpp \
@@ -172,6 +175,18 @@ test_test_whippet_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) -s
 if ENABLE_ZMQ
 test_test_whippet_LDADD += $(ZMQ_LIBS)
 endif
+#
+
+# timing_ref binary: reference calculator for contrib/timing-sim #
+test_timing_ref_SOURCES = test/timing_ref.cpp
+test_timing_ref_CPPFLAGS = $(test_test_whippet_CPPFLAGS)
+test_timing_ref_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+# Nothing in timing_ref itself pulls in the crypto archive early, so list it again.
+test_timing_ref_LDADD = $(test_test_whippet_LDADD) $(LIBWHTCOIN_CRYPTO) $(EVENT_PTHREADS_LIBS)
+if ENABLE_ZMQ
+test_timing_ref_LDADD += $(LIBWHTCOIN_ZMQ) $(ZMQ_LIBS)
+endif
+test_timing_ref_LDFLAGS = $(test_test_whippet_LDFLAGS)
 #
 
 # test_bitcoin_fuzzy binary #

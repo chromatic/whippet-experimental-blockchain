@@ -93,6 +93,7 @@ public:
         consensus.nPowTargetTimespan = 4 * 60 * 60; // pre-digishield: 4 hours
         consensus.nPowTargetSpacing = 6; // 6 seconds
         consensus.nMinBlockSpacing = MIN_CONSENSUS_BLOCK_SPACING;
+        consensus.nMaxFutureDrift = 2 * 60 * 60;
         consensus.fDigishieldDifficultyCalculation = false;
         consensus.fLWMADifficultyCalculation = false;
         consensus.nCoinbaseMaturity = 30;
@@ -280,6 +281,7 @@ public:
         consensus.nPowTargetTimespan = 4 * 60 * 60; // pre-digishield: 4 hours
         consensus.nPowTargetSpacing = 6; // 6 seconds
         consensus.nMinBlockSpacing = MIN_CONSENSUS_BLOCK_SPACING;
+        consensus.nMaxFutureDrift = 2 * 60 * 60;
         consensus.fPowNoRetargeting = false;
         consensus.nRuleChangeActivationThreshold = 2880; // 2 days (note this is significantly lower than Bitcoin standard)
         consensus.nMinerConfirmationWindow = 10080; // 60 * 24 * 7 = 10,080 blocks, or one week
@@ -411,6 +413,9 @@ private:
     Consensus::Params digishieldConsensus;
     Consensus::Params auxpowConsensus;
     Consensus::Params chainIdFixConsensus;
+    // Parameter sets as constructed, saved when a timing profile is first applied.
+    Consensus::Params pristine[4];
+    bool fTimingProfileApplied = false;
 public:
     CRegTestParams() {
         strNetworkID = "regtest";
@@ -427,6 +432,7 @@ public:
         consensus.nPowTargetTimespan = 4 * 60 * 60; // pre-digishield: 4 hours
         consensus.nPowTargetSpacing = 1; // regtest: 1 second blocks
         consensus.nMinBlockSpacing = 0; // Disable timestamp spacing rule for automated QA/regtest
+        consensus.nMaxFutureDrift = 2 * 60 * 60;
         consensus.fDigishieldDifficultyCalculation = false;
         consensus.fLWMADifficultyCalculation = false;
         consensus.fPowAllowMinDifficultyBlocks = true;
@@ -534,6 +540,39 @@ public:
     {
         chainIdFixConsensus.nHeightEffective = nHeight;
     }
+
+    /**
+     * Make regtest run Whippet's block timing rules (see -timingprofile).
+     * An empty profile restores the parameters as constructed.
+     * @throws std::runtime_error for an unknown profile.
+     */
+    void ApplyTimingProfile(const std::string& profile, int64_t nFloor, bool fMinDifficulty)
+    {
+        Consensus::Params* sets[4] = {&consensus, &digishieldConsensus, &auxpowConsensus, &chainIdFixConsensus};
+        if (profile != "" && profile != "whippet" && profile != "scaled-drift")
+            throw std::runtime_error(strprintf("%s: Unknown -timingprofile %s.", __func__, profile));
+        if (fTimingProfileApplied) {
+            for (int i = 0; i < 4; i++)
+                *sets[i] = pristine[i];
+            fTimingProfileApplied = false;
+        }
+        if (profile.empty())
+            return;
+        for (int i = 0; i < 4; i++)
+            pristine[i] = *sets[i];
+        fTimingProfileApplied = true;
+        for (Consensus::Params* p : sets) {
+            p->nPowTargetSpacing = 6;
+            p->nPowTargetTimespan = 60; // LWMA window of 10 blocks, as testnet
+            p->nMinBlockSpacing = nFloor;
+            p->fLWMADifficultyCalculation = true;
+            p->fDigishieldDifficultyCalculation = false;
+            p->fPowNoRetargeting = false;
+            p->fPowAllowMinDifficultyBlocks = fMinDifficulty;
+            if (profile == "scaled-drift")
+                p->nMaxFutureDrift = 12 * p->nPowTargetSpacing;
+        }
+    }
 };
 static CRegTestParams regTestParams;
 
@@ -573,6 +612,12 @@ CChainParams& Params(const std::string& chain)
 void SelectParams(const std::string& network)
 {
     SelectBaseParams(network);
+    // -timingprofile is a regtest-only test hook.
+    const std::string profile = GetArg("-timingprofile", "");
+    if (network == CBaseChainParams::REGTEST)
+        regTestParams.ApplyTimingProfile(profile, GetArg("-timingfloor", 4), GetBoolArg("-timingmindiff", false));
+    else if (!profile.empty())
+        throw std::runtime_error("-timingprofile is only valid with -regtest.");
     pCurrentParams = &Params(network);
 }
 
