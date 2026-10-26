@@ -21,17 +21,17 @@ __all__ = ["next_bits", "POW_LIMIT"]
 
 def next_bits(parent_time: int, parent_height: int, anchor_time: int, anchor_height: int,
               anchor_bits: int, tau_s: float, candidate_time: Optional[int] = None,
-              tau_wait_s: Optional[float] = None) -> int:
+              tau_wait_s: Optional[float] = None, free_wait_s: int = 6 * T) -> int:
     """Required nBits for a block at `candidate_time`.
 
-    With tau_wait_s, a candidate more than 6 block times after its parent also gets an easier
+    With tau_wait_s, a candidate more than free_wait_s (default 6 block times) after its parent also gets an easier
     target, doubling every tau_wait_s seconds: waiting for a block lowers the difficulty, so a
     chain whose big miner has left recovers without a block having to be found first.
     """
     lateness = parent_time - (anchor_time + T * (parent_height - anchor_height))
     exponent = lateness / tau_s
     if tau_wait_s is not None and candidate_time is not None:
-        exponent += max(0, candidate_time - parent_time - 6 * T) / tau_wait_s
+        exponent += max(0, candidate_time - parent_time - free_wait_s) / tau_wait_s
     if exponent > 300:  # 2.0 ** x would overflow; the pow limit is far below this anyway
         target = POW_LIMIT
     else:

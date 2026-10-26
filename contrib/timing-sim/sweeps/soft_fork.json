@@ -1,0 +1,129 @@
+{
+  "seeds": 3,
+  "scenarios": [
+    {
+      "label": "burst10x",
+      "file": "burst_pump.json",
+      "override": {
+        "burst.hashrate": 10,
+        "duration_s": 3600
+      },
+      "metric": "post_burst_gap"
+    },
+    {
+      "label": "burst100x",
+      "file": "burst_pump.json",
+      "override": {
+        "burst.hashrate": 100,
+        "duration_s": 3600
+      },
+      "metric": "post_burst_gap"
+    },
+    {
+      "label": "burst1000x",
+      "file": "burst_pump.json",
+      "override": {
+        "burst.hashrate": 1000,
+        "duration_s": 3600
+      },
+      "metric": "post_burst_gap"
+    },
+    {
+      "label": "surge9x",
+      "file": "hashrate_jump.json",
+      "columns": [
+        {
+          "label": "surge gap",
+          "metric": "max_gap"
+        },
+        {
+          "label": "surge stall",
+          "metric": "total_stall"
+        }
+      ]
+    },
+    {
+      "label": "walk0.1",
+      "file": "walk_ahead.json",
+      "override": {
+        "attacker.hashrate": 0.1,
+        "duration_s": 3600,
+        "sweep": null
+      },
+      "metric": "attacker_share"
+    },
+    {
+      "label": "walk0.3",
+      "file": "walk_ahead.json",
+      "override": {
+        "attacker.hashrate": 0.3,
+        "duration_s": 3600,
+        "sweep": null
+      },
+      "columns": [
+        {
+          "label": "walk0.3 share",
+          "metric": "attacker_share"
+        },
+        {
+          "label": "walk0.3 stall",
+          "metric": "total_stall"
+        }
+      ]
+    },
+    {
+      "label": "future300",
+      "file": "far_future.json",
+      "override": {
+        "legacy_miner": false,
+        "duration_s": 1200
+      },
+      "metric": "max_lead"
+    }
+  ],
+  "configs": [
+    {
+      "label": "R0 (today)",
+      "rule": "R0"
+    },
+    {
+      "label": "R1 (C++, drift 72)",
+      "rule": "R1"
+    },
+    {
+      "label": "R1x drift 36",
+      "rule": "R1x",
+      "params": {
+        "drift": 36
+      }
+    },
+    {
+      "label": "R1x drift 48",
+      "rule": "R1x",
+      "params": {
+        "drift": 48
+      }
+    },
+    {
+      "label": "R1x drift 72",
+      "rule": "R1x",
+      "params": {
+        "drift": 72
+      }
+    },
+    {
+      "label": "R1x drift 120",
+      "rule": "R1x",
+      "params": {
+        "drift": 120
+      }
+    },
+    {
+      "label": "R1x drift 180",
+      "rule": "R1x",
+      "params": {
+        "drift": 180
+      }
+    }
+  ]
+}

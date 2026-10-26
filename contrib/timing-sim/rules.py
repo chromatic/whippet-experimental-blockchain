@@ -21,6 +21,7 @@ class RuleSet:
         self.lwma_monotonic = False  # sim-only: LWMA over monotonic timestamps, see lwma.py
         self.asert_tau: Optional[float] = None  # sim-only: ASERT difficulty with this half-life, see asert.py
         self.asert_wait: Optional[float] = None  # sim-only: ASERT easing per second of waiting, see asert.py
+        self.asert_free = 6 * lwma.T  # sim-only: seconds after the parent before the easing starts
         self.legacy_miner = False  # True: miners stamp max(MTP+1, adjusted), ignoring the floor
         self.rc = RefCalc(profile, floor, min_difficulty)
 
@@ -48,7 +49,8 @@ class RuleSet:
         if self.asert_tau is not None:  # SIM-ONLY difficulty rule, anchored at the chain's base block
             anchor = self.chain.blocks[0]
             return asert.next_bits(parent.time, parent.height, anchor.time, anchor.height, anchor.bits,
-                                   self.asert_tau, candidate_time=time, tau_wait_s=self.asert_wait)
+                                   self.asert_tau, candidate_time=time, tau_wait_s=self.asert_wait,
+                                   free_wait_s=self.asert_free)
         if self.lwma_clamp is not None or self.lwma_monotonic:  # SIM-ONLY LWMA variants
             return lwma.next_bits(self.chain.recent(parent, lwma.N + 1), min_solvetime=self.lwma_clamp,
                                   monotonic=self.lwma_monotonic)
@@ -101,9 +103,10 @@ class R3(SimOnlyRuleSet):
 
     drift = 72
 
-    def __init__(self, name, floor, min_difficulty=False, window=(0, 0)):
+    def __init__(self, name, floor, min_difficulty=False, window=(0, 0), drift=72):
         super().__init__(name, floor, min_difficulty)
         self.window = tuple(window)
+        self.drift = drift
 
     def floor_at(self, height: int) -> int:
         return 0 if self.window[0] <= height < self.window[1] else self.floor
@@ -195,19 +198,21 @@ class R5m(R5):
 class R1a(R3):
     """R1's acceptance rules (floor, 72s drift, median) with ASERT difficulty."""
 
-    def __init__(self, name, floor, min_difficulty=False, tau_s=1728, tau_wait_s=None):
+    def __init__(self, name, floor, min_difficulty=False, tau_s=1728, tau_wait_s=None, free_wait_s=36):
         super().__init__(name, floor, min_difficulty, window=(0, 0))
         self.asert_tau = tau_s
         self.asert_wait = tau_wait_s
+        self.asert_free = free_wait_s
 
 
 class R2a(R2):
     """R2's acceptance rules (median only, no floor) with ASERT difficulty."""
 
-    def __init__(self, name, floor, min_difficulty=False, tau_s=1728, tau_wait_s=None):
+    def __init__(self, name, floor, min_difficulty=False, tau_s=1728, tau_wait_s=None, free_wait_s=36):
         super().__init__(name, floor, min_difficulty)
         self.asert_tau = tau_s
         self.asert_wait = tau_wait_s
+        self.asert_free = free_wait_s
 
 
 class R6(R2a):
@@ -215,17 +220,19 @@ class R6(R2a):
 
     drift = 72
 
-    def __init__(self, name, floor, min_difficulty=False, tau_s=300, tau_wait_s=None):
-        super().__init__(name, floor, min_difficulty, tau_s, tau_wait_s)
+    def __init__(self, name, floor, min_difficulty=False, tau_s=300, tau_wait_s=None, drift=72, free_wait_s=36):
+        super().__init__(name, floor, min_difficulty, tau_s, tau_wait_s, free_wait_s)
+        self.drift = drift
 
 
 class R5a(R5):
     """R5's chain-relative bound with ASERT difficulty."""
 
-    def __init__(self, name, floor, min_difficulty=False, tau_s=1728, tau_wait_s=None, **params):
+    def __init__(self, name, floor, min_difficulty=False, tau_s=1728, tau_wait_s=None, free_wait_s=36, **params):
         super().__init__(name, floor, min_difficulty, **params)
         self.asert_tau = tau_s
         self.asert_wait = tau_wait_s
+        self.asert_free = free_wait_s
 
 
 def make_rules(name: str, floor: int = 4, min_difficulty: bool = False, **params) -> RuleSet:
@@ -239,6 +246,8 @@ def make_rules(name: str, floor: int = 4, min_difficulty: bool = False, **params
         return R2("R2", floor, min_difficulty)
     if name == "R2c":
         return R2c("R2c", floor, min_difficulty)
+    if name == "R1x":  # R1's acceptance in Python with a chosen drift; R1x(drift=72) must equal R1
+        return R3("R1x", floor, min_difficulty, window=(0, 0), **params)
     if name == "R1a":
         return R1a("R1a", floor, min_difficulty, **params)
     if name == "R2a":
