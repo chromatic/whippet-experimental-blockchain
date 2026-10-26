@@ -64,6 +64,11 @@ int64_t UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParam
     int64_t nOldTime = pblock->nTime;
     int64_t nNewTime = std::max(pindexPrev->GetMedianTimePast()+1, GetAdjustedTime());
 
+    // Honour the consensus minimum spacing from the parent; this can stamp the
+    // block slightly ahead of the wall clock.
+    if (consensusParams.nMinBlockSpacing > 0)
+        nNewTime = std::max(nNewTime, pindexPrev->GetBlockTime() + consensusParams.nMinBlockSpacing);
+
     if (nOldTime < nNewTime)
         pblock->nTime = nNewTime;
 
