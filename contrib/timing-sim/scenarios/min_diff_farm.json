@@ -1,0 +1,35 @@
+{
+  "name": "min_diff_farm",
+  "duration_s": 3600,
+  "base_height": 157500,
+  "min_difficulty": true,
+  "rules": [
+    "R0",
+    "R1",
+    "R2"
+  ],
+  "miners": [
+    {
+      "name": "honest",
+      "hashrate": 1.0,
+      "strategy": "honest"
+    },
+    {
+      "name": "attacker",
+      "hashrate": 0.3,
+      "strategy": "min_diff_farmer"
+    }
+  ],
+  "floor": 4,
+  "rule_params": {
+    "R3": {
+      "window": [
+        157600,
+        157900
+      ]
+    },
+    "R4": {
+      "cap_multiple": 6
+    }
+  }
+}

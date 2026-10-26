@@ -1,0 +1,49 @@
+{
+  "name": "burst_and_leave",
+  "duration_s": 5400,
+  "floor": 4,
+  "base_height": 145000,
+  "burst_end_s": 900,
+  "rules": [
+    "R0",
+    "R1",
+    "R2",
+    "R1a",
+    "R5a",
+    "R6",
+    "R6d"
+  ],
+  "miners": [
+    {
+      "name": "honest",
+      "hashrate": 1.0,
+      "strategy": "honest"
+    },
+    {
+      "name": "burst",
+      "hashrate": 100,
+      "strategy": "honest",
+      "active_from": 600,
+      "active_until": 900,
+      "params": {
+        "max_per_second": 64
+      }
+    }
+  ],
+  "rule_params": {
+    "R1a": {
+      "tau_s": 300
+    },
+    "R5a": {
+      "tau_s": 300,
+      "window": 11,
+      "cap_multiple": 12
+    },
+    "R6": {
+      "tau_s": 300
+    },
+    "R6d": {
+      "tau_s": 300
+    }
+  }
+}

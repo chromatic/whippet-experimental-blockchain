@@ -1,0 +1,73 @@
+{
+  "name": "skewed_clock",
+  "duration_s": 3600,
+  "rules": [
+    "R0",
+    "R1",
+    "R2",
+    "R3",
+    "R4",
+    "R2c",
+    "R2m",
+    "R5",
+    "R5m",
+    "R1a",
+    "R2a",
+    "R5a",
+    "R6"
+  ],
+  "miners": [
+    {
+      "name": "honest",
+      "hashrate": 1.0,
+      "strategy": "honest"
+    },
+    {
+      "name": "slow",
+      "hashrate": 1.0,
+      "clock_offset": -120,
+      "strategy": "honest"
+    },
+    {
+      "name": "fast",
+      "hashrate": 1.0,
+      "clock_offset": 100,
+      "strategy": "honest"
+    }
+  ],
+  "floor": 4,
+  "base_height": 145000,
+  "rule_params": {
+    "R3": {
+      "window": [
+        145100,
+        145400
+      ]
+    },
+    "R4": {
+      "cap_multiple": 6
+    },
+    "R5": {
+      "window": 11,
+      "cap_multiple": 12
+    },
+    "R5m": {
+      "window": 11,
+      "cap_multiple": 12
+    },
+    "R1a": {
+      "tau_s": 300
+    },
+    "R2a": {
+      "tau_s": 300
+    },
+    "R5a": {
+      "tau_s": 300,
+      "window": 11,
+      "cap_multiple": 12
+    },
+    "R6": {
+      "tau_s": 300
+    }
+  }
+}
