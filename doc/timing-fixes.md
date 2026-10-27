@@ -96,12 +96,15 @@ The far-future replay (+300s block) under the easing profile agrees with the sim
 
 Walk-ahead on real nodes. The fixed-schedule replay (`--scenario walk_ahead`) cannot run 1200s: LWMA keeps raising the difficulty while the script does not slow down, and real hashing reaches 70-80s per block by about t=900 (an RPC timeout, not a stalled chain: no honest stall over 2s up to then). `--scenario walk_ahead_modelled` replaces the schedule with the simulator's model: each second a miner finds a block with probability `hashrate/6 * target/base_target`, with the target read from the node's `getblocktemplate` at the stamp it would use, and a block that is not found is not retried. The rules run in the real nodes; only the choice of when to mine is modelled. 1200s, honest 1.0, attacker 0.2, R1e (tau 30):
 
-| | blocks/h | max lead | max honest stall | attacker share |
-|---|---|---|---|---|
-| real nodes, seeds 1-4 | 525, 456, 333, 381 | 72, 72, 72, 68 | 3, 3, 3, 0 | 0.25, 0.17, 0.20, 0.16 |
-| simulator, seeds 1-5 | 552-588 (median 573) | 72 | 3 | 0.14-0.20 (median 0.17) |
+| | blocks/h | max lead | max honest stall |
+|---|---|---|---|
+| real nodes, R1e, seeds 1-4 | 600, 633, 627, 627 | 72 | 3 |
+| real nodes, R1, seeds 1-4 | 648, 675, 648, 633 | 72 | 3 |
+| simulator, R1e, seeds 1-5 | 552-588 (median 573) | 72 | 3 |
 
-The chain does not stall: the lead stays at the cap, honest stall is at most 3s, and blocks keep coming. **Open item:** the real-node block rate is lower than the simulator's (about 25% lower on average, 333/h in the worst seed), because the real difficulty ends higher than the simulator's. R1 (no easing) shows the same direction under this harness (456-504 against 546-570), so it is not specific to easing, but I have not found the cause. Candidates: the regtest chain starts at genesis rather than from the simulator's synthetic history, or small differences in when the attacker's block lands. Treat the block-rate comparison as unexplained.
+The chain does not stall: the lead stays at the cap, honest stall is at most 3s, and blocks keep coming. Over the last 600s alone (the real figure includes a start-up burst) the real nodes make 558, 636 and 606 blocks/h against the simulator's 552-576, so they agree to within the noise of three seeds; the real runs sit a little higher.
+
+**An earlier version of this replay showed a 25% lower block rate on the real nodes. The cause was a regtest artifact, not the rules.** LWMA multiplies a sum of targets by a sum of solvetimes in 256 bits (`next_target = sum_target * sum_time`) and does not saturate. Regtest's `powLimit` is 2^255, so whenever the chain sits near the limit and the window is slow (sum of weighted solvetimes above twice `k`), the product wraps past 2^256 and the target comes out far too hard: a window the Python port puts at 2.2 times the limit came out as 0.21, and the difficulty then swung between 1.0 and 0.005 of the limit. The simulator's base target is far below the limit and never wraps. Mainnet and testnet have a `powLimit` of 2^240, so the product cannot exceed 2^243 and cannot wrap there. The replay now takes its hashrate unit 64 times below the limit (`base_shift`). This is the same wrap the Python port reproduces on purpose (see `lwma.py`); I did not change it, since changing it would be a consensus change. The earlier fixed-schedule R0/R1 replays started at the limit too; their short runs may have touched the same wrap.
 
 Not done: an activation height, a rehearsal across it with old and new binaries, and any test on testnet.
 

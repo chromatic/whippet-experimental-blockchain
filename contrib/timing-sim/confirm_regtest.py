@@ -210,7 +210,8 @@ def _target(bits_hex: str) -> int:
 
 
 def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, honest_rate: float = 1.0,
-                            attacker_rate: float = 0.2, first_s: int = 60, step_s: int = 15) -> dict:
+                            attacker_rate: float = 0.2, first_s: int = 60, step_s: int = 15, trace: bool = False,
+                            base_shift: int = 6) -> dict:
     """Walk-ahead replay in which block finding follows the node's own target, as in the simulator.
 
     run_walk_ahead() mines on a fixed schedule, so LWMA keeps raising the difficulty until real
@@ -224,7 +225,11 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
     import random
     from chain import BASE_BITS, bits_to_target
     rng = random.Random(seed)
-    base_target = bits_to_target(BASE_BITS)
+    # The unit of hashrate is one block per 6s at this target. It sits base_shift bits below regtest's
+    # powLimit (2**255) because LWMA multiplies a sum of targets by a sum of solvetimes in 256 bits: from
+    # a target near 2**255 that product wraps whenever the window is slow, which mainnet's powLimit
+    # cannot do. The simulator's base target is far below the limit for the same reason.
+    base_target = bits_to_target(BASE_BITS) >> base_shift
 
     def rate(h: float, bits_hex: str) -> float:
         return h / 6 * _target(bits_hex) / base_target
@@ -234,6 +239,8 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
         honest = Honest(nodes)
         addr_a = nodes.a.getnewaddress()
         max_lead = attacker_blocks = 0
+        st = {"honest_expected": 0.0, "honest_drawn": 0, "honest_failed": 0, "attacker_expected": 0.0,
+              "attacker_drawn": 0, "attacker_rejected": 0, "attacker_skipped": 0}
         for t in range(18, duration_s):
             now = START + t
             nodes.a.setmocktime(now)
@@ -247,11 +254,14 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
                 honest.total_stall += 1
                 honest.max_stall = max(honest.max_stall, honest.stalled)
             # As in the simulator, a block that is not found this second is not retried: no patience.
+            if bits:
+                st["honest_expected"] += 1 - math.exp(-rate(honest_rate, bits))
             if bits and rng.random() < 1 - math.exp(-rate(honest_rate, bits)):
+                st["honest_drawn"] += 1
                 try:
                     nodes.b.generatetoaddress(1, honest.addr)
                 except JSONRPCException:
-                    pass
+                    st["honest_failed"] += 1
             tip = _tip_time(nodes.b)
             latest = now + DRIFT[rules]
             want = now + first_s if tip - now < first_s else tip + step_s
@@ -263,14 +273,24 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
                 except JSONRPCException:
                     bits = None
                 nodes.a.setmocktime(now)
+                if bits:
+                    st["attacker_expected"] += 1 - math.exp(-rate(attacker_rate, bits))
                 if bits and rng.random() < 1 - math.exp(-rate(attacker_rate, bits)):
+                    st["attacker_drawn"] += 1
                     if _attack_block(nodes, addr_a, stamp, now):
                         attacker_blocks += 1
+                    else:
+                        st["attacker_rejected"] += 1
+            else:
+                st["attacker_skipped"] += 1
             max_lead = max(max_lead, _tip_time(nodes.b) - now)
         height = nodes.b.getblockcount()
         return {"blocks_per_hour": (height - 2) * 3600 / duration_s, "attacker_blocks": attacker_blocks,
                 "max_lead": max_lead, "max_stall": honest.max_stall, "total_stall": honest.total_stall,
-                "final_difficulty": nodes.b.getdifficulty()}
+                "final_difficulty": nodes.b.getdifficulty(), **st,
+                **({"chain": [(h["time"], int(h["bits"], 16), h.get("height")) for h in
+                              (nodes.b.getblockheader(nodes.b.getblockhash(i)) for i in range(1, height + 1))]}
+                   if trace else {})}
 
 
 def run_easing_wait(rules: str = "R1e", gaps=(20, 36, 37, 51, 66, 96, 156, 306)) -> dict:
