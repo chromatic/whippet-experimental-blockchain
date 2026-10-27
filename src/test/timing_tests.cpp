@@ -4,9 +4,11 @@
 
 #include "chain.h"
 #include "chainparams.h"
+#include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "pow.h"
 #include "primitives/block.h"
+#include "timedata.h"
 #include "util.h"
 #include "validation.h"
 #include "test/test_bitcoin.h"
@@ -112,17 +114,111 @@ BOOST_AUTO_TEST_CASE(mainnet_header_rules_either_side_of_the_auxpow_height)
     SelectParams(CBaseChainParams::REGTEST);
 }
 
-BOOST_AUTO_TEST_CASE(future_drift_is_set_at_every_height_on_every_network)
+/** Header check on mainnet parameters for a block whose time is `secondsAhead` of the adjusted time. */
+static std::string MainnetDriftResult(int parentHeight, int64_t secondsAhead)
 {
-    // Each height branch is a copy of a base parameter set; a field missed on the way would be garbage.
-    const std::string networks[] = {CBaseChainParams::MAIN, CBaseChainParams::TESTNET, CBaseChainParams::REGTEST};
-    const int heights[] = {0, 1, 10, 20, 239, 240, 79999, 80000, 99999, 100000, 145000, 157499, 157500, 158099, 158100, 1000000};
-    for (const std::string& network : networks) {
-        SelectParams(network);
-        for (int h : heights)
-            BOOST_CHECK_MESSAGE(Params().GetConsensus(h).nMaxFutureDrift == 7200, network << " height " << h);
+    const int64_t adjusted = 1800001000;
+    const int64_t parentTime = adjusted - 100;
+    std::vector<CBlockIndex> chain(12);
+    for (size_t i = 0; i < chain.size(); i++) {
+        chain[i].nHeight = parentHeight - 11 + i;
+        chain[i].nTime = parentTime - 6 * (chain.size() - 1 - i);
+        chain[i].nBits = 0x1e0ffff0;
+        chain[i].pprev = i ? &chain[i - 1] : NULL;
+    }
+    CBlockHeader header;
+    header.nVersion = (Params().GetConsensus(parentHeight + 1).nAuxpowChainId << 16) | 4;
+    header.nTime = adjusted + secondsAhead;
+    header.nBits = GetNextWorkRequired(&chain.back(), &header, Params().GetConsensus(parentHeight + 1));
+    CValidationState state;
+    return ContextualCheckBlockHeader(header, state, &chain.back(), adjusted) ? "accepted" : state.GetRejectReason();
+}
+
+BOOST_AUTO_TEST_CASE(future_drift_by_network_and_height)
+{
+    // Regtest and the first part of mainnet keep the 2 hour limit; testnet and mainnet from the soft
+    // fork height use 12 block times. Each height branch is a copy of a base set; a field missed on the
+    // way would be garbage, so check them all.
+    const int heights[] = {0, 1, 10, 20, 239, 240, 79999, 80000, 99999, 100000, 145000, 157499, 157500,
+                           158099, 158100, MAINNET_DRIFT_CAP_HEIGHT - 1, MAINNET_DRIFT_CAP_HEIGHT, 371336, 371337, 1000000};
+    for (int h : heights) {
+        SelectParams(CBaseChainParams::MAIN);
+        BOOST_CHECK_MESSAGE(Params().GetConsensus(h).nMaxFutureDrift == (h < MAINNET_DRIFT_CAP_HEIGHT ? 7200 : MAX_FUTURE_DRIFT_CAPPED),
+                            "main height " << h);
+        SelectParams(CBaseChainParams::TESTNET);
+        BOOST_CHECK_MESSAGE(Params().GetConsensus(h).nMaxFutureDrift == MAX_FUTURE_DRIFT_CAPPED, "test height " << h);
+        SelectParams(CBaseChainParams::REGTEST);
+        BOOST_CHECK_MESSAGE(Params().GetConsensus(h).nMaxFutureDrift == 7200, "regtest height " << h);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(soft_fork_boundary_on_mainnet)
+{
+    SelectParams(CBaseChainParams::MAIN);
+    const int H = MAINNET_DRIFT_CAP_HEIGHT;
+    // The last block under the old rule: 2 hours still allowed.
+    BOOST_CHECK_EQUAL(MainnetDriftResult(H - 2, 7200), "accepted");
+    BOOST_CHECK_EQUAL(MainnetDriftResult(H - 2, 73), "accepted");
+    BOOST_CHECK_EQUAL(MainnetDriftResult(H - 2, 7201), "time-too-new");
+    // The first block under the new rule.
+    BOOST_CHECK_EQUAL(MainnetDriftResult(H - 1, 72), "accepted");
+    BOOST_CHECK_EQUAL(MainnetDriftResult(H - 1, 73), "time-too-new");
+    BOOST_CHECK_EQUAL(MainnetDriftResult(H - 1, 7200), "time-too-new");
+    // It stays in force after the AuxPoW height.
+    BOOST_CHECK_EQUAL(MainnetDriftResult(371336, 72), "accepted");
+    BOOST_CHECK_EQUAL(MainnetDriftResult(371336, 73), "time-too-new");
+    SelectParams(CBaseChainParams::REGTEST);
+}
+
+BOOST_AUTO_TEST_CASE(soft_fork_row_only_tightens_the_drift)
+{
+    // A soft fork may only make validation stricter. Every other field must be what it was the block before.
+    SelectParams(CBaseChainParams::MAIN);
+    const Consensus::Params& before = Params().GetConsensus(MAINNET_DRIFT_CAP_HEIGHT - 1);
+    const Consensus::Params& after = Params().GetConsensus(MAINNET_DRIFT_CAP_HEIGHT);
+    BOOST_CHECK(after.nMaxFutureDrift < before.nMaxFutureDrift);
+    BOOST_CHECK_EQUAL(after.nMinBlockSpacing, before.nMinBlockSpacing);
+    BOOST_CHECK_EQUAL(after.nPowTargetSpacing, before.nPowTargetSpacing);
+    BOOST_CHECK_EQUAL(after.nPowTargetTimespan, before.nPowTargetTimespan);
+    BOOST_CHECK_EQUAL(after.fLWMADifficultyCalculation, before.fLWMADifficultyCalculation);
+    BOOST_CHECK_EQUAL(after.fDigishieldDifficultyCalculation, before.fDigishieldDifficultyCalculation);
+    BOOST_CHECK_EQUAL(after.fPowAllowMinDifficultyBlocks, before.fPowAllowMinDifficultyBlocks);
+    BOOST_CHECK_EQUAL(after.fPowNoRetargeting, before.fPowNoRetargeting);
+    BOOST_CHECK(after.powLimit == before.powLimit);
+    BOOST_CHECK_EQUAL(after.fAllowLegacyBlocks, before.fAllowLegacyBlocks);
+    BOOST_CHECK_EQUAL(after.fStrictChainId, before.fStrictChainId);
+    BOOST_CHECK_EQUAL(after.nAuxpowChainId, before.nAuxpowChainId);
+    BOOST_CHECK_EQUAL(after.nCoinbaseMaturity, before.nCoinbaseMaturity);
+    BOOST_CHECK_EQUAL(after.nSubsidyHalvingInterval, before.nSubsidyHalvingInterval);
+    BOOST_CHECK_EQUAL(after.fSimplifiedRewards, before.fSimplifiedRewards);
+    BOOST_CHECK_EQUAL(after.UAPMintHeight, before.UAPMintHeight);
+    BOOST_CHECK(after.hashGenesisBlock == before.hashGenesisBlock);
+    // And the AuxPoW row after it keeps the cap while changing only what it always changed.
+    const Consensus::Params& auxpow = Params().GetConsensus(371337);
+    BOOST_CHECK_EQUAL(auxpow.nMaxFutureDrift, after.nMaxFutureDrift);
+    BOOST_CHECK_EQUAL(auxpow.nMinBlockSpacing, after.nMinBlockSpacing);
+    BOOST_CHECK(auxpow.hashGenesisBlock == after.hashGenesisBlock);
+    SelectParams(CBaseChainParams::REGTEST);
+}
+
+BOOST_AUTO_TEST_CASE(testnet_floor_is_below_the_target_spacing_from_genesis)
+{
+    // With the floor equal to the target spacing, LWMA never sees a fast block and cannot raise difficulty.
+    SelectParams(CBaseChainParams::TESTNET);
+    const int heights[] = {0, 1, 239, 240, 79999, 80000, 99999, 100000, 157500, 158100, 1000000};
+    for (int h : heights) {
+        const Consensus::Params& p = Params().GetConsensus(h);
+        BOOST_CHECK_MESSAGE(p.nMinBlockSpacing == 4 && p.nMinBlockSpacing < p.nPowTargetSpacing, "height " << h);
     }
     SelectParams(CBaseChainParams::REGTEST);
+}
+
+BOOST_AUTO_TEST_CASE(default_time_adjustment_stays_well_inside_the_drift_cap)
+{
+    // Peers may move a node's clock by at most this much. It has to be a small part of the 72s window,
+    // or a node can be talked into accepting or refusing blocks it should not.
+    BOOST_CHECK_EQUAL(DEFAULT_MAX_TIME_ADJUSTMENT, 36);
+    BOOST_CHECK(2 * DEFAULT_MAX_TIME_ADJUSTMENT <= MAX_FUTURE_DRIFT_CAPPED);
 }
 
 BOOST_AUTO_TEST_CASE(profile_whippet_values)

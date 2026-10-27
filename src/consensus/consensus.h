@@ -24,6 +24,21 @@ static const int64_t MAX_BLOCK_SIGOPS_COST = 80000;
  */
 static const int64_t MIN_CONSENSUS_BLOCK_SPACING = 6;
 
+/**
+ * Soft fork: a block timestamp may be at most this many seconds ahead of the node's adjusted
+ * time (12 block times; it was 2 hours). Applies on mainnet from MAINNET_DRIFT_CAP_HEIGHT and on
+ * testnet from genesis. Stricter than before, so nodes that have not upgraded still accept
+ * everything upgraded nodes accept.
+ */
+static const int64_t MAX_FUTURE_DRIFT_CAPPED = 72;
+
+/**
+ * PROVISIONAL: the mainnet height from which MAX_FUTURE_DRIFT_CAPPED applies. Choose it so that
+ * most hashrate has upgraded by then (upgraded nodes refuse blocks stamped further ahead).
+ * It must lie between the 100000 and 371337 rows in chainparams.cpp.
+ */
+static const int MAINNET_DRIFT_CAP_HEIGHT = 360000;
+
 /** Flags for nSequence and nLockTime locks */
 enum {
     /* Interpret sequence numbers as relative lock-time constraints. */

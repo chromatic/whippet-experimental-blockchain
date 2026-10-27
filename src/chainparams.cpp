@@ -73,6 +73,7 @@ private:
     Consensus::Params digishieldConsensus;
     Consensus::Params chainIdFixConsensus;
     Consensus::Params minSpacingConsensus;
+    Consensus::Params driftCapConsensus;
     Consensus::Params auxpowConsensus;
 public:
     CMainParams() {
@@ -160,8 +161,16 @@ public:
         minSpacingConsensus.nHeightEffective = 100000;
         minSpacingConsensus.nMinBlockSpacing = 4;
 
+        // Soft fork: from MAINNET_DRIFT_CAP_HEIGHT a block may be at most 72s (12 block times) ahead
+        // of the node's adjusted time instead of 2 hours. Nothing else changes in this row.
+        static_assert(MAINNET_DRIFT_CAP_HEIGHT > 100000 && MAINNET_DRIFT_CAP_HEIGHT < 371337,
+                      "the drift cap row must sit between the 100000 and 371337 rows");
+        driftCapConsensus = minSpacingConsensus;
+        driftCapConsensus.nHeightEffective = MAINNET_DRIFT_CAP_HEIGHT;
+        driftCapConsensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
+
         // Blocks 371337+ are AuxPoW with LWMA
-        auxpowConsensus = minSpacingConsensus;
+        auxpowConsensus = driftCapConsensus;
         auxpowConsensus.nHeightEffective = 371337;
         auxpowConsensus.fAllowLegacyBlocks = false;
         auxpowConsensus.fLWMADifficultyCalculation = true;
@@ -171,7 +180,8 @@ public:
         digishieldConsensus.pLeft = &consensus;
         digishieldConsensus.pRight = &chainIdFixConsensus;
         chainIdFixConsensus.pRight = &minSpacingConsensus;
-        minSpacingConsensus.pRight = &auxpowConsensus;
+        minSpacingConsensus.pRight = &driftCapConsensus;
+        driftCapConsensus.pRight = &auxpowConsensus;
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.
@@ -191,6 +201,7 @@ public:
         digishieldConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         chainIdFixConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         minSpacingConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
+        driftCapConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         auxpowConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
 
         assert(consensus.hashGenesisBlock == uint256S("0x863714e1c1a15526a0081a35097c56e28dbd43ef97f76fec0ccd5a7510326292"));
@@ -280,8 +291,11 @@ public:
         consensus.powLimit = uint256S("0x0000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"); // Allow easier initial mining; must admit the genesis nBits
         consensus.nPowTargetTimespan = 4 * 60 * 60; // pre-digishield: 4 hours
         consensus.nPowTargetSpacing = 6; // 6 seconds
-        consensus.nMinBlockSpacing = MIN_CONSENSUS_BLOCK_SPACING;
-        consensus.nMaxFutureDrift = 2 * 60 * 60;
+        // Testnet is a fresh chain, so it starts with the rules mainnet reaches at height 100000 and at
+        // the soft fork: a floor below the 6s target (else LWMA never sees a fast block and cannot
+        // raise difficulty) and blocks at most 72s ahead of the adjusted time.
+        consensus.nMinBlockSpacing = 4;
+        consensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
         consensus.fPowNoRetargeting = false;
         consensus.nRuleChangeActivationThreshold = 2880; // 2 days (note this is significantly lower than Bitcoin standard)
         consensus.nMinerConfirmationWindow = 10080; // 60 * 24 * 7 = 10,080 blocks, or one week
