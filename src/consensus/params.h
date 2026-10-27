@@ -77,6 +77,8 @@ struct Params {
      * more than nEasingFreeWait seconds after its parent gets a target multiplied by
      * 2^((gap - nEasingFreeWait) / nEasingTau). 0 for nEasingTau disables it.
      */
+    /** From this parent height LWMA retargets every block (not every DifficultyAdjustmentInterval()); regtest profiles lower it. */
+    int nEveryBlockRetargetHeight = 145000;
     int64_t nEasingTau = 0;
     int64_t nEasingFreeWait = 0;
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }

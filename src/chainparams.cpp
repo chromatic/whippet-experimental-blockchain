@@ -588,6 +588,7 @@ public:
             if (profile == "scaled-drift-easing") {
                 p->nEasingFreeWait = 6 * p->nPowTargetSpacing;
                 p->nEasingTau = nEasingTau;
+                p->nEveryBlockRetargetHeight = 0; // regtest chains are far below 145000 and easing needs a retarget on every block
             }
         }
     }

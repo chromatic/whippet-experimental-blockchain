@@ -39,3 +39,9 @@ def test_nodes_refuse_to_start_when_a_port_is_busy():
         with pytest.raises(RuntimeError, match="in use"):
             with confirm_regtest.Nodes("whippet"):
                 pass
+
+
+def test_easing_wait_r1e_bits_match_the_python_rule_and_peers_accept():
+    m = confirm_regtest.run_easing_wait("R1e", gaps=(20, 66, 156))
+    assert m["all_match"] and m["all_accepted"]
+    assert [r["eased"] for r in m["rows"]] == [False, True, True]

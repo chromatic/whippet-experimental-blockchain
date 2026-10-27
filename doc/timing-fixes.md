@@ -90,7 +90,9 @@ The easing keys on the block's own timestamp. In a merge-mined block that timest
 
 Without easing (R1x) the same wait is 1079s at every refresh interval. So pools that refresh at least every 30s lose nothing, and a 60s refresh costs about 40s. This models one pool; it does not model `ntime` rolling by miners or a pool with a very stale template. A real pool test remains to be done.
 
-Not done: a rehearsal of two real nodes with `scaled-drift-easing` (`confirm_regtest.py` only knows R0 and R1), an activation height, and any test on testnet.
+Two real regtest nodes with `scaled-drift-easing` (`python3 confirm_regtest.py --scenario easing_wait --rules R1e`): after a run of 4s blocks pulls the target below the limit, the chain goes quiet for 20 to 306s and node B mines the next block. At gaps of 37s and over the block carries eased bits (gaps up to 96s are below the clamp), every block's `nBits` equals the Python rule's, and node A accepts every one. This needed `nEveryBlockRetargetHeight` (default 145000, so mainnet is unchanged; the easing profile sets 0) because regtest heights are far below 145000.
+
+Not done: an activation height, a rehearsal across it with old and new binaries, and any test on testnet.
 
 ## What this does not fix
 

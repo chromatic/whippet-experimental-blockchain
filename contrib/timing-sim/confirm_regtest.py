@@ -24,8 +24,10 @@ from authproxy import AuthServiceProxy, JSONRPCException  # noqa: E402
 from chain import BASE_TIME  # noqa: E402
 
 IMAGE = os.environ.get("WHIPPET_TIMING_IMAGE", "whippet-ubuntu24")
-PROFILES = {"R0": "whippet", "R1": "scaled-drift"}
-DRIFT = {"R0": 7200, "R1": 72}
+PROFILES = {"R0": "whippet", "R1": "scaled-drift", "R1e": "scaled-drift-easing"}
+DRIFT = {"R0": 7200, "R1": 72, "R1e": 72}
+EASING_TAU = 30
+EASING_FREE = 36
 FLOOR = 4
 PORTS = {"a": (18111, 18101), "b": (18112, 18102)}  # (p2p, rpc)
 START = BASE_TIME + 100  # first mocktime; the regtest genesis block is at BASE_TIME
@@ -202,6 +204,52 @@ def run_walk_ahead(rules: str, duration_s: int = 1200, first_s: int = 60, step_s
                 "max_stall": honest.max_stall, "total_stall": honest.total_stall}
 
 
+def run_easing_wait(rules: str = "R1e", gaps=(20, 36, 37, 51, 66, 96, 156, 306)) -> dict:
+    """After the honest chain goes quiet for `gap` seconds, the next block must carry the eased bits.
+
+    For each gap: set both nodes' clocks to tip + gap, mine one block on B, and compare its nBits with the
+    Python LWMA-with-easing computed from the parent's last 11 headers. Node A must accept the block.
+    """
+    import lwma
+    with Nodes(PROFILES[rules]) as nodes:
+        _prime(nodes)
+        honest = Honest(nodes)
+        # Blocks at the 4s floor are faster than the 6s target, so LWMA pulls the target well below
+        # powLimit and the easing below is not hidden by the clamp.
+        now = START + 18
+        for _ in range(60):
+            now += 4
+            for n in (nodes.a, nodes.b):
+                n.setmocktime(now)
+            nodes.b.generatetoaddress(1, honest.addr)
+        rows = []
+        for gap in gaps:
+            nodes.synced()
+            tip = nodes.b.getblockheader(nodes.b.getbestblockhash())
+            recent = []
+            h = tip
+            for _ in range(lwma.N + 1):
+                recent.append((h["time"], int(h["bits"], 16)))
+                h = nodes.b.getblockheader(h["previousblockhash"])
+            recent.reverse()
+            now = max(now, tip["time"] + gap)
+            for n in (nodes.a, nodes.b):
+                n.setmocktime(now)
+            block = nodes.b.generatetoaddress(1, honest.addr)[0]
+            header = nodes.b.getblockheader(block)
+            expected = lwma.next_bits(recent, candidate_time=header["time"], tau_wait_s=EASING_TAU,
+                                      free_wait_s=EASING_FREE)
+            plain = lwma.next_bits(recent)
+            nodes.synced()
+            rows.append({"gap": header["time"] - tip["time"], "bits": int(header["bits"], 16),
+                         "expected": expected, "uneased": plain,
+                         "eased": expected != plain, "bits_match": int(header["bits"], 16) == expected,
+                         "peer_accepted": nodes.a.getbestblockhash() == block})
+            now += 6
+        return {"rows": rows, "all_match": all(r["bits_match"] for r in rows),
+                "all_accepted": all(r["peer_accepted"] for r in rows)}
+
+
 def compare(scenario: str, rules: str, real: dict) -> None:
     """Print the real result next to the simulator's and a verdict (a finding, never a gate)."""
     import sim
@@ -224,9 +272,15 @@ def compare(scenario: str, rules: str, real: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--scenario", choices=["far_future", "walk_ahead"], required=True)
+    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "easing_wait"], required=True)
     ap.add_argument("--rules", choices=sorted(PROFILES), required=True)
     args = ap.parse_args()
+    if args.scenario == "easing_wait":
+        result = run_easing_wait(args.rules)
+        for r in result.pop("rows"):
+            print(r)
+        print(result)
+        return
     real = (run_far_future if args.scenario == "far_future" else run_walk_ahead)(args.rules)
     compare(args.scenario, args.rules, real)
 
