@@ -92,6 +92,8 @@ Without easing (R1x) the same wait is 1079s at every refresh interval. So pools 
 
 Two real regtest nodes with `scaled-drift-easing` (`python3 confirm_regtest.py --scenario easing_wait --rules R1e`): after a run of 4s blocks pulls the target below the limit, the chain goes quiet for 20 to 306s and node B mines the next block. At gaps of 37s and over the block carries eased bits (gaps up to 96s are below the clamp), every block's `nBits` equals the Python rule's, and node A accepts every one. This needed `nEveryBlockRetargetHeight` (default 145000, so mainnet is unchanged; the easing profile sets 0) because regtest heights are far below 145000.
 
+The far-future replay (+300s block) under the easing profile agrees with the simulator: the block is refused, no lead, no stall. A 400s walk-ahead replay stays at the 72s cap (27 attacker blocks accepted, honest stall at most 2s). The full 1200s walk-ahead replay did not finish: the RPC call timed out, which is the regtest limit already noted for `run_walk_ahead` (LWMA keeps making blocks harder while the script does not slow), so the walk-ahead replay is shorter and has not been compared with the simulator for R1e.
+
 Not done: an activation height, a rehearsal across it with old and new binaries, and any test on testnet.
 
 ## What this does not fix
