@@ -65,9 +65,36 @@ The cap brings a walk-ahead attacker from about twice its hashrate share down to
 
 R0: max lead 300s, longest gap 306s. R1: max lead 0, longest gap 22s (the 300s block is refused).
 
+## R1e in C++ (regtest profile only)
+
+The leading hard-fork candidate, LWMA plus easing while waiting, now exists in C++ so it can be tested on real code. It is **not** wired into mainnet or testnet: both leave `nEasingTau` at 0, and there is no activation height yet.
+
+- `Consensus::Params::nEasingFreeWait` / `nEasingTau`. In the LWMA branch of `CalculateWhippetNextWorkRequired()` (`src/whippet.cpp`), a candidate more than `nEasingFreeWait` seconds after its parent gets its target multiplied by `2^((gap - free) / tau)`, clamped to `powLimit`. `GetNextWorkRequired()` passes the candidate's timestamp.
+- `EaseTarget()` does the multiplication in integers: the integer part of the exponent is a shift, the fraction uses the cubic from Bitcoin Cash's aserti3-2d (error under 0.013%). The input is clamped to `powLimit` first, because the LWMA product can overshoot it and would otherwise wrap in 256 bits (found by the parity test).
+- Regtest profile `-timingprofile=scaled-drift-easing` (72s cap, free wait 36s, tau 30s, `-timingeasingtau` overrides). `UpdateTime()` in the miner now recomputes `nBits` whenever easing is on, because the required bits depend on the timestamp.
+- Easing applies only where LWMA retargets, which is every block from height 145000. Below that heights retarget every 10 blocks and easing would not act on the blocks in between. Mainnet is above 145000.
+
+Tests: `timing_tests` has four new cases (doubling per tau and the half-tau value, clamping and the overshoot case, the profile and header check with a late block, easing off on mainnet and testnet). `contrib/timing-sim/tests/test_easing_parity.py` compares the Python LWMA with easing against the real C++ over random chains and gaps from 4s to 1500s; they agree bit for bit. The simulator's R1e now uses the same integer arithmetic instead of floats, so sim numbers for R1e may differ slightly from the earlier tables.
+
+### Merge-mined job timestamps
+
+The easing keys on the block's own timestamp. In a merge-mined block that timestamp is inside the job the pool created, so it is fixed when the job is made, not when the block is found. The simulator takes a per-miner `job_refresh_s` (the stamp is the time the job was created: on each new tip, then every `job_refresh_s`). Burst-and-leave, 100x for 300s, 5 seeds, `scenarios/burst_pump.json`, 3600s, easing tau 30:
+
+| Honest pool refreshes jobs every | median wait for the next block after the burst leaves |
+|---|---|
+| not modelled (stamps at find time) | 195s |
+| 6s | 195s |
+| 15s | 195s |
+| 30s | 195s |
+| 60s | 233s |
+
+Without easing (R1x) the same wait is 1079s at every refresh interval. So pools that refresh at least every 30s lose nothing, and a 60s refresh costs about 40s. This models one pool; it does not model `ntime` rolling by miners or a pool with a very stale template. A real pool test remains to be done.
+
+Not done: a rehearsal of two real nodes with `scaled-drift-easing` (`confirm_regtest.py` only knows R0 and R1), an activation height, and any test on testnet.
+
 ## What this does not fix
 
-LWMA still reacts badly to a very large miner that leaves. Burst of 100x for 300s, then gone, median wait for the next block: 1079s under today's rules and under the cap (worst 2700s today, 1742s under the cap; 5 seeds, 145000 regime, `b100x gap` in `sweeps/round3.json`). Fixing that needs a difficulty change, which is a hard fork. Two candidates are simulated (5 seeds, `sweeps/round3.json`): LWMA plus easing while waiting (`R1e`, burst wait 195-233s) and ASERT with easing at tau 30-60 (`R6d`, 116s). Neither has C++ yet.
+LWMA still reacts badly to a very large miner that leaves. Burst of 100x for 300s, then gone, median wait for the next block: 1079s under today's rules and under the cap (worst 2700s today, 1742s under the cap; 5 seeds, 145000 regime, `b100x gap` in `sweeps/round3.json`). Fixing that needs a difficulty change, which is a hard fork. Two candidates are simulated (5 seeds, `sweeps/round3.json`): LWMA plus easing while waiting (`R1e`, burst wait 195-233s) and ASERT with easing at tau 30-60 (`R6d`, 116s). R1e now has C++ behind a regtest profile (section above); R6d has none.
 
 Height 145000 is a separate, existing change: LWMA retargets every block from there instead of every 10, and the simulator shows burst-and-leave getting worse across it (R0 median 463s below, 1079s above).
 

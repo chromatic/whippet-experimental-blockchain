@@ -35,3 +35,21 @@ def test_r1e_has_much_shorter_gaps_than_r1x_after_a_burst_leaves():
         x = sim.run_scenario({**scenario_, "rule_params": {"R1x": {"drift": 72}}}, "R1x", seed).metrics["max_gap"]
         e = sim.run_scenario({**scenario_, "rule_params": {"R1e": {"drift": 72, "tau_wait_s": 60}}}, "R1e", seed).metrics["max_gap"]
         assert e < x and e <= 300, f"seed {seed}: R1x {x}, R1e {e}"
+
+
+def test_stale_pool_jobs_slow_the_easing_only_when_refreshed_rarely():
+    # A merge-mined block carries the timestamp of the job it was mined on. With the job refreshed every
+    # 30s the burst recovery is unchanged; at every 60s the easing moves in 60s steps and recovery is slower.
+    base = json.loads((SCENARIOS / "burst_pump.json").read_text())
+    base["duration_s"] = 3600
+    base["rule_params"] = {"R1e": {"drift": 72, "tau_wait_s": 30}}
+
+    def gap(refresh, seed):
+        sc = json.loads(json.dumps(base))
+        if refresh:
+            next(m for m in sc["miners"] if m["name"] == "honest").setdefault("params", {})["job_refresh_s"] = refresh
+        return sim.run_scenario(sc, "R1e", seed).metrics["post_burst_gap"]
+
+    for seed in (1, 2, 3):
+        assert gap(30, seed) <= gap(None, seed) + 40
+        assert gap(60, seed) <= 300

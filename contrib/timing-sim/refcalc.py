@@ -19,8 +19,10 @@ class RefCalcError(RuntimeError):
 class RefCalc:
     """One persistent timing_ref process. Use as a context manager."""
 
-    def __init__(self, profile: str, floor: int = 4, min_difficulty: bool = False):
-        args = [f"-timingprofile={profile}", f"-timingfloor={floor}", f"-timingmindiff={int(min_difficulty)}"]
+    def __init__(self, profile: str, floor: int = 4, min_difficulty: bool = False,
+                 easing_tau: int = 30):
+        args = [f"-timingprofile={profile}", f"-timingfloor={floor}", f"-timingmindiff={int(min_difficulty)}",
+                f"-timingeasingtau={easing_tau}"]
         native = os.environ.get("WHIPPET_TIMING_REF")
         if native:
             cmd = [native] + args

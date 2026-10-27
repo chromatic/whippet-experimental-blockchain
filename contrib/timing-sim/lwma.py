@@ -29,6 +29,22 @@ def target_to_bits(target: int) -> int:
     return compact | (size << 24)
 
 
+def ease_target(target: int, extra: int, tau: int, pow_limit: int = POW_LIMIT) -> int:
+    """EaseTarget() in src/whippet.cpp: target * 2 ** (extra / tau), integer arithmetic, clamped to pow_limit."""
+    if extra <= 0 or tau <= 0:
+        return target
+    if extra // tau > 255:
+        return pow_limit
+    x = (extra << 16) // tau
+    shifts, frac = x >> 16, x & 0xFFFF
+    factor = 65536 + ((195766423245049 * frac + 971821376 * frac * frac + 5127 * frac ** 3 + (1 << 47)) >> 48)
+    target = min(target, pow_limit)  # as in C++: keeps every product below 2**256
+    eased = (target >> 16) * factor if target.bit_length() > 239 else (target * factor) >> 16
+    if shifts and eased.bit_length() + shifts > 256:
+        return pow_limit
+    return min(eased << shifts, pow_limit)
+
+
 def next_bits(recent: List[Tuple[int, int]], min_solvetime: Optional[int] = None,
               monotonic: bool = False, candidate_time: Optional[int] = None,
               tau_wait_s: Optional[float] = None, free_wait_s: int = 6 * T) -> int:
@@ -66,9 +82,7 @@ def next_bits(recent: List[Tuple[int, int]], min_solvetime: Optional[int] = None
         return recent[-1][1]
     next_target = (sum_target * (sum_time % (1 << 32))) % (1 << 256)
     if tau_wait_s is not None and candidate_time is not None:
-        extra = max(0, candidate_time - parent_time - free_wait_s) / tau_wait_s
-        if extra > 0:
-            next_target = POW_LIMIT if extra > 300 else int(next_target * 2.0 ** extra)
+        next_target = ease_target(next_target, candidate_time - parent_time - free_wait_s, int(tau_wait_s))
     if next_target > POW_LIMIT:
         next_target = POW_LIMIT
     return target_to_bits(next_target)

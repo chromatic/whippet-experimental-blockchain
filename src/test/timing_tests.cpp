@@ -11,6 +11,8 @@
 #include "timedata.h"
 #include "util.h"
 #include "validation.h"
+#include "whippet.h"
+#include "arith_uint256.h"
 #include "test/test_bitcoin.h"
 
 #include <vector>
@@ -295,6 +297,99 @@ BOOST_AUTO_TEST_CASE(profile_rejected_off_regtest)
     TimingArgs args("whippet");
     BOOST_CHECK_THROW(SelectParams(CBaseChainParams::TESTNET), std::runtime_error);
     BOOST_CHECK_THROW(SelectParams(CBaseChainParams::MAIN), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(ease_target_doubles_every_tau)
+{
+    const arith_uint256 limit = UintToArith256(Params().GetConsensus(101).powLimit);
+    const arith_uint256 base = arith_uint256(1) << 100;
+    BOOST_CHECK(EaseTarget(base, 0, 30, limit) == base);
+    BOOST_CHECK(EaseTarget(base, -5, 30, limit) == base);
+    BOOST_CHECK(EaseTarget(base, 30, 30, limit) == base << 1);
+    BOOST_CHECK(EaseTarget(base, 90, 30, limit) == base << 3);
+    // The fractional part is a monotone cubic between the powers of two.
+    arith_uint256 last = base;
+    for (int extra = 1; extra <= 30; extra++) {
+        arith_uint256 t = EaseTarget(base, extra, 30, limit);
+        BOOST_CHECK(t >= last);
+        BOOST_CHECK(t <= (base << 1));
+        last = t;
+    }
+    // Half a tau is 2^0.5 = 1.41421..., to within the polynomial's 0.013%.
+    const arith_uint256 half = EaseTarget(base, 15, 30, limit) >> 90; // 2^10 * 1.41421 = 1448.15
+    BOOST_CHECK(half >= 1447 && half <= 1449);
+}
+
+BOOST_AUTO_TEST_CASE(ease_target_clamps_to_the_pow_limit)
+{
+    const arith_uint256 limit = UintToArith256(Params().GetConsensus(101).powLimit);
+    const arith_uint256 base = arith_uint256(1) << 200;
+    BOOST_CHECK(EaseTarget(base, 30 * 60, 30, limit) == limit);
+    BOOST_CHECK(EaseTarget(base, 30 * 300, 30, limit) == limit);
+    BOOST_CHECK(EaseTarget(limit, 1, 30, limit) == limit);
+    // The LWMA product can overshoot powLimit before easing; that must not wrap.
+    BOOST_CHECK(EaseTarget(limit + (limit >> 1), 25, 30, limit) == limit);
+    BOOST_CHECK(EaseTarget(~arith_uint256(0), 25, 30, limit) == limit);
+}
+
+BOOST_AUTO_TEST_CASE(profile_easing_values_and_header_check)
+{
+    TimingArgs args("scaled-drift-easing");
+    SelectParams(CBaseChainParams::REGTEST);
+    const Consensus::Params& p = Params().GetConsensus(145001);
+    BOOST_CHECK_EQUAL(p.nEasingFreeWait, 36);
+    BOOST_CHECK_EQUAL(p.nEasingTau, 30);
+    BOOST_CHECK_EQUAL(p.nMaxFutureDrift, 72);
+
+    // Build a parent chain at the every-block retarget regime, then compare bits for a quick and a late child.
+    std::vector<CBlockIndex> chain(12);
+    for (size_t i = 0; i < chain.size(); i++) {
+        chain[i].nHeight = 145000 + i;
+        chain[i].nTime = 1800000000 + 6 * i;
+        chain[i].nBits = 0x1e0fffff;
+        chain[i].pprev = i ? &chain[i - 1] : NULL;
+    }
+    CBlockIndex& parent = chain.back();
+    CBlockHeader quick, inside, late, later;
+    quick.nTime = parent.nTime + 6;
+    inside.nTime = parent.nTime + 36;
+    late.nTime = parent.nTime + 66;
+    later.nTime = parent.nTime + 96;
+    const unsigned int bq = GetNextWorkRequired(&parent, &quick, p);
+    const unsigned int bi = GetNextWorkRequired(&parent, &inside, p);
+    const unsigned int bl = GetNextWorkRequired(&parent, &late, p);
+    const unsigned int bw = GetNextWorkRequired(&parent, &later, p);
+    BOOST_CHECK_EQUAL(bq, bi);
+    arith_uint256 tq, tl, tw;
+    tq.SetCompact(bq); tl.SetCompact(bl); tw.SetCompact(bw);
+    // 30s and 60s past the free window: twice and four times the target, within compact rounding.
+    BOOST_CHECK(tl > tq * 19 / 10 && tl < tq * 21 / 10);
+    BOOST_CHECK(tw > tq * 39 / 10 && tw < tq * 41 / 10);
+
+    // A block stamped late must carry the eased bits, and the quick bits are refused on it.
+    CValidationState state;
+    late.nBits = bl;
+    late.nVersion = 0x00620004;
+    BOOST_CHECK(ContextualCheckBlockHeader(late, state, &parent, late.nTime));
+    late.nBits = bq;
+    BOOST_CHECK(!ContextualCheckBlockHeader(late, state, &parent, late.nTime));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-diffbits");
+}
+
+BOOST_AUTO_TEST_CASE(easing_is_off_for_the_plain_profiles)
+{
+    TimingArgs args("scaled-drift");
+    SelectParams(CBaseChainParams::REGTEST);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(145001).nEasingTau, 0);
+}
+
+BOOST_AUTO_TEST_CASE(easing_is_off_on_mainnet_and_testnet)
+{
+    for (const std::string& chain : {CBaseChainParams::MAIN, CBaseChainParams::TESTNET}) {
+        SelectParams(chain);
+        BOOST_CHECK_EQUAL(Params().GetConsensus(400000).nEasingTau, 0);
+    }
+    SelectParams(CBaseChainParams::REGTEST);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -560,10 +560,10 @@ public:
      * An empty profile restores the parameters as constructed.
      * @throws std::runtime_error for an unknown profile.
      */
-    void ApplyTimingProfile(const std::string& profile, int64_t nFloor, bool fMinDifficulty)
+    void ApplyTimingProfile(const std::string& profile, int64_t nFloor, bool fMinDifficulty, int64_t nEasingTau)
     {
         Consensus::Params* sets[4] = {&consensus, &digishieldConsensus, &auxpowConsensus, &chainIdFixConsensus};
-        if (profile != "" && profile != "whippet" && profile != "scaled-drift")
+        if (profile != "" && profile != "whippet" && profile != "scaled-drift" && profile != "scaled-drift-easing")
             throw std::runtime_error(strprintf("%s: Unknown -timingprofile %s.", __func__, profile));
         if (fTimingProfileApplied) {
             for (int i = 0; i < 4; i++)
@@ -583,8 +583,12 @@ public:
             p->fDigishieldDifficultyCalculation = false;
             p->fPowNoRetargeting = false;
             p->fPowAllowMinDifficultyBlocks = fMinDifficulty;
-            if (profile == "scaled-drift")
+            if (profile == "scaled-drift" || profile == "scaled-drift-easing")
                 p->nMaxFutureDrift = 12 * p->nPowTargetSpacing;
+            if (profile == "scaled-drift-easing") {
+                p->nEasingFreeWait = 6 * p->nPowTargetSpacing;
+                p->nEasingTau = nEasingTau;
+            }
         }
     }
 };
@@ -629,7 +633,7 @@ void SelectParams(const std::string& network)
     // -timingprofile is a regtest-only test hook.
     const std::string profile = GetArg("-timingprofile", "");
     if (network == CBaseChainParams::REGTEST)
-        regTestParams.ApplyTimingProfile(profile, GetArg("-timingfloor", 4), GetBoolArg("-timingmindiff", false));
+        regTestParams.ApplyTimingProfile(profile, GetArg("-timingfloor", 4), GetBoolArg("-timingmindiff", false), GetArg("-timingeasingtau", 30));
     else if (!profile.empty())
         throw std::runtime_error("-timingprofile is only valid with -regtest.");
     pCurrentParams = &Params(network);

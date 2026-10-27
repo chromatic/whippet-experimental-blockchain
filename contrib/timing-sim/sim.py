@@ -74,7 +74,11 @@ def run(scenario: dict, rules: RuleSet, seed: int) -> Result:
             attempts = 1 if m.strategy == "far_future" else m.params.get("max_per_second", 1)
             for _ in range(attempts):
                 tip = chain.best()
-                stamp = rules.stamp(chain, tip, now + m.clock_offset)
+                # A pool's job (and, merge-mined, the timestamp inside it) is fixed when it is created: on a
+                # new tip, then every job_refresh_s. The block carries that stamp however late it is found.
+                refresh = m.params.get("job_refresh_s")
+                job_t = t if not refresh else tip.wall_time + (t - tip.wall_time) // refresh * refresh
+                stamp = rules.stamp(chain, tip, BASE_TIME + job_t + m.clock_offset)
                 if m.strategy == "far_future":
                     if t != m.params["at_wall_s"]:
                         continue

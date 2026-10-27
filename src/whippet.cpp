@@ -38,7 +38,36 @@ bool AllowDigishieldMinDifficultyForBlock(const CBlockIndex* pindexLast, const C
     return (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing*2);
 }
 
-unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params& params)
+arith_uint256 EaseTarget(const arith_uint256& target, int64_t extra, int64_t tau, const arith_uint256& powLimit)
+{
+    if (extra <= 0 || tau <= 0)
+        return target;
+    if (extra / tau > 255)
+        return powLimit;
+
+    // 2^(x / 65536) for x in 16.16 fixed point: the integer part is a shift, the fraction uses the cubic
+    // from BCH's aserti3-2d (error under 0.013%). All arithmetic is unsigned 64-bit and fits.
+    const uint64_t x = ((uint64_t)extra << 16) / (uint64_t)tau;
+    const uint64_t shifts = x >> 16;
+    const uint64_t frac = x & 0xffff;
+    const uint64_t factor = 65536 + ((195766423245049ull * frac + 971821376ull * frac * frac +
+                                      5127ull * frac * frac * frac + (1ull << 47)) >> 48);
+
+    // The caller's LWMA product can already exceed powLimit; clamping first keeps every product below 2^256.
+    arith_uint256 eased = target > powLimit ? powLimit : target;
+    if (eased.bits() > 239)
+        eased = (eased >> 16) * factor;
+    else
+        eased = (eased * factor) >> 16;
+    if (shifts > 0) {
+        if (eased.bits() + shifts > 256)
+            return powLimit;
+        eased <<= shifts;
+    }
+    return eased > powLimit ? powLimit : eased;
+}
+
+unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params& params, int64_t nCandidateTime)
 {
     int nHeight = pindexLast->nHeight + 1;
     const int64_t retargetTimespan = params.nPowTargetTimespan;
@@ -95,6 +124,10 @@ unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int
         arith_uint256 next_target = sum_target * sum_time;
 
         const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
+        if (params.nEasingTau > 0 && nCandidateTime != 0) {
+            const int64_t extra = nCandidateTime - pindexLast->GetBlockTime() - params.nEasingFreeWait;
+            next_target = EaseTarget(next_target, extra, params.nEasingTau, bnPowLimit);
+        }
         if (next_target > bnPowLimit)
             next_target = bnPowLimit;
 
