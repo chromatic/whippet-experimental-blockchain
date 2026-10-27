@@ -72,3 +72,35 @@ def test_monotonic_lwma_makes_timestamps_increasing_before_measuring():
         t += 6
         ordered.append((t, BASE_BITS))
     assert lwma.next_bits(ordered, monotonic=True) == lwma.next_bits(ordered)
+
+
+def _steady_chain(n=12, bits=BASE_BITS):
+    recent = history(bits)
+    t = BASE_TIME
+    for _ in range(n):
+        t += 6
+        recent.append((t, bits))
+    return recent, t
+
+
+def test_easing_is_off_within_the_free_window():
+    recent, parent_time = _steady_chain()
+    plain = lwma.next_bits(recent)
+    for gap in (1, 6, 36):
+        assert lwma.next_bits(recent, candidate_time=parent_time + gap, tau_wait_s=60) == plain
+
+
+def test_easing_doubles_the_target_for_each_tau_wait_after_the_free_window():
+    recent, parent_time = _steady_chain()
+
+    def target(gap):
+        return lwma.bits_to_target(lwma.next_bits(recent, candidate_time=parent_time + gap, tau_wait_s=60))
+
+    assert target(36 + 60) == pytest.approx(2 * target(36), rel=1e-4)
+    assert target(36 + 180) == pytest.approx(8 * target(36), rel=1e-4)
+
+
+def test_easing_never_exceeds_the_pow_limit():
+    recent, parent_time = _steady_chain()
+    bits = lwma.next_bits(recent, candidate_time=parent_time + 10**7, tau_wait_s=60)
+    assert lwma.bits_to_target(bits) <= lwma.POW_LIMIT

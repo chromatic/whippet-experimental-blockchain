@@ -68,3 +68,16 @@ def test_a_scenario_can_show_several_metrics_as_separate_columns():
     cols = sweep.columns_of(spec)
     assert [c["label"] for c in cols] == ["burst", "surge gap", "surge stall"]
     assert [c["scenario"] for c in cols] == ["burst", "surge", "surge"]
+
+
+def test_write_rows_keeps_runs_whose_metrics_differ(tmp_path):
+    # Surge runs have window metrics the others lack; one odd row must not lose the whole sweep.
+    rows = [{"config": "a", "scenario": "x", "seed": 1, "max_gap": 5},
+            {"config": "a", "scenario": "y", "seed": 1, "max_gap": 7, "window0_bph": 600.0}]
+    sweep.write_rows(rows, str(tmp_path / "out"))
+    import csv
+    import json
+    assert json.loads((tmp_path / "out.json").read_text()) == rows
+    read = list(csv.DictReader(open(tmp_path / "out.csv")))
+    assert [r["max_gap"] for r in read] == ["5", "7"]
+    assert read[0]["window0_bph"] == "" and read[1]["window0_bph"] == "600.0"

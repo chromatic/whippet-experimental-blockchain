@@ -79,3 +79,23 @@ def test_a_miner_with_max_per_second_can_find_several_blocks_in_one_second():
     sc["miners"][0].update({"hashrate": 100.0, "params": {"max_per_second": 64}})
     blocks_in_first_second = [b for b in run(sc).blocks if b[2] == 0]
     assert len(blocks_in_first_second) > 5
+
+
+def test_windows_report_blocks_per_hour_inside_each_window():
+    sc = scenario(duration_s=600)
+    sc["miners"][0]["params"] = {"scripted_every_s": 6}
+    sc["windows"] = [[0, 300], [300, 600]]
+    m = run(sc).metrics
+    assert m["window0_bph"] == 600 and m["window1_bph"] == 600
+
+
+def test_burst_end_wait_is_the_expected_honest_wait_when_the_burst_ends():
+    # One honest miner at hashrate 1 and a target near the base one: about 6s, more if it got harder.
+    sc = scenario(duration_s=400)
+    sc["burst_end_s"] = 300
+    wait = run(sc).metrics["burst_end_wait"]
+    assert 3 <= wait <= 15
+
+
+def test_burst_end_wait_is_zero_when_the_scenario_has_no_burst():
+    assert run(scenario(duration_s=60)).metrics["burst_end_wait"] == 0

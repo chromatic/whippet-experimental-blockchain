@@ -19,6 +19,7 @@ class RuleSet:
         self.chain: Optional[Chain] = None  # set by sim.run
         self.lwma_clamp: Optional[int] = None  # sim-only: floor on solvetimes, see lwma.py
         self.lwma_monotonic = False  # sim-only: LWMA over monotonic timestamps, see lwma.py
+        self.lwma_wait: Optional[float] = None  # sim-only: LWMA with easing while waiting, see lwma.py
         self.asert_tau: Optional[float] = None  # sim-only: ASERT difficulty with this half-life, see asert.py
         self.asert_wait: Optional[float] = None  # sim-only: ASERT easing per second of waiting, see asert.py
         self.asert_free = 6 * lwma.T  # sim-only: seconds after the parent before the easing starts
@@ -51,9 +52,10 @@ class RuleSet:
             return asert.next_bits(parent.time, parent.height, anchor.time, anchor.height, anchor.bits,
                                    self.asert_tau, candidate_time=time, tau_wait_s=self.asert_wait,
                                    free_wait_s=self.asert_free)
-        if self.lwma_clamp is not None or self.lwma_monotonic:  # SIM-ONLY LWMA variants
+        if self.lwma_clamp is not None or self.lwma_monotonic or self.lwma_wait is not None:  # SIM-ONLY LWMA variants
             return lwma.next_bits(self.chain.recent(parent, lwma.N + 1), min_solvetime=self.lwma_clamp,
-                                  monotonic=self.lwma_monotonic)
+                                  monotonic=self.lwma_monotonic, candidate_time=time,
+                                  tau_wait_s=self.lwma_wait, free_wait_s=self.asert_free)
         self.rc.tip(parent.rc_index)
         return self.rc.next_bits(time)
 
@@ -205,6 +207,15 @@ class R1a(R3):
         self.asert_free = free_wait_s
 
 
+class R1e(R3):
+    """R1's acceptance rules (floor, drift cap, median) with LWMA plus easing while waiting."""
+
+    def __init__(self, name, floor, min_difficulty=False, drift=72, tau_wait_s=60, free_wait_s=36):
+        super().__init__(name, floor, min_difficulty, window=(0, 0), drift=drift)
+        self.lwma_wait = tau_wait_s
+        self.asert_free = free_wait_s
+
+
 class R2a(R2):
     """R2's acceptance rules (median only, no floor) with ASERT difficulty."""
 
@@ -248,6 +259,8 @@ def make_rules(name: str, floor: int = 4, min_difficulty: bool = False, **params
         return R2c("R2c", floor, min_difficulty)
     if name == "R1x":  # R1's acceptance in Python with a chosen drift; R1x(drift=72) must equal R1
         return R3("R1x", floor, min_difficulty, window=(0, 0), **params)
+    if name == "R1e":
+        return R1e("R1e", floor, min_difficulty, **params)
     if name == "R1a":
         return R1a("R1a", floor, min_difficulty, **params)
     if name == "R2a":

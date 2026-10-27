@@ -47,6 +47,19 @@ def columns_of(spec: dict) -> List[dict]:
     return out
 
 
+def write_rows(rows: List[dict], stem: str) -> None:
+    """Save every run: raw JSON first (cannot fail on odd rows), then a CSV over all fields seen."""
+    with open(stem + ".json", "w") as f:
+        json.dump(rows, f)
+    fields: List[str] = []
+    for r in rows:
+        fields += [k for k in r if k not in fields]
+    with open(stem + ".csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+
+
 def run_job(args):
     spec, job = args
     config = next(c for c in spec["configs"] if c["label"] == job["config"])
@@ -69,10 +82,7 @@ def main() -> None:
     with ProcessPoolExecutor(args.jobs) as pool:
         rows = list(pool.map(run_job, [(spec, j) for j in jobs]))
     os.makedirs(args.out, exist_ok=True)
-    with open(os.path.join(args.out, Path(args.spec).stem + ".csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
+    write_rows(rows, os.path.join(args.out, Path(args.spec).stem))
 
     columns = columns_of(spec)
     print(f"\n{'config':<26}" + "".join(f"{c['label']:>16}" for c in columns))

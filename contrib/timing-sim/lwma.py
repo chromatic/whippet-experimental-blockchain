@@ -6,7 +6,7 @@ a solvetime between -6T and 0 is kept as is, and a negative sum becomes a huge u
 selects operator*(base_uint, uint32_t)), so the product wraps modulo 2**256.
 tests/test_lwma.py checks it against the C++ code. `min_solvetime` is the only
 difference from C++: solvetimes below it are raised to it before the C++ clamps.
-`monotonic` is the other: each timestamp in the window is first raised to the previous one plus 1
+`monotonic` is another: each timestamp in the window is first raised to the previous one plus 1
 (as LWMA-1 does), so out-of-order stamps cannot break the telescoping of the weighted sum.
 """
 from typing import List, Optional, Tuple
@@ -30,8 +30,15 @@ def target_to_bits(target: int) -> int:
 
 
 def next_bits(recent: List[Tuple[int, int]], min_solvetime: Optional[int] = None,
-              monotonic: bool = False) -> int:
-    """Required nBits for the block after `recent` ((time, bits) pairs, oldest first)."""
+              monotonic: bool = False, candidate_time: Optional[int] = None,
+              tau_wait_s: Optional[float] = None, free_wait_s: int = 6 * T) -> int:
+    """Required nBits for the block after `recent` ((time, bits) pairs, oldest first).
+
+    With tau_wait_s the target is also multiplied by 2 ** ((gap - free_wait_s) / tau_wait_s), where
+    gap is candidate_time minus the parent's time (nothing while gap <= free_wait_s): a chain whose
+    big miner has left gets easier the longer it waits. The same term as asert.py.
+    """
+    parent_time = recent[-1][0]
     if monotonic:
         fixed = [recent[0]]
         for time, bits in recent[1:]:
@@ -58,6 +65,10 @@ def next_bits(recent: List[Tuple[int, int]], min_solvetime: Optional[int] = None
     if j < N - 1:
         return recent[-1][1]
     next_target = (sum_target * (sum_time % (1 << 32))) % (1 << 256)
+    if tau_wait_s is not None and candidate_time is not None:
+        extra = max(0, candidate_time - parent_time - free_wait_s) / tau_wait_s
+        if extra > 0:
+            next_target = POW_LIMIT if extra > 300 else int(next_target * 2.0 ** extra)
     if next_target > POW_LIMIT:
         next_target = POW_LIMIT
     return target_to_bits(next_target)

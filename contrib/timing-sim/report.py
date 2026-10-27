@@ -12,7 +12,7 @@ from typing import Dict
 from chain import BASE_TIME
 from sim import Result, expand_scenarios, run_scenario
 
-SIM_ONLY = {"R2", "R2c", "R2m", "R3", "R4", "R5", "R5c", "R5m", "R1a", "R2a", "R5a", "R6", "R6d", "R1x"}
+SIM_ONLY = {"R2", "R2c", "R2m", "R3", "R4", "R5", "R5c", "R5m", "R1a", "R2a", "R5a", "R6", "R6d", "R1x", "R1e"}
 SIM_ONLY_LABEL = "sim-only, not cross-checked against C++"
 COLUMNS = [("max_stall", "max stall s"), ("total_stall", "total stall s"), ("max_lead", "max lead s"),
            ("final_lead", "final lead s"), ("max_gap", "max gap s"), ("blocks_per_hour", "blocks/h"),

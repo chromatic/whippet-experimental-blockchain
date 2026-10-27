@@ -47,11 +47,17 @@ def run(scenario: dict, rules: RuleSet, seed: int) -> Result:
     stalled = 0
     max_stall = total_stall = 0
     max_lead = 0
+    burst_end_wait = 0
     result = Result()
 
     for t in range(duration):
         now = BASE_TIME + t  # true wall-clock time
         tip = chain.best()
+        if t == scenario.get("burst_end_s"):
+            # How long the lone reference miner should expect to wait at the target in force now.
+            stamp = rules.stamp(chain, tip, now + reference.clock_offset)
+            burst_end_wait = (TARGET_SPACING * base_target / bits_to_target(next_bits(tip, stamp))
+                              / reference.hashrate)
         # Can an honest miner produce a valid block right now?
         stamp = rules.stamp(chain, tip, now + reference.clock_offset)
         if rules.accept(chain, tip, stamp, next_bits(tip, stamp), now) is not None:
@@ -125,12 +131,16 @@ def run(scenario: dict, rules: RuleSet, seed: int) -> Result:
         "max_lead": max_lead,
         "final_lead": best.time - (BASE_TIME + duration),
         "max_gap": max_gap,
+        "burst_end_wait": burst_end_wait,
         "post_burst_gap": post_burst_gap,
         "blocks_per_hour": mined * 3600 / duration,
         "difficulty_drift": bits_to_target(best.bits) / base_target,
         "attacker_share": (sum(1 for b in result.blocks if b[4].startswith("attacker")) / len(result.blocks)
                            if result.blocks else 0.0),
     }
+    for i, (lo, hi) in enumerate(scenario.get("windows", [])):
+        in_window = sum(1 for b in result.blocks if lo <= b[2] < hi)
+        result.metrics[f"window{i}_bph"] = in_window * 3600 / (hi - lo)
     return result
 
 

@@ -1,0 +1,263 @@
+{
+  "seeds": 5,
+  "scenarios": [
+    {
+      "label": "b10x",
+      "file": "burst_pump.json",
+      "override": {
+        "burst.hashrate": 10,
+        "duration_s": 3600,
+        "windows": []
+      },
+      "columns": [
+        {
+          "label": "b10x gap",
+          "metric": "post_burst_gap"
+        },
+        {
+          "label": "b10x wait",
+          "metric": "burst_end_wait"
+        }
+      ]
+    },
+    {
+      "label": "b100x",
+      "file": "burst_pump.json",
+      "override": {
+        "burst.hashrate": 100,
+        "duration_s": 3600,
+        "windows": []
+      },
+      "columns": [
+        {
+          "label": "b100x gap",
+          "metric": "post_burst_gap"
+        },
+        {
+          "label": "b100x wait",
+          "metric": "burst_end_wait"
+        }
+      ]
+    },
+    {
+      "label": "b1000x",
+      "file": "burst_pump.json",
+      "override": {
+        "burst.hashrate": 1000,
+        "duration_s": 3600,
+        "windows": []
+      },
+      "columns": [
+        {
+          "label": "b1000x gap",
+          "metric": "post_burst_gap"
+        },
+        {
+          "label": "b1000x wait",
+          "metric": "burst_end_wait"
+        }
+      ]
+    },
+    {
+      "label": "surge9x",
+      "file": "hashrate_jump.json",
+      "override": {
+        "windows": [
+          [
+            1800,
+            3600
+          ],
+          [
+            3600,
+            5400
+          ]
+        ]
+      },
+      "columns": [
+        {
+          "label": "surge bph",
+          "metric": "window0_bph",
+          "worst": "max"
+        },
+        {
+          "label": "after bph",
+          "metric": "window1_bph",
+          "worst": "min"
+        },
+        {
+          "label": "surge gap",
+          "metric": "max_gap"
+        }
+      ]
+    },
+    {
+      "label": "walk0.1",
+      "file": "walk_ahead.json",
+      "override": {
+        "attacker.hashrate": 0.1,
+        "duration_s": 3600,
+        "sweep": null
+      },
+      "metric": "attacker_share"
+    },
+    {
+      "label": "walk0.3",
+      "file": "walk_ahead.json",
+      "override": {
+        "attacker.hashrate": 0.3,
+        "duration_s": 3600,
+        "sweep": null
+      },
+      "metric": "attacker_share"
+    },
+    {
+      "label": "future300",
+      "file": "far_future.json",
+      "override": {
+        "legacy_miner": false,
+        "duration_s": 1200
+      },
+      "metric": "max_lead"
+    }
+  ],
+  "configs": [
+    {
+      "label": "R0 (today)",
+      "rule": "R0"
+    },
+    {
+      "label": "R6 tau300 (no easing)",
+      "rule": "R6",
+      "params": {
+        "tau_s": 300
+      }
+    },
+    {
+      "label": "R1a tau300",
+      "rule": "R1a",
+      "params": {
+        "tau_s": 300
+      }
+    },
+    {
+      "label": "R6d t300 w30 f36",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 300,
+        "tau_wait_s": 30,
+        "free_wait_s": 36,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t300 w30 f72",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 300,
+        "tau_wait_s": 30,
+        "free_wait_s": 72,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t300 w60 f36",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 300,
+        "tau_wait_s": 60,
+        "free_wait_s": 36,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t300 w60 f72",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 300,
+        "tau_wait_s": 60,
+        "free_wait_s": 72,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t600 w30 f36",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 600,
+        "tau_wait_s": 30,
+        "free_wait_s": 36,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t600 w30 f72",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 600,
+        "tau_wait_s": 30,
+        "free_wait_s": 72,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t600 w60 f36",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 600,
+        "tau_wait_s": 60,
+        "free_wait_s": 36,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t600 w60 f72",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 600,
+        "tau_wait_s": 60,
+        "free_wait_s": 72,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t1200 w30 f36",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 1200,
+        "tau_wait_s": 30,
+        "free_wait_s": 36,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t1200 w30 f72",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 1200,
+        "tau_wait_s": 30,
+        "free_wait_s": 72,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t1200 w60 f36",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 1200,
+        "tau_wait_s": 60,
+        "free_wait_s": 36,
+        "drift": 72
+      }
+    },
+    {
+      "label": "R6d t1200 w60 f72",
+      "rule": "R6d",
+      "params": {
+        "tau_s": 1200,
+        "tau_wait_s": 60,
+        "free_wait_s": 72,
+        "drift": 72
+      }
+    }
+  ]
+}
