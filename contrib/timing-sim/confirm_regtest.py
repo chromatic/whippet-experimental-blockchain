@@ -204,6 +204,75 @@ def run_walk_ahead(rules: str, duration_s: int = 1200, first_s: int = 60, step_s
                 "max_stall": honest.max_stall, "total_stall": honest.total_stall}
 
 
+def _target(bits_hex: str) -> int:
+    from chain import bits_to_target
+    return bits_to_target(int(bits_hex, 16))
+
+
+def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, honest_rate: float = 1.0,
+                            attacker_rate: float = 0.2, first_s: int = 60, step_s: int = 15) -> dict:
+    """Walk-ahead replay in which block finding follows the node's own target, as in the simulator.
+
+    run_walk_ahead() mines on a fixed schedule, so LWMA keeps raising the difficulty until real
+    hashing takes minutes per block. Here each second a miner finds a block with the simulator's
+    probability, 1 - exp(-hashrate / 6 * target / base_target), taking the target from the node's
+    getblocktemplate at the stamp it would use. The block rate then follows the difficulty, and the
+    difficulty stays near where it started. Only the choice of when to mine differs: the rules run
+    in the real nodes.
+    """
+    import math
+    import random
+    from chain import BASE_BITS, bits_to_target
+    rng = random.Random(seed)
+    base_target = bits_to_target(BASE_BITS)
+
+    def rate(h: float, bits_hex: str) -> float:
+        return h / 6 * _target(bits_hex) / base_target
+
+    with Nodes(PROFILES[rules]) as nodes:
+        _prime(nodes)
+        honest = Honest(nodes)
+        addr_a = nodes.a.getnewaddress()
+        max_lead = attacker_blocks = 0
+        for t in range(18, duration_s):
+            now = START + t
+            nodes.a.setmocktime(now)
+            nodes.b.setmocktime(now)
+            try:  # a refused template (tip too far ahead of the clock) is the honest stall itself
+                bits = nodes.b.getblocktemplate()["bits"]
+                honest.stalled = 0
+            except JSONRPCException:
+                bits = None
+                honest.stalled += 1
+                honest.total_stall += 1
+                honest.max_stall = max(honest.max_stall, honest.stalled)
+            # As in the simulator, a block that is not found this second is not retried: no patience.
+            if bits and rng.random() < 1 - math.exp(-rate(honest_rate, bits)):
+                try:
+                    nodes.b.generatetoaddress(1, honest.addr)
+                except JSONRPCException:
+                    pass
+            tip = _tip_time(nodes.b)
+            latest = now + DRIFT[rules]
+            want = now + first_s if tip - now < first_s else tip + step_s
+            stamp = min(want, latest)
+            if tip + FLOOR <= latest:
+                nodes.a.setmocktime(stamp)
+                try:
+                    bits = nodes.a.getblocktemplate()["bits"]
+                except JSONRPCException:
+                    bits = None
+                nodes.a.setmocktime(now)
+                if bits and rng.random() < 1 - math.exp(-rate(attacker_rate, bits)):
+                    if _attack_block(nodes, addr_a, stamp, now):
+                        attacker_blocks += 1
+            max_lead = max(max_lead, _tip_time(nodes.b) - now)
+        height = nodes.b.getblockcount()
+        return {"blocks_per_hour": (height - 2) * 3600 / duration_s, "attacker_blocks": attacker_blocks,
+                "max_lead": max_lead, "max_stall": honest.max_stall, "total_stall": honest.total_stall,
+                "final_difficulty": nodes.b.getdifficulty()}
+
+
 def run_easing_wait(rules: str = "R1e", gaps=(20, 36, 37, 51, 66, 96, 156, 306)) -> dict:
     """After the honest chain goes quiet for `gap` seconds, the next block must carry the eased bits.
 
@@ -272,9 +341,12 @@ def compare(scenario: str, rules: str, real: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "easing_wait"], required=True)
+    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "walk_ahead_modelled", "easing_wait"], required=True)
     ap.add_argument("--rules", choices=sorted(PROFILES), required=True)
     args = ap.parse_args()
+    if args.scenario == "walk_ahead_modelled":
+        print(run_walk_ahead_modelled(args.rules))
+        return
     if args.scenario == "easing_wait":
         result = run_easing_wait(args.rules)
         for r in result.pop("rows"):
