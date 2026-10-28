@@ -59,6 +59,7 @@ struct TimingArgs {
         ForceSetArg("-timingfloor", "4");
         ForceSetArg("-timingmindiff", "0");
         ForceSetArg("-timingdriftcapheight", "0");
+        ForceSetArg("-timingeasingheight", "0");
         SelectParams(CBaseChainParams::REGTEST);
     }
 };
@@ -285,6 +286,43 @@ BOOST_AUTO_TEST_CASE(regtest_drift_cap_height_tightens_only_from_that_height)
     BOOST_CHECK_THROW(SelectParams(CBaseChainParams::REGTEST), std::runtime_error);
     ForceSetArg("-timingdriftcapheight", "500");
     BOOST_CHECK_THROW(SelectParams(CBaseChainParams::MAIN), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(regtest_easing_height_adds_the_mainnet_easing_row)
+{
+    TimingArgs args("scaled-drift-easing");
+    ForceSetArg("-timingeasingtau", "0"); // the profile's own easing is off; only the row eases
+    ForceSetArg("-timingeasingheight", "500");
+    SelectParams(CBaseChainParams::REGTEST);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(499).nEasingTau, 0);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEasingTau, MAINNET_EASING_TAU);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEasingFreeWait, 36);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(80000).nEasingTau, 0); // the chain id fix row is not part of the rehearsal
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nMaxFutureDrift, Params().GetConsensus(499).nMaxFutureDrift);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEveryBlockRetargetHeight, 0);
+
+    // Together with the drift cap row, which comes first.
+    ForceSetArg("-timingdriftcapheight", "300");
+    SelectParams(CBaseChainParams::REGTEST);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(299).nMaxFutureDrift, 72); // the profile already scales the drift
+    BOOST_CHECK_EQUAL(Params().GetConsensus(300).nEasingTau, 0);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(499).nEasingTau, 0);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEasingTau, MAINNET_EASING_TAU);
+    ForceSetArg("-timingdriftcapheight", "0");
+
+    // Selecting again without the option restores the plain rows.
+    ForceSetArg("-timingeasingheight", "0");
+    SelectParams(CBaseChainParams::REGTEST);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEasingTau, 0);
+
+    // The height has to lie between the AuxPoW row and the chain id fix row, and only on regtest.
+    ForceSetArg("-timingeasingheight", "20");
+    BOOST_CHECK_THROW(SelectParams(CBaseChainParams::REGTEST), std::runtime_error);
+    ForceSetArg("-timingeasingheight", "80000");
+    BOOST_CHECK_THROW(SelectParams(CBaseChainParams::REGTEST), std::runtime_error);
+    ForceSetArg("-timingeasingheight", "500");
+    BOOST_CHECK_THROW(SelectParams(CBaseChainParams::MAIN), std::runtime_error);
+    ForceSetArg("-timingeasingtau", "30");
 }
 
 BOOST_AUTO_TEST_CASE(profile_floor_override)

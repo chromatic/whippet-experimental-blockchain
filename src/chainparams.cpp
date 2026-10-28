@@ -442,6 +442,7 @@ private:
     Consensus::Params pristine[4];
     bool fTimingProfileApplied = false;
     Consensus::Params driftCapConsensus; //!< extra row for -timingdriftcapheight
+    Consensus::Params easingConsensus; //!< extra row for -timingeasingheight
 public:
     CRegTestParams() {
         strNetworkID = "regtest";
@@ -593,6 +594,33 @@ public:
     }
 
     /**
+     * Rehearse the mainnet easing hard fork on regtest: from nHeight on, LWMA eases the target of a block
+     * stamped more than 6 block times after its parent, with the mainnet tau (MAINNET_EASING_TAU).
+     * Nothing else changes, so run it with -timingprofile=scaled-drift-easing -timingeasingtau=0 (every-block
+     * LWMA, easing off) to compare with a node that does not know the row. 0 removes the row.
+     * Call it after ApplyDriftCapHeight and ApplyTimingProfile.
+     * @throws std::runtime_error unless the row lies between the last earlier row and the chain id fix row.
+     */
+    void ApplyEasingHeight(int nHeight)
+    {
+        // Undo an earlier call: the row before the easing row points at the chain id fix row again.
+        Consensus::Params* prev = auxpowConsensus.pRight == &driftCapConsensus ? &driftCapConsensus : &auxpowConsensus;
+        prev->pRight = &chainIdFixConsensus;
+        if (nHeight == 0)
+            return;
+        if (nHeight <= prev->nHeightEffective || nHeight >= chainIdFixConsensus.nHeightEffective)
+            throw std::runtime_error(strprintf("%s: -timingeasingheight must lie between %d and %d.", __func__,
+                                               prev->nHeightEffective, chainIdFixConsensus.nHeightEffective));
+        easingConsensus = *prev;
+        easingConsensus.nHeightEffective = nHeight;
+        easingConsensus.nEasingFreeWait = 6 * easingConsensus.nPowTargetSpacing;
+        easingConsensus.nEasingTau = MAINNET_EASING_TAU;
+        easingConsensus.pLeft = NULL;
+        easingConsensus.pRight = &chainIdFixConsensus;
+        prev->pRight = &easingConsensus;
+    }
+
+    /**
      * Make regtest run Whippet's block timing rules (see -timingprofile).
      * An empty profile restores the parameters as constructed.
      * @throws std::runtime_error for an unknown profile.
@@ -672,12 +700,16 @@ void SelectParams(const std::string& network)
     const std::string profile = GetArg("-timingprofile", "");
     // -timingdriftcapheight likewise: it rehearses the mainnet drift cap on regtest.
     const int driftCapHeight = GetArg("-timingdriftcapheight", 0);
+    // -timingeasingheight rehearses the mainnet easing hard fork on regtest.
+    const int easingHeight = GetArg("-timingeasingheight", 0);
     if (network == CBaseChainParams::REGTEST) {
         regTestParams.ApplyDriftCapHeight(0);
+        regTestParams.ApplyEasingHeight(0);
         regTestParams.ApplyTimingProfile(profile, GetArg("-timingfloor", 4), GetBoolArg("-timingmindiff", false), GetArg("-timingeasingtau", 30));
         regTestParams.ApplyDriftCapHeight(driftCapHeight);
-    } else if (!profile.empty() || driftCapHeight != 0) {
-        throw std::runtime_error("-timingprofile and -timingdriftcapheight are only valid with -regtest.");
+        regTestParams.ApplyEasingHeight(easingHeight);
+    } else if (!profile.empty() || driftCapHeight != 0 || easingHeight != 0) {
+        throw std::runtime_error("-timingprofile, -timingdriftcapheight and -timingeasingheight are only valid with -regtest.");
     }
     pCurrentParams = &Params(network);
 }

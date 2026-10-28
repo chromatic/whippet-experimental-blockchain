@@ -445,6 +445,111 @@ def run_activation(new_miner: bool, activation: int = ACTIVATION_HEIGHT) -> dict
         return out
 
 
+EASING_ACTIVATION_HEIGHT = 100
+PREFORK_REPO = Path(os.environ.get("WHIPPET_PREFORK_REPO", REPO.parent / "whippet-old-prefork"))  # built at c7729597f
+
+
+def run_easing_activation(new_miner: bool, activation: int = EASING_ACTIVATION_HEIGHT, gap: int = 66) -> dict:
+    """Old and new binaries across the easing hard fork height. Both run every-block LWMA with easing off.
+
+    The new node adds -timingeasingheight=`activation` (the mainnet row: tau 30, free wait 36s). The old
+    node is the commit before that row (PREFORK_REPO). Blocks are 4s apart (the floor), so LWMA pulls the
+    target below powLimit, except for two blocks that follow a quiet `gap` seconds after their parent:
+
+    - block activation-3: a long gap before the height. Neither rule eases it; both nodes must agree.
+    - block `activation`: a long gap from the height. The new node requires eased nBits, the old node
+      the plain ones, so a block from either side is refused by the other.
+
+    new_miner=True  (A new, B old): the new node mines the eased block; the old node refuses it. The old
+                    node then mines 4s blocks (no easing involved) and the new node follows them.
+    new_miner=False (A old, B new): the old node mines the plain block; the new node refuses it. The new
+                    node then mines its own eased block; the old node refuses that, and the two stay apart.
+    """
+    import lwma
+    global OLD_REPO
+    OLD_REPO = PREFORK_REPO  # Nodes mounts it as /old
+    new = ("/src/src/whippetd", f"-timingeasingtau=0 -timingeasingheight={activation}")
+    old = ("/old/src/whippetd", "-timingeasingtau=0")
+    specs = {"a": new, "b": old} if new_miner else {"a": old, "b": new}
+    out = {"activation": activation, "gap": gap, "new_miner": new_miner}
+    with Nodes("scaled-drift-easing", specs) as nodes:
+        miner, other = nodes.a, nodes.b
+        addr_a, addr_b = nodes.a.getnewaddress(), nodes.b.getnewaddress()
+        now = START
+        for n in (nodes.a, nodes.b):
+            n.setmocktime(now)
+
+        def clocks(t: int) -> None:
+            for n in (nodes.a, nodes.b):
+                n.setmocktime(t)
+
+        def mine(node, addr, after: int) -> str:
+            """One block on `node` stamped `after` seconds after the current tip (both clocks move there)."""
+            nonlocal now
+            now = node.getblockheader(node.getbestblockhash())["time"] + after
+            clocks(now)
+            return node.generatetoaddress(1, addr)[0]
+
+        def run_to(height: int) -> None:
+            while miner.getblockcount() < height:
+                mine(miner, addr_a, 4)
+                nodes.synced(5)
+
+        def bits_in_force(node, candidate: int):
+            """Plain and eased nBits the Python rule gives for the block after node's tip."""
+            tip = node.getblockheader(node.getbestblockhash())
+            recent, h = [], tip
+            for _ in range(lwma.N + 1):
+                recent.append((h["time"], int(h["bits"], 16)))
+                h = node.getblockheader(h["previousblockhash"])
+            recent.reverse()
+            return (lwma.next_bits(recent), lwma.next_bits(recent, candidate_time=candidate,
+                                                           tau_wait_s=EASING_TAU, free_wait_s=EASING_FREE))
+
+        run_to(activation - 4)
+        mine(miner, addr_a, gap)  # block activation-3, before the height
+        time.sleep(0.3)
+        out["pre_activation_long_gap_followed"] = (
+            miner.getblockcount() == activation - 3 and other.getbestblockhash() == miner.getbestblockhash())
+        run_to(activation - 1)
+        out["synced_before"] = nodes.synced(30)
+        out["height_before"] = miner.getblockcount()
+
+        tip_time = miner.getblockheader(miner.getbestblockhash())["time"]
+        plain, eased = bits_in_force(miner, tip_time + gap)
+        out["eased_differs_from_plain"] = plain != eased
+        # Block `activation`, after a quiet gap.
+        block = mine(miner, addr_a, gap)
+        header = miner.getblockheader(block)
+        time.sleep(0.5)
+        out["miner_bits"] = header["bits"]
+        out["miner_bits_are"] = ("eased" if int(header["bits"], 16) == eased else
+                                 "plain" if int(header["bits"], 16) == plain else "other")
+        out["other_refused"] = (other.getblockcount() == activation - 1 and
+                                other.getbestblockhash() != block)
+        if new_miner:
+            # The old node carries on from its own tip with ordinary 4s blocks; no block waits, so the new
+            # node accepts them and, with more work, leaves the eased block behind.
+            for _ in range(3):
+                mine(other, addr_b, 4)
+            time.sleep(1.5)
+            out["new_node_followed_old_chain"] = miner.getbestblockhash() == other.getbestblockhash()
+        else:
+            # The new node mines its own block after the same quiet gap, which the old node refuses in turn.
+            other_header = other.getblockheader(other.getbestblockhash())
+            _, eased_b = bits_in_force(other, other_header["time"] + gap)
+            block_b = mine(other, addr_b, gap)
+            time.sleep(0.5)
+            out["new_node_bits_are_eased"] = int(other.getblockheader(block_b)["bits"], 16) == eased_b
+            for _ in range(3):
+                mine(miner, addr_a, 4)
+                mine(other, addr_b, 4)
+            time.sleep(1.5)
+            out["old_node_stayed_on_its_chain"] = miner.getbestblockhash() != other.getbestblockhash()
+        out["height_a"], out["height_b"] = nodes.a.getblockcount(), nodes.b.getblockcount()
+        return out
+
+
 def compare(scenario: str, rules: str, real: dict) -> None:
     """Print the real result next to the simulator's and a verdict (a finding, never a gate)."""
     import sim
@@ -467,12 +572,16 @@ def compare(scenario: str, rules: str, real: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "walk_ahead_modelled", "easing_wait", "activation"], required=True)
+    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "walk_ahead_modelled", "easing_wait", "activation", "easing_activation"], required=True)
     ap.add_argument("--rules", choices=sorted(PROFILES))
     args = ap.parse_args()
     if args.scenario == "activation":
         print("new miner, old follower:", run_activation(True))
         print("old miner, new validator:", run_activation(False))
+        return
+    if args.scenario == "easing_activation":
+        print("new miner, old follower:", run_easing_activation(True))
+        print("old miner, new validator:", run_easing_activation(False))
         return
     if not args.rules:
         ap.error("--rules is required for this scenario")
