@@ -430,6 +430,7 @@ private:
     // Parameter sets as constructed, saved when a timing profile is first applied.
     Consensus::Params pristine[4];
     bool fTimingProfileApplied = false;
+    Consensus::Params driftCapConsensus; //!< extra row for -timingdriftcapheight
 public:
     CRegTestParams() {
         strNetworkID = "regtest";
@@ -556,6 +557,31 @@ public:
     }
 
     /**
+     * Rehearse the mainnet soft fork on regtest: from nHeight on, blocks may be at most
+     * MAX_FUTURE_DRIFT_CAPPED ahead of adjusted time, as in the driftCapConsensus row of mainnet.
+     * Nothing else changes. 0 removes the row. Call it before ApplyTimingProfile and again after.
+     * @throws std::runtime_error unless 20 < nHeight < the chain id fix height.
+     */
+    void ApplyDriftCapHeight(int nHeight)
+    {
+        // Undo an earlier call: the chain id fix row inherits the drift of the row before it.
+        auxpowConsensus.pRight = &chainIdFixConsensus;
+        chainIdFixConsensus.nMaxFutureDrift = auxpowConsensus.nMaxFutureDrift;
+        if (nHeight == 0)
+            return;
+        if (nHeight <= auxpowConsensus.nHeightEffective || nHeight >= chainIdFixConsensus.nHeightEffective)
+            throw std::runtime_error(strprintf("%s: -timingdriftcapheight must lie between %d and %d.", __func__,
+                                               auxpowConsensus.nHeightEffective, chainIdFixConsensus.nHeightEffective));
+        driftCapConsensus = auxpowConsensus;
+        driftCapConsensus.nHeightEffective = nHeight;
+        driftCapConsensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
+        driftCapConsensus.pLeft = NULL;
+        driftCapConsensus.pRight = &chainIdFixConsensus;
+        auxpowConsensus.pRight = &driftCapConsensus;
+        chainIdFixConsensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
+    }
+
+    /**
      * Make regtest run Whippet's block timing rules (see -timingprofile).
      * An empty profile restores the parameters as constructed.
      * @throws std::runtime_error for an unknown profile.
@@ -633,10 +659,15 @@ void SelectParams(const std::string& network)
     SelectBaseParams(network);
     // -timingprofile is a regtest-only test hook.
     const std::string profile = GetArg("-timingprofile", "");
-    if (network == CBaseChainParams::REGTEST)
+    // -timingdriftcapheight likewise: it rehearses the mainnet drift cap on regtest.
+    const int driftCapHeight = GetArg("-timingdriftcapheight", 0);
+    if (network == CBaseChainParams::REGTEST) {
+        regTestParams.ApplyDriftCapHeight(0);
         regTestParams.ApplyTimingProfile(profile, GetArg("-timingfloor", 4), GetBoolArg("-timingmindiff", false), GetArg("-timingeasingtau", 30));
-    else if (!profile.empty())
-        throw std::runtime_error("-timingprofile is only valid with -regtest.");
+        regTestParams.ApplyDriftCapHeight(driftCapHeight);
+    } else if (!profile.empty() || driftCapHeight != 0) {
+        throw std::runtime_error("-timingprofile and -timingdriftcapheight are only valid with -regtest.");
+    }
     pCurrentParams = &Params(network);
 }
 

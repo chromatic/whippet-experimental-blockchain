@@ -45,3 +45,15 @@ def test_easing_wait_r1e_bits_match_the_python_rule_and_peers_accept():
     m = confirm_regtest.run_easing_wait("R1e", gaps=(20, 66, 156))
     assert m["all_match"] and m["all_accepted"]
     assert [r["eased"] for r in m["rows"]] == [False, True, True]
+
+
+@pytest.mark.skipif(not (confirm_regtest.OLD_REPO / "src" / "whippetd").exists(),
+                    reason="needs the old baseline built (see WHIPPET_OLD_REPO in confirm_regtest.py)")
+def test_activation_old_nodes_follow_new_blocks_and_the_new_node_refuses_73s_ahead():
+    new = confirm_regtest.run_activation(True)
+    assert new["old_followed_every_block"] and new["blocks_across"] >= 20
+    assert new["height"] == new["old_height"]
+    old = confirm_regtest.run_activation(False)
+    for key in ("last_pre_activation_block_300s_accepted", "post_activation_72s_accepted",
+                "post_activation_73s_refused", "old_node_kept_it", "old_node_reorganised"):
+        assert old[key] is True, key

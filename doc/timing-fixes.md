@@ -123,7 +123,19 @@ Why the real R0 runs disagree with simulator seeds 2-5: the replay starts differ
 
 So the R0 figures above are not a typical R0 outcome: it is bimodal and depends on the starting difficulty. Whether the attack runs away or only gets part of the way, R0 has no bound and R1 has one.
 
-Not done: an activation height, a rehearsal across it with old and new binaries, and any test on testnet.
+Old and new binaries across the activation height (`--scenario activation`; the new node takes `-timingdriftcapheight=100`, a regtest-only option that adds the same kind of row as mainnet's `driftCapConsensus`; the old node is the commit before the soft fork, built separately, plain regtest rules):
+
+| | result |
+|---|---|
+| new node mines 25 blocks across height 100, each stamped exactly 72s past the old node's clock | the old node follows every block (heights equal, 120 / 120) |
+| old node mines block 99 stamped 300s ahead | the new node accepts it |
+| old node mines block 100 stamped 72s ahead | the new node accepts it |
+| old node mines block 101 stamped 73s ahead | the new node refuses it; the old node keeps it |
+| new node mines 2 more blocks on its own tip | the old node reorganises onto the new chain |
+
+So an upgraded majority carries the old nodes with it, and a block stamped further ahead than the cap is orphaned once the upgraded side is ahead. A minority that has not upgraded and mines such blocks forks off until it upgrades. This covers one old and one new node on plain regtest rules (constant difficulty, 1s spacing), not mainnet's LWMA rows.
+
+Not done: an activation height and any test on testnet.
 
 ## What this does not fix
 
@@ -137,4 +149,4 @@ Height 145000 is a separate, existing change: LWMA retargets every block from th
 - Five seeds at most (three for the cap sweep), and one for the walk-ahead table.
 - Real-node confirmation covers R0, R1 and R1e, far-future and walk-ahead scenarios, 1200s (`confirm_regtest.py`). The replays start from an easy target, not the steady state, so early minutes are a transient.
 - Peer-offset clock skew is not modelled. Merge-mining job staleness is (`job_refresh_s`) in the simulator only, not on real nodes.
-- A rehearsal with one old and one new binary across the activation height has not been done.
+- The old/new rehearsal uses two nodes and plain regtest rules; it does not cover the LWMA rows or many nodes.

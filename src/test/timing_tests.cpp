@@ -58,6 +58,7 @@ struct TimingArgs {
         ForceSetArg("-timingprofile", "");
         ForceSetArg("-timingfloor", "4");
         ForceSetArg("-timingmindiff", "0");
+        ForceSetArg("-timingdriftcapheight", "0");
         SelectParams(CBaseChainParams::REGTEST);
     }
 };
@@ -251,6 +252,39 @@ BOOST_AUTO_TEST_CASE(profile_scaled_drift_boundary)
     BOOST_CHECK(CheckHeader(adjusted - 100, adjusted + 72, adjusted, reason));
     BOOST_CHECK(!CheckHeader(adjusted - 100, adjusted + 73, adjusted, reason));
     BOOST_CHECK_EQUAL(reason, "time-too-new");
+}
+
+BOOST_AUTO_TEST_CASE(regtest_drift_cap_height_tightens_only_from_that_height)
+{
+    TimingArgs args("");
+    ForceSetArg("-timingdriftcapheight", "500");
+    SelectParams(CBaseChainParams::REGTEST);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(499).nMaxFutureDrift, 7200);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nMaxFutureDrift, 72);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(79999).nMaxFutureDrift, 72);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(80000).nMaxFutureDrift, 72); // the chain id fix row inherits it
+    // Only the drift differs from the row before.
+    const Consensus::Params& before = Params().GetConsensus(499);
+    const Consensus::Params& after = Params().GetConsensus(500);
+    BOOST_CHECK_EQUAL(before.nAuxpowChainId, after.nAuxpowChainId);
+    BOOST_CHECK_EQUAL(before.nMinBlockSpacing, after.nMinBlockSpacing);
+    BOOST_CHECK_EQUAL(before.nPowTargetSpacing, after.nPowTargetSpacing);
+    BOOST_CHECK_EQUAL(before.fAllowLegacyBlocks, after.fAllowLegacyBlocks);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(80000).nAuxpowChainId, 0x5750);
+
+    // Selecting again without the option restores the plain rows.
+    ForceSetArg("-timingdriftcapheight", "0");
+    SelectParams(CBaseChainParams::REGTEST);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nMaxFutureDrift, 7200);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(80000).nMaxFutureDrift, 7200);
+
+    // The cap height has to lie between the AuxPoW row and the chain id fix row.
+    ForceSetArg("-timingdriftcapheight", "20");
+    BOOST_CHECK_THROW(SelectParams(CBaseChainParams::REGTEST), std::runtime_error);
+    ForceSetArg("-timingdriftcapheight", "80000");
+    BOOST_CHECK_THROW(SelectParams(CBaseChainParams::REGTEST), std::runtime_error);
+    ForceSetArg("-timingdriftcapheight", "500");
+    BOOST_CHECK_THROW(SelectParams(CBaseChainParams::MAIN), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(profile_floor_override)

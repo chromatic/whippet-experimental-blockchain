@@ -23,6 +23,7 @@ from authproxy import AuthServiceProxy, JSONRPCException  # noqa: E402
 
 from chain import BASE_TIME  # noqa: E402
 
+OLD_REPO = Path(os.environ.get("WHIPPET_OLD_REPO", REPO.parent / "whippet-old-baseline"))  # built at 89233fb96~1
 IMAGE = os.environ.get("WHIPPET_TIMING_IMAGE", "whippet-ubuntu24")
 PROFILES = {"R0": "whippet", "R1": "scaled-drift", "R1e": "scaled-drift-easing"}
 DRIFT = {"R0": 7200, "R1": 72, "R1e": 72}
@@ -34,10 +35,15 @@ START = BASE_TIME + 100  # first mocktime; the regtest genesis block is at BASE_
 
 
 class Nodes:
-    """Two connected regtest nodes in one container, on the host network."""
+    """Two connected regtest nodes in one container, on the host network.
 
-    def __init__(self, profile: str):
+    `specs` runs a different binary or extra arguments per node: {"a": (binary, extra_args), ...}. The
+    current tree is /src and the old baseline (OLD_REPO) is /old.
+    """
+
+    def __init__(self, profile: str, specs: dict = None):
         self.profile = profile
+        self.specs = specs or {}
         self.name = f"timing-confirm-{os.getpid()}"
         self.dir = tempfile.mkdtemp(prefix="timing-confirm-")
 
@@ -52,13 +58,17 @@ class Nodes:
         cmd = []
         for node, (p2p, rpc) in PORTS.items():
             os.makedirs(f"{self.dir}/{node}")
+            binary, extra = self.specs.get(node, ("/src/src/whippetd", ""))
             args = (f"-regtest -datadir=/data/{node} -port={p2p} -rpcport={rpc} -rpcuser=u -rpcpassword=p "
-                    f"-timingprofile={self.profile} -timingfloor={FLOOR} -listen=1 -server=1 -printtoconsole=0")
+                    f"-listen=1 -server=1 -printtoconsole=0 {extra}")
+            if self.profile:
+                args += f" -timingprofile={self.profile} -timingfloor={FLOOR}"
             if node == "b":
                 args += f" -addnode=127.0.0.1:{PORTS['a'][0]}"
-            cmd.append(f"/src/src/whippetd {args} &")
+            cmd.append(f"{binary} {args} &")
         subprocess.run(["docker", "run", "-d", "--rm", "--network", "host", "--name", self.name,
-                        "-u", f"{os.getuid()}:{os.getgid()}", "-v", f"{REPO}:/src", "-v", f"{self.dir}:/data",
+                        "-u", f"{os.getuid()}:{os.getgid()}", "-v", f"{REPO}:/src", "-v", f"{OLD_REPO}:/old:ro",
+                        "-v", f"{self.dir}:/data",
                         "--entrypoint", "bash", IMAGE, "-c", " ".join(cmd) + " wait"],
                        check=True, capture_output=True)
         try:
@@ -339,6 +349,102 @@ def run_easing_wait(rules: str = "R1e", gaps=(20, 36, 37, 51, 66, 96, 156, 306))
                 "all_accepted": all(r["peer_accepted"] for r in rows)}
 
 
+ACTIVATION_HEIGHT = 100
+
+
+def run_activation(new_miner: bool, activation: int = ACTIVATION_HEIGHT) -> dict:
+    """Old and new binaries across the drift-cap activation height (soft fork), plain regtest rules.
+
+    The new node runs -timingdriftcapheight=`activation`; the old node is the commit before the soft
+    fork. Node A mines and node B follows. Blocks are 1s apart up to `activation - 5`, then:
+
+    new_miner=True  (A new, B old): the new node mines across the height with every block stamped
+                    exactly 72s past the old node's clock. The old node must follow every block.
+    new_miner=False (A old, B new): the old node mines blocks stamped 300s ahead. Before the height the
+                    new node accepts them (the last one is block activation-1); from it, the new node refuses a block 73s ahead and accepts
+                    one 72s ahead. After the refusal the new node mines a longer chain and the old node
+                    must reorganise onto it.
+    """
+    new = ("/src/src/whippetd", f"-timingdriftcapheight={activation}")
+    old = ("/old/src/whippetd", "")
+    specs = {"a": new, "b": old} if new_miner else {"a": old, "b": new}
+    out = {"activation": activation, "new_miner": new_miner}
+    with Nodes("", specs) as nodes:
+        miner, other = nodes.a, nodes.b
+        addr = miner.getnewaddress()
+        now = START
+        for n in (nodes.a, nodes.b):
+            n.setmocktime(now)
+
+        def tick(secs: int = 1) -> None:
+            nonlocal now
+            now += secs
+            for n in (nodes.a, nodes.b):
+                n.setmocktime(now)
+
+        def mine(stamp_ahead: int) -> bool:
+            """Mine one block on the miner with its clock stamp_ahead seconds past the shared clock."""
+            miner.setmocktime(now + stamp_ahead)
+            try:
+                miner.generatetoaddress(1, addr)
+                return True
+            except JSONRPCException:
+                return False
+            finally:
+                miner.setmocktime(now)
+
+        while miner.getblockcount() < activation - 5:
+            tick()
+            mine(0)
+        nodes.synced(30)
+        out["synced_before"] = nodes.a.getbestblockhash() == nodes.b.getbestblockhash()
+
+        if new_miner:
+            followed = []
+            while miner.getblockcount() < activation + 20:
+                tick()
+                assert mine(72)
+                time.sleep(0.15)
+                followed.append(other.getbestblockhash() == miner.getbestblockhash())
+            out.update(blocks_across=len(followed), old_followed_every_block=all(followed),
+                       height=miner.getblockcount(), old_height=other.getblockcount())
+            return out
+
+        # Old miner, new validator. The last block below the activation height may be 300s ahead.
+        while miner.getblockcount() < activation - 2:
+            tick()
+            mine(0)
+        tick()
+        mine(300)
+        time.sleep(0.3)
+        out["last_pre_activation_block_300s_accepted"] = (
+            miner.getblockcount() == activation - 1 and other.getbestblockhash() == miner.getbestblockhash())
+        tick(300)  # the 300s lead is gone
+        nodes.synced(30)
+        out["height_before"] = other.getblockcount()
+        out["synced_at_activation"] = nodes.a.getbestblockhash() == nodes.b.getbestblockhash()
+        # From the activation height (this is block `activation`): 72s ahead is accepted, 73s is not.
+        tick()
+        mine(72)
+        time.sleep(0.3)
+        out["post_activation_72s_accepted"] = other.getbestblockhash() == miner.getbestblockhash()
+        fork_height = other.getblockcount()
+        tick()
+        mine(73)
+        time.sleep(0.5)
+        out["post_activation_73s_refused"] = other.getblockcount() == fork_height
+        out["old_node_kept_it"] = miner.getblockcount() == fork_height + 1
+        # The new node mines on; once its chain is longer the old node follows it.
+        addr_b = other.getnewaddress()
+        for _ in range(2):
+            tick()
+            other.generatetoaddress(1, addr_b)
+        time.sleep(1)
+        out["old_node_reorganised"] = miner.getbestblockhash() == other.getbestblockhash()
+        out["height"] = other.getblockcount()
+        return out
+
+
 def compare(scenario: str, rules: str, real: dict) -> None:
     """Print the real result next to the simulator's and a verdict (a finding, never a gate)."""
     import sim
@@ -361,9 +467,15 @@ def compare(scenario: str, rules: str, real: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "walk_ahead_modelled", "easing_wait"], required=True)
-    ap.add_argument("--rules", choices=sorted(PROFILES), required=True)
+    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "walk_ahead_modelled", "easing_wait", "activation"], required=True)
+    ap.add_argument("--rules", choices=sorted(PROFILES))
     args = ap.parse_args()
+    if args.scenario == "activation":
+        print("new miner, old follower:", run_activation(True))
+        print("old miner, new validator:", run_activation(False))
+        return
+    if not args.rules:
+        ap.error("--rules is required for this scenario")
     if args.scenario == "walk_ahead_modelled":
         print(run_walk_ahead_modelled(args.rules))
         return
