@@ -31,8 +31,11 @@ def run(scenario: dict, rules: RuleSet, seed: int) -> Result:
 
     rules.legacy_miner = scenario.get("legacy_miner", False)
     rc = rules.rc
-    rc.reset(scenario.get("base_height", 145000), base_bits)
-    chain = Chain(scenario.get("base_height", 145000), base_bits)
+    # The chain may start at an easier target than the one hashrate is measured against (the real-node
+    # replay does: regtest starts at powLimit), so the first blocks come quickly until LWMA catches up.
+    start_bits = scenario.get("start_bits", base_bits)
+    rc.reset(scenario.get("base_height", 145000), start_bits)
+    chain = Chain(scenario.get("base_height", 145000), start_bits)
     rules.chain = chain
     bits_cache: Dict[Tuple[int, int], int] = {}
 

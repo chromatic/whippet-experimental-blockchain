@@ -99,3 +99,19 @@ def test_burst_end_wait_is_the_expected_honest_wait_when_the_burst_ends():
 
 def test_burst_end_wait_is_zero_when_the_scenario_has_no_burst():
     assert run(scenario(duration_s=60)).metrics["burst_end_wait"] == 0
+
+
+def test_start_bits_defaults_to_base_bits_and_an_easy_start_makes_the_unbounded_walk_ahead_run_away():
+    # The real-node replay starts at regtest's powLimit while measuring hashrate against a target 64
+    # times lower. Unbounded walk-ahead (R0) runs away from that start on every seed; from the base
+    # target it only does on some. R1 holds the cap either way.
+    import json
+    from pathlib import Path
+    sc = json.load(open(Path(__file__).resolve().parent.parent / "scenarios" / "walk_ahead.json"))
+    sc["duration_s"] = 600
+    plain = sim.run_scenario(sc, "R1", 1).metrics
+    same = sim.run_scenario({**sc, "start_bits": sim.DEFAULT_BASE_BITS}, "R1", 1).metrics
+    assert plain == same
+    easy = {**sc, "base_bits": 0x20020000, "start_bits": 0x207FFFFF}
+    assert all(sim.run_scenario(easy, "R0", s).metrics["max_lead"] > 72 for s in (1, 2, 3))
+    assert all(sim.run_scenario(easy, "R1", s).metrics["max_lead"] == 72 for s in (1, 2, 3))

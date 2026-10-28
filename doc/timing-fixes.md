@@ -106,6 +106,23 @@ The chain does not stall: the lead stays at the cap, honest stall is at most 3s,
 
 **An earlier version of this replay showed a 25% lower block rate on the real nodes. The cause was a regtest artifact, not the rules.** LWMA multiplies a sum of targets by a sum of solvetimes in 256 bits (`next_target = sum_target * sum_time`) and does not saturate. Regtest's `powLimit` is 2^255, so whenever the chain sits near the limit and the window is slow (sum of weighted solvetimes above twice `k`), the product wraps past 2^256 and the target comes out far too hard: a window the Python port puts at 2.2 times the limit came out as 0.21, and the difficulty then swung between 1.0 and 0.005 of the limit. The simulator's base target is far below the limit and never wraps. Mainnet and testnet have a `powLimit` of 2^240, so the product cannot exceed 2^243 and cannot wrap there. The replay now takes its hashrate unit 64 times below the limit (`base_shift`). This is the same wrap the Python port reproduces on purpose (see `lwma.py`); I did not change it, since changing it would be a consensus change. The earlier fixed-schedule R0/R1 replays started at the limit too; their short runs may have touched the same wrap.
 
+R0 and R1 re-run with the lower base (`scenarios/walk_ahead.json`, 1200s, honest 1.0, attacker 0.2; real = `walk_ahead_modelled`, seeds 1-4; sim = seeds 1-5):
+
+| | blocks/h | attacker share | max lead | max honest stall |
+|---|---|---|---|---|
+| R1, real nodes | 633-675 | 9-15% | 72 | 3 |
+| R1, simulator | 540-585 | 13-23% | 72 | 3 |
+| R1, simulator started like the real nodes (below) | 573-642 | | 72 | 3 |
+| R0, real nodes | 2931-2979 | 41-42% | 7200 in all four | 3 |
+| R0, simulator | 525-3003 (median 822) | 16-40% | 178-7200, only seed 1 at 7200 | 0-3 |
+| R0, simulator started like the real nodes (below), 40 seeds | 2796-2925 | | 7200 in all 40 | |
+
+Far-future block (+300s) on real nodes: R0 accepts it (lead 300), R1 refuses it (lead 0, no stall).
+
+Why the real R0 runs disagree with simulator seeds 2-5: the replay starts differently from the simulator. Regtest starts at `powLimit` (2^255) while the replay measures hashrate against a target 64 times lower, so the first blocks come about 64 times faster than 6s until LWMA catches up. The simulator starts at the base target. R0's outcome depends on that start: from the base target the unbounded walk-ahead ran away in 11 of 40 seeds (lead 7200, about 2900 blocks/h); from the easy start it ran away in 40 of 40, which is what the real nodes show. The simulator takes the same start through `start_bits` in the scenario (default: the base bits, so existing results do not change). R1 holds the cap from either start, and the easy start explains most of the real R1 block-rate excess (573-642 against 540-585, versus 633-675 real). What is left, about 5%, I have not explained; it is within three or four seeds of noise.
+
+So the R0 figures above are not a typical R0 outcome: it is bimodal and depends on the starting difficulty. Whether the attack runs away or only gets part of the way, R0 has no bound and R1 has one.
+
 Not done: an activation height, a rehearsal across it with old and new binaries, and any test on testnet.
 
 ## What this does not fix
@@ -118,6 +135,6 @@ Height 145000 is a separate, existing change: LWMA retargets every block from th
 
 - No network latency or orphaning; attackers stamp as far ahead as allowed but do not otherwise adapt.
 - Five seeds at most (three for the cap sweep), and one for the walk-ahead table.
-- Real-node confirmation covers R0 and R1 only, far-future and walk-ahead scenarios, 1200s (`confirm_regtest.py`).
-- Peer-offset clock skew and merge-mining job staleness are not modelled.
+- Real-node confirmation covers R0, R1 and R1e, far-future and walk-ahead scenarios, 1200s (`confirm_regtest.py`). The replays start from an easy target, not the steady state, so early minutes are a transient.
+- Peer-offset clock skew is not modelled. Merge-mining job staleness is (`job_refresh_s`) in the simulator only, not on real nodes.
 - A rehearsal with one old and one new binary across the activation height has not been done.
