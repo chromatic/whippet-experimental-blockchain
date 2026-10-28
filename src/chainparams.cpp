@@ -75,6 +75,7 @@ private:
     Consensus::Params minSpacingConsensus;
     Consensus::Params driftCapConsensus;
     Consensus::Params auxpowConsensus;
+    Consensus::Params easingConsensus;
 public:
     CMainParams() {
         strNetworkID = "main";
@@ -175,6 +176,14 @@ public:
         auxpowConsensus.fAllowLegacyBlocks = false;
         auxpowConsensus.fLWMADifficultyCalculation = true;
 
+        // Hard fork: from MAINNET_EASING_HEIGHT LWMA eases the target while the chain waits for a block
+        // (see nEasingTau in consensus/params.h). Nothing else changes in this row.
+        static_assert(MAINNET_EASING_HEIGHT > 371337, "the easing row must sit above the 371337 row");
+        easingConsensus = auxpowConsensus;
+        easingConsensus.nHeightEffective = MAINNET_EASING_HEIGHT;
+        easingConsensus.nEasingFreeWait = 6 * easingConsensus.nPowTargetSpacing;
+        easingConsensus.nEasingTau = MAINNET_EASING_TAU;
+
         // Assemble the binary search tree of consensus parameters
         pConsensusRoot = &digishieldConsensus;
         digishieldConsensus.pLeft = &consensus;
@@ -182,6 +191,7 @@ public:
         chainIdFixConsensus.pRight = &minSpacingConsensus;
         minSpacingConsensus.pRight = &driftCapConsensus;
         driftCapConsensus.pRight = &auxpowConsensus;
+        auxpowConsensus.pRight = &easingConsensus;
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.
@@ -203,6 +213,7 @@ public:
         minSpacingConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         driftCapConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         auxpowConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
+        easingConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
 
         assert(consensus.hashGenesisBlock == uint256S("0x863714e1c1a15526a0081a35097c56e28dbd43ef97f76fec0ccd5a7510326292"));
         assert(genesis.hashMerkleRoot == uint256S("0x7bef007a121450dc80c102774fe3d97803761b75820cb7af56344868897c916e"));

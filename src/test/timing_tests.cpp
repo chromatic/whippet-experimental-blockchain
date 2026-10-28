@@ -417,12 +417,35 @@ BOOST_AUTO_TEST_CASE(easing_is_off_for_the_plain_profiles)
     BOOST_CHECK_EQUAL(Params().GetConsensus(145001).nEasingTau, 0);
 }
 
-BOOST_AUTO_TEST_CASE(easing_is_off_on_mainnet_and_testnet)
+BOOST_AUTO_TEST_CASE(easing_is_off_on_testnet)
 {
-    for (const std::string& chain : {CBaseChainParams::MAIN, CBaseChainParams::TESTNET}) {
-        SelectParams(chain);
-        BOOST_CHECK_EQUAL(Params().GetConsensus(400000).nEasingTau, 0);
-    }
+    SelectParams(CBaseChainParams::TESTNET);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(400000).nEasingTau, 0);
+    SelectParams(CBaseChainParams::REGTEST);
+}
+
+BOOST_AUTO_TEST_CASE(mainnet_easing_starts_at_its_height_and_changes_nothing_else)
+{
+    SelectParams(CBaseChainParams::MAIN);
+    BOOST_CHECK_EQUAL(MAINNET_EASING_HEIGHT, 600000);
+    BOOST_CHECK_EQUAL(MAINNET_EASING_TAU, 30);
+
+    const Consensus::Params& before = Params().GetConsensus(MAINNET_EASING_HEIGHT - 1);
+    const Consensus::Params& after = Params().GetConsensus(MAINNET_EASING_HEIGHT);
+    BOOST_CHECK_EQUAL(before.nEasingTau, 0);
+    BOOST_CHECK_EQUAL(before.nEasingFreeWait, 0);
+    BOOST_CHECK_EQUAL(after.nEasingTau, 30);
+    BOOST_CHECK_EQUAL(after.nEasingFreeWait, 36);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(MAINNET_EASING_HEIGHT + 1000000).nEasingTau, 30);
+
+    // The row inherits the 371337 row: LWMA, floor, drift cap and AuxPoW rules are unchanged.
+    BOOST_CHECK(after.fLWMADifficultyCalculation);
+    BOOST_CHECK_EQUAL(after.nMinBlockSpacing, before.nMinBlockSpacing);
+    BOOST_CHECK_EQUAL(after.nMaxFutureDrift, before.nMaxFutureDrift);
+    BOOST_CHECK_EQUAL(after.nAuxpowChainId, before.nAuxpowChainId);
+    BOOST_CHECK_EQUAL(after.fAllowLegacyBlocks, before.fAllowLegacyBlocks);
+    BOOST_CHECK_EQUAL(after.nEveryBlockRetargetHeight, before.nEveryBlockRetargetHeight);
+    BOOST_CHECK(after.powLimit == before.powLimit);
     SelectParams(CBaseChainParams::REGTEST);
 }
 

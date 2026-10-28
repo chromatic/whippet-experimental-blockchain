@@ -39,6 +39,15 @@ static const int64_t MAX_FUTURE_DRIFT_CAPPED = 72;
  */
 static const int MAINNET_DRIFT_CAP_HEIGHT = 360000;
 
+/**
+ * Hard fork: from MAINNET_EASING_HEIGHT the LWMA target is eased for a candidate block stamped more
+ * than 6 block times after its parent: target * 2^((gap - 36s) / MAINNET_EASING_TAU). Old nodes
+ * require the old nBits and will not follow the new chain, so every miner and node must upgrade
+ * before this height. It must lie above the 371337 row in chainparams.cpp.
+ */
+static const int MAINNET_EASING_HEIGHT = 600000;
+static const int64_t MAINNET_EASING_TAU = 30;
+
 /** Flags for nSequence and nLockTime locks */
 enum {
     /* Interpret sequence numbers as relative lock-time constraints. */
