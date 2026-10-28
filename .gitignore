@@ -8,6 +8,7 @@ src/whippet-tx
 src/qt/whippet-qt
 src/test/test_whippet
 src/test/test_whippet_fuzzy
+src/test/timing_ref
 src/qt/test/test_whippet-qt
 src/bench/bench_whippet
 

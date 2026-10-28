@@ -1,0 +1,8 @@
+{
+  "name": "steady",
+  "duration_s": 3600,
+  "floor": 4,
+  "base_height": 145000,
+  "rules": ["R0", "R1"],
+  "miners": [{"name": "honest", "hashrate": 3.0, "clock_offset": 0, "strategy": "honest"}]
+}

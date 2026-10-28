@@ -10,7 +10,12 @@
 #include <stdint.h>
 #include <vector>
 
-static const int64_t DEFAULT_MAX_TIME_ADJUSTMENT = 70 * 60;
+/**
+ * Peers may move a node's idea of the time by at most this much. It was 70 minutes; blocks may now be
+ * only 72 seconds ahead, so a larger adjustment would let peers talk a node into accepting or
+ * refusing blocks it should not (see MAX_FUTURE_DRIFT_CAPPED).
+ */
+static const int64_t DEFAULT_MAX_TIME_ADJUSTMENT = 36;
 
 class CNetAddr;
 

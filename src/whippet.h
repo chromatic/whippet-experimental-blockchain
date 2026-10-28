@@ -3,12 +3,16 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "amount.h"
+#include "arith_uint256.h"
 #include "chain.h"
 #include "chainparams.h"
 
 bool AllowDigishieldMinDifficultyForBlock(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params);
 CAmount GetWhippetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams, uint256 prevHash);
-unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int64_t nLastRetargetTime, const Consensus::Params& params);
+/** nCandidateTime is the timestamp of the block being validated; only the LWMA easing term reads it (0 = none). */
+unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int64_t nLastRetargetTime, const Consensus::Params& params, int64_t nCandidateTime = 0);
+/** Multiply `target` by 2^(extra / tau) in integer arithmetic, clamped to powLimit. Exposed for tests. */
+arith_uint256 EaseTarget(const arith_uint256& target, int64_t extra, int64_t tau, const arith_uint256& powLimit);
 
 /**
  * Check proof-of-work of a block header, taking auxpow into account.

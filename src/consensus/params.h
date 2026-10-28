@@ -70,6 +70,17 @@ struct Params {
     int64_t nPowTargetTimespan;
     /** Minimum seconds between consecutive block timestamps; 0 disables the rule (e.g. for fast tests). */
     int64_t nMinBlockSpacing;
+    /** Maximum seconds a block timestamp may lie ahead of the node's adjusted time. */
+    int64_t nMaxFutureDrift;
+    /**
+     * LWMA easing while waiting (hard-fork candidate "R1e", regtest profile only for now): a candidate
+     * more than nEasingFreeWait seconds after its parent gets a target multiplied by
+     * 2^((gap - nEasingFreeWait) / nEasingTau). 0 for nEasingTau disables it.
+     */
+    /** From this parent height LWMA retargets every block (not every DifficultyAdjustmentInterval()); regtest profiles lower it. */
+    int nEveryBlockRetargetHeight = 145000;
+    int64_t nEasingTau = 0;
+    int64_t nEasingFreeWait = 0;
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
 
     /** Whippet-specific parameters */

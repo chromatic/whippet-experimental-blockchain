@@ -73,6 +73,7 @@ private:
     Consensus::Params digishieldConsensus;
     Consensus::Params chainIdFixConsensus;
     Consensus::Params minSpacingConsensus;
+    Consensus::Params driftCapConsensus;
     Consensus::Params auxpowConsensus;
 public:
     CMainParams() {
@@ -93,6 +94,7 @@ public:
         consensus.nPowTargetTimespan = 4 * 60 * 60; // pre-digishield: 4 hours
         consensus.nPowTargetSpacing = 6; // 6 seconds
         consensus.nMinBlockSpacing = MIN_CONSENSUS_BLOCK_SPACING;
+        consensus.nMaxFutureDrift = 2 * 60 * 60;
         consensus.fDigishieldDifficultyCalculation = false;
         consensus.fLWMADifficultyCalculation = false;
         consensus.nCoinbaseMaturity = 30;
@@ -159,8 +161,16 @@ public:
         minSpacingConsensus.nHeightEffective = 100000;
         minSpacingConsensus.nMinBlockSpacing = 4;
 
+        // Soft fork: from MAINNET_DRIFT_CAP_HEIGHT a block may be at most 72s (12 block times) ahead
+        // of the node's adjusted time instead of 2 hours. Nothing else changes in this row.
+        static_assert(MAINNET_DRIFT_CAP_HEIGHT > 100000 && MAINNET_DRIFT_CAP_HEIGHT < 371337,
+                      "the drift cap row must sit between the 100000 and 371337 rows");
+        driftCapConsensus = minSpacingConsensus;
+        driftCapConsensus.nHeightEffective = MAINNET_DRIFT_CAP_HEIGHT;
+        driftCapConsensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
+
         // Blocks 371337+ are AuxPoW with LWMA
-        auxpowConsensus = minSpacingConsensus;
+        auxpowConsensus = driftCapConsensus;
         auxpowConsensus.nHeightEffective = 371337;
         auxpowConsensus.fAllowLegacyBlocks = false;
         auxpowConsensus.fLWMADifficultyCalculation = true;
@@ -170,7 +180,8 @@ public:
         digishieldConsensus.pLeft = &consensus;
         digishieldConsensus.pRight = &chainIdFixConsensus;
         chainIdFixConsensus.pRight = &minSpacingConsensus;
-        minSpacingConsensus.pRight = &auxpowConsensus;
+        minSpacingConsensus.pRight = &driftCapConsensus;
+        driftCapConsensus.pRight = &auxpowConsensus;
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.
@@ -190,6 +201,7 @@ public:
         digishieldConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         chainIdFixConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         minSpacingConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
+        driftCapConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         auxpowConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
 
         assert(consensus.hashGenesisBlock == uint256S("0x863714e1c1a15526a0081a35097c56e28dbd43ef97f76fec0ccd5a7510326292"));
@@ -269,15 +281,21 @@ public:
         consensus.nMajorityRejectBlockOutdated = 750;
         consensus.nMajorityWindow = 1000;
         // BIP34 is never enforced in Whippet v2 blocks, so we enforce from v3
-        consensus.BIP34Height = 708658;
-        consensus.BIP34Hash = uint256S("0x21b8b97dcdb94caa67c7f8f6dbf22e61e0cfe0e46e1fff3528b22864659e9b38");
-        consensus.BIP65Height = 1854705; // 955bd496d23790aba1ecfacb722b089a6ae7ddabaedf7d8fb0878f48308a71f9
-        consensus.BIP66Height = 708658; // 21b8b97dcdb94caa67c7f8f6dbf22e61e0cfe0e46e1fff3528b22864659e9b38 - this is the last block that could be v2, 1900 blocks past the last v2 block
+        // Testnet is a fresh chain whose miners only produce current-version
+        // blocks, so BIP34/65/66 are enforced from the first block after genesis.
+        consensus.BIP34Height = 1;
+        consensus.BIP34Hash = uint256();
+        consensus.BIP65Height = 1;
+        consensus.BIP66Height = 1;
         consensus.UAPMintHeight = 82000; // OP_MINT/OP_MINT_TRANSFER activation (v2 origin covenant); tracks mainnet deliberately -- see chainparams_tests
-        consensus.powLimit = uint256S("0x00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"); // ~uint256(0) >> 20;
+        consensus.powLimit = uint256S("0x0000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"); // Allow easier initial mining; must admit the genesis nBits
         consensus.nPowTargetTimespan = 4 * 60 * 60; // pre-digishield: 4 hours
         consensus.nPowTargetSpacing = 6; // 6 seconds
-        consensus.nMinBlockSpacing = MIN_CONSENSUS_BLOCK_SPACING;
+        // Testnet is a fresh chain, so it starts with the rules mainnet reaches at height 100000 and at
+        // the soft fork: a floor below the 6s target (else LWMA never sees a fast block and cannot
+        // raise difficulty) and blocks at most 72s ahead of the adjusted time.
+        consensus.nMinBlockSpacing = 4;
+        consensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
         consensus.fPowNoRetargeting = false;
         consensus.nRuleChangeActivationThreshold = 2880; // 2 days (note this is significantly lower than Bitcoin standard)
         consensus.nMinerConfirmationWindow = 10080; // 60 * 24 * 7 = 10,080 blocks, or one week
@@ -297,10 +315,11 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].nTimeout = 0; // Disabled
 
         // The best chain should have at least this much work.
-        consensus.nMinimumChainWork = uint256S("0x00000000000000000000000000000000000000000000000000540f2f62ff9a26"); // 5,900,000
+        // Use zero for a new chain so nodes exit IBD and relay blocks immediately.
+        consensus.nMinimumChainWork = uint256S("0x0");
 
-        // By default assume that the signatures in ancestors of this block are valid.
-        consensus.defaultAssumeValid = uint256S("0x199bea6a442310589cbb50a193a30b097c228bd5a0f21af21e4e53dd57c382d3"); // 5,900,000
+        // Verify every signature on a new chain.
+        consensus.defaultAssumeValid = uint256S("0x00");
 
         // AuxPoW parameters
         consensus.nAuxpowChainId = 0x0062; // 98 - Josh Wise!
@@ -357,19 +376,19 @@ public:
         nDefaultPort = 43666;
         nPruneAfterHeight = 1000;
 
-        genesis = CreateGenesisBlock(1767254400, 2684381204, 0x1f00ffff, 1, 76 * COIN);
+        genesis = CreateGenesisBlock("WhippetTestnet", CScript() << ParseHex("040184710fa689ad5023690c80f3a49c8f13f8d45b8c857fbcbc8bc4a8e4d3eb4b10f4d4604fa08dce601aaf0f470216fe1b51850b4acf21b179c45070ac7b03a9") << OP_CHECKSIG,
+                                     1792886400, 48974, 0x1f00ffff, 1, 76 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         digishieldConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         chainIdFixConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         minSpacingConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         minDifficultyConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         auxpowConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
-        assert(consensus.hashGenesisBlock == uint256S("0x863714e1c1a15526a0081a35097c56e28dbd43ef97f76fec0ccd5a7510326292"));
-        assert(genesis.hashMerkleRoot == uint256S("0x7bef007a121450dc80c102774fe3d97803761b75820cb7af56344868897c916e"));
+        assert(consensus.hashGenesisBlock == uint256S("0xcf82096be3651f0f0381729e8a49b7643185b1fbabcacf45c3e1f5256fc394a2"));
+        assert(genesis.hashMerkleRoot == uint256S("0xbdad58d4b6e454c5dc28f8df0840afe3a50dc8d922b6f3bfd485c9520ed0dfc9"));
 
         vSeeds.clear();
-        // nodes with support for servicebits filtering should be at the top
-        vSeeds.push_back(CDNSSeedData("ifdogethenwow.com", "whippet-seed.ifdogethenwow.com"));
+        // No testnet DNS seed yet; connect with -addnode/-connect.
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1, 113); // Testnet addresses start with 'n'
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,196); // 0xc4
@@ -377,7 +396,7 @@ public:
         base58Prefixes[EXT_PUBLIC_KEY] = boost::assign::list_of(0x04)(0x35)(0x87)(0xcf).convert_to_container<std::vector<unsigned char> >();
         base58Prefixes[EXT_SECRET_KEY] = boost::assign::list_of(0x04)(0x35)(0x83)(0x94).convert_to_container<std::vector<unsigned char> >();
 
-        vFixedSeeds = std::vector<SeedSpec6>(pnSeed6_test, pnSeed6_test + ARRAYLEN(pnSeed6_test));
+        vFixedSeeds.clear(); // no testnet fixed seeds yet
 
         fMiningRequiresPeers = true;
         fDefaultConsistencyChecks = false;
@@ -386,32 +405,14 @@ public:
 
         checkpointData = (CCheckpointData) {
             boost::assign::map_list_of
-            ( 0, uint256S("0x00000a076eeebd27edf98e707ee8648bcd1706cec1f1d21179a45b00916ca208"))
-            ( 483173, uint256S("0xa804201ca0aceb7e937ef7a3c613a9b7589245b10cc095148c4ce4965b0b73b5"))
-            ( 591117, uint256S("0x5f6b93b2c28cedf32467d900369b8be6700f0649388a7dbfd3ebd4a01b1ffad8"))
-            ( 658924, uint256S("0xed6c8324d9a77195ee080f225a0fca6346495e08ded99bcda47a8eea5a8a620b"))
-            ( 703635, uint256S("0x839fa54617adcd582d53030a37455c14a87a806f6615aa8213f13e196230ff7f"))
-            ( 1000000, uint256S("0x1fe4d44ea4d1edb031f52f0d7c635db8190dc871a190654c41d2450086b8ef0e"))
-            ( 1202214, uint256S("0xa2179767a87ee4e95944703976fee63578ec04fa3ac2fc1c9c2c83587d096977"))
-            ( 1250000, uint256S("0xb46affb421872ca8efa30366b09694e2f9bf077f7258213be14adb05a9f41883"))
-            ( 1500000, uint256S("0x0caa041b47b4d18a4f44bdc05cef1a96d5196ce7b2e32ad3e4eb9ba505144917"))
-            ( 1750000, uint256S("0x8042462366d854ad39b8b95ed2ca12e89a526ceee5a90042d55ebb24d5aab7e9"))
-            ( 2000000, uint256S("0xd6acde73e1b42fc17f29dcc76f63946d378ae1bd4eafab44d801a25be784103c"))
-            ( 2250000, uint256S("0xc4342ae6d9a522a02e5607411df1b00e9329563ef844a758d762d601d42c86dc"))
-            ( 2500000, uint256S("0x3a66ec4933fbb348c9b1889aaf2f732fe429fd9a8f74fee6895eae061ac897e2"))
-            ( 2750000, uint256S("0x473ea9f625d59f534ffcc9738ffc58f7b7b1e0e993078614f5484a9505885563"))
-            ( 3062910, uint256S("0x113c41c00934f940a41f99d18b2ad9aefd183a4b7fe80527e1e6c12779bd0246"))
-            ( 3286675, uint256S("0x07fef07a255d510297c9189dc96da5f4e41a8184bc979df8294487f07fee1cf3"))
-            ( 3445426, uint256S("0x70574db7856bd685abe7b0a8a3e79b29882620645bd763b01459176bceb58cd1"))
-            ( 3976284, uint256S("0xaf23c3e750bb4f2ce091235f006e7e4e2af453d4c866282e7870471dcfeb4382"))
-            ( 5900000, uint256S("0x199bea6a442310589cbb50a193a30b097c228bd5a0f21af21e4e53dd57c382d3"))
+            ( 0, uint256S("0xcf82096be3651f0f0381729e8a49b7643185b1fbabcacf45c3e1f5256fc394a2"))
         };
 
         chainTxData = ChainTxData{
-            // Data as of block 199bea6a442310589cbb50a193a30b097c228bd5a0f21af21e4e53dd57c382d3 (height 5,900,000)
-            1703511130, // * UNIX timestamp of last checkpoint block
-            7391928,    // * total number of transactions between genesis and last checkpoint
-            0.04        // * estimated number of transactions per second after that timestamp
+            // Fresh chain: no history beyond genesis.
+            1792886400, // * UNIX timestamp of genesis
+            0,          // * total number of transactions between genesis and last checkpoint
+            0.0         // * estimated number of transactions per second after that timestamp
         };
 
     }
@@ -426,6 +427,10 @@ private:
     Consensus::Params digishieldConsensus;
     Consensus::Params auxpowConsensus;
     Consensus::Params chainIdFixConsensus;
+    // Parameter sets as constructed, saved when a timing profile is first applied.
+    Consensus::Params pristine[4];
+    bool fTimingProfileApplied = false;
+    Consensus::Params driftCapConsensus; //!< extra row for -timingdriftcapheight
 public:
     CRegTestParams() {
         strNetworkID = "regtest";
@@ -442,6 +447,7 @@ public:
         consensus.nPowTargetTimespan = 4 * 60 * 60; // pre-digishield: 4 hours
         consensus.nPowTargetSpacing = 1; // regtest: 1 second blocks
         consensus.nMinBlockSpacing = 0; // Disable timestamp spacing rule for automated QA/regtest
+        consensus.nMaxFutureDrift = 2 * 60 * 60;
         consensus.fDigishieldDifficultyCalculation = false;
         consensus.fLWMADifficultyCalculation = false;
         consensus.fPowAllowMinDifficultyBlocks = true;
@@ -549,6 +555,69 @@ public:
     {
         chainIdFixConsensus.nHeightEffective = nHeight;
     }
+
+    /**
+     * Rehearse the mainnet soft fork on regtest: from nHeight on, blocks may be at most
+     * MAX_FUTURE_DRIFT_CAPPED ahead of adjusted time, as in the driftCapConsensus row of mainnet.
+     * Nothing else changes. 0 removes the row. Call it before ApplyTimingProfile and again after.
+     * @throws std::runtime_error unless 20 < nHeight < the chain id fix height.
+     */
+    void ApplyDriftCapHeight(int nHeight)
+    {
+        // Undo an earlier call: the chain id fix row inherits the drift of the row before it.
+        auxpowConsensus.pRight = &chainIdFixConsensus;
+        chainIdFixConsensus.nMaxFutureDrift = auxpowConsensus.nMaxFutureDrift;
+        if (nHeight == 0)
+            return;
+        if (nHeight <= auxpowConsensus.nHeightEffective || nHeight >= chainIdFixConsensus.nHeightEffective)
+            throw std::runtime_error(strprintf("%s: -timingdriftcapheight must lie between %d and %d.", __func__,
+                                               auxpowConsensus.nHeightEffective, chainIdFixConsensus.nHeightEffective));
+        driftCapConsensus = auxpowConsensus;
+        driftCapConsensus.nHeightEffective = nHeight;
+        driftCapConsensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
+        driftCapConsensus.pLeft = NULL;
+        driftCapConsensus.pRight = &chainIdFixConsensus;
+        auxpowConsensus.pRight = &driftCapConsensus;
+        chainIdFixConsensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
+    }
+
+    /**
+     * Make regtest run Whippet's block timing rules (see -timingprofile).
+     * An empty profile restores the parameters as constructed.
+     * @throws std::runtime_error for an unknown profile.
+     */
+    void ApplyTimingProfile(const std::string& profile, int64_t nFloor, bool fMinDifficulty, int64_t nEasingTau)
+    {
+        Consensus::Params* sets[4] = {&consensus, &digishieldConsensus, &auxpowConsensus, &chainIdFixConsensus};
+        if (profile != "" && profile != "whippet" && profile != "scaled-drift" && profile != "scaled-drift-easing")
+            throw std::runtime_error(strprintf("%s: Unknown -timingprofile %s.", __func__, profile));
+        if (fTimingProfileApplied) {
+            for (int i = 0; i < 4; i++)
+                *sets[i] = pristine[i];
+            fTimingProfileApplied = false;
+        }
+        if (profile.empty())
+            return;
+        for (int i = 0; i < 4; i++)
+            pristine[i] = *sets[i];
+        fTimingProfileApplied = true;
+        for (Consensus::Params* p : sets) {
+            p->nPowTargetSpacing = 6;
+            p->nPowTargetTimespan = 60; // LWMA window of 10 blocks, as testnet
+            p->nMinBlockSpacing = nFloor;
+            p->fLWMADifficultyCalculation = true;
+            p->fDigishieldDifficultyCalculation = false;
+            p->fPowNoRetargeting = false;
+            p->fPowAllowMinDifficultyBlocks = fMinDifficulty;
+            if (profile == "scaled-drift" || profile == "scaled-drift-easing")
+                p->nMaxFutureDrift = 12 * p->nPowTargetSpacing;
+            if (profile == "scaled-drift-easing") {
+                p->nEasingFreeWait = 6 * p->nPowTargetSpacing;
+                p->nEasingTau = nEasingTau;
+                p->nEveryBlockRetargetHeight = 0; // regtest chains are far below 145000 and easing needs a retarget on every block
+            }
+        }
+    }
 };
 static CRegTestParams regTestParams;
 
@@ -588,6 +657,17 @@ CChainParams& Params(const std::string& chain)
 void SelectParams(const std::string& network)
 {
     SelectBaseParams(network);
+    // -timingprofile is a regtest-only test hook.
+    const std::string profile = GetArg("-timingprofile", "");
+    // -timingdriftcapheight likewise: it rehearses the mainnet drift cap on regtest.
+    const int driftCapHeight = GetArg("-timingdriftcapheight", 0);
+    if (network == CBaseChainParams::REGTEST) {
+        regTestParams.ApplyDriftCapHeight(0);
+        regTestParams.ApplyTimingProfile(profile, GetArg("-timingfloor", 4), GetBoolArg("-timingmindiff", false), GetArg("-timingeasingtau", 30));
+        regTestParams.ApplyDriftCapHeight(driftCapHeight);
+    } else if (!profile.empty() || driftCapHeight != 0) {
+        throw std::runtime_error("-timingprofile and -timingdriftcapheight are only valid with -regtest.");
+    }
     pCurrentParams = &Params(network);
 }
 
