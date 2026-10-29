@@ -10,7 +10,9 @@
 #include "pow.h"
 #include "uint256.h"
 
+#include <algorithm>
 #include <stdint.h>
+#include <string.h>
 
 #include <boost/thread.hpp>
 
@@ -156,9 +158,16 @@ bool CBlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockF
     }
     batch.Write(DB_LAST_BLOCK, nLastFile);
     for (std::vector<const CBlockIndex*>::const_iterator it=blockinfo.begin(); it != blockinfo.end(); it++) {
-        batch.Write(std::make_pair(DB_BLOCK_INDEX, (*it)->GetBlockHash()), CDiskBlockIndex(*it));
+        batch.Write(std::make_pair(DB_BLOCK_INDEX, (*it)->GetBlockHash()), CDiskBlockIndex(*it, fWriteSlimIndex));
     }
-    return WriteBatch(batch, true);
+    if (!WriteBatch(batch, true))
+        return false;
+    if (fCompactAfterWrite) {
+        fCompactAfterWrite = false;
+        LogPrintf("Compacting the block index after converting it to the slim format\n");
+        CompactAll();
+    }
+    return true;
 }
 
 bool CBlockTreeDB::ReadTxIndex(const uint256 &txid, CDiskTxPos &pos) {
@@ -190,6 +199,15 @@ bool CBlockTreeDB::LoadBlockIndexGuts(std::function<CBlockIndex*(const uint256&)
 
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
+    nLegacyEntries = 0;
+    nLegacyBytes = 0;
+    nSlimBytes = 0;
+
+    // Slim entries only carry a prefix of hashPrev, so their parents are
+    // resolved after every entry is loaded.
+    std::vector<std::pair<CBlockIndex*, uint32_t> > vSlim;
+    std::vector<std::pair<int, CBlockIndex*> > vByHeight;
+
     // Load mapBlockIndex
     while (pcursor->Valid()) {
         boost::this_thread::interruption_point();
@@ -198,8 +216,7 @@ bool CBlockTreeDB::LoadBlockIndexGuts(std::function<CBlockIndex*(const uint256&)
             CDiskBlockIndex diskindex;
             if (pcursor->GetValue(diskindex)) {
                 // Construct block index object
-                CBlockIndex* pindexNew = insertBlockIndex(diskindex.GetBlockHash());
-                pindexNew->pprev          = insertBlockIndex(diskindex.hashPrev);
+                CBlockIndex* pindexNew = insertBlockIndex(key.second);
                 pindexNew->nHeight        = diskindex.nHeight;
                 pindexNew->nFile          = diskindex.nFile;
                 pindexNew->nDataPos       = diskindex.nDataPos;
@@ -211,7 +228,19 @@ bool CBlockTreeDB::LoadBlockIndexGuts(std::function<CBlockIndex*(const uint256&)
                 pindexNew->nNonce         = diskindex.nNonce;
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
-                pindexNew->dDifficulty    = diskindex.dDifficulty;
+                pindexNew->dDifficulty    = diskindex.fSlim ? GetDifficultyFromBits(pindexNew->nBits) : diskindex.dDifficulty;
+
+                if (diskindex.fSlim) {
+                    uint32_t prefix;
+                    memcpy(&prefix, diskindex.hashPrev.begin(), sizeof(prefix));
+                    vSlim.push_back(std::make_pair(pindexNew, prefix));
+                    nSlimBytes += pcursor->GetValueSize();
+                } else {
+                    pindexNew->pprev = insertBlockIndex(diskindex.hashPrev);
+                    nLegacyEntries++;
+                    nLegacyBytes += pcursor->GetValueSize();
+                }
+                vByHeight.push_back(std::make_pair(pindexNew->nHeight, pindexNew));
 
                 /* Bitcoin checks the PoW here.  We don't do this because
                    the CDiskBlockIndex does not contain the auxpow.
@@ -224,6 +253,31 @@ bool CBlockTreeDB::LoadBlockIndexGuts(std::function<CBlockIndex*(const uint256&)
             }
         } else {
             break;
+        }
+    }
+
+    if (!vSlim.empty()) {
+        std::sort(vByHeight.begin(), vByHeight.end());
+        for (const auto& item : vSlim) {
+            CBlockIndex* pindex = item.first;
+            if (pindex->nHeight == 0)
+                continue;
+            auto range = std::equal_range(vByHeight.begin(), vByHeight.end(),
+                std::make_pair(pindex->nHeight - 1, (CBlockIndex*)NULL),
+                [](const std::pair<int, CBlockIndex*>& a, const std::pair<int, CBlockIndex*>& b) { return a.first < b.first; });
+            CBlockIndex* pprev = NULL;
+            for (auto it = range.first; it != range.second; ++it) {
+                uint32_t candidate;
+                memcpy(&candidate, it->second->phashBlock->begin(), sizeof(candidate));
+                if (candidate == item.second) {
+                    if (pprev)
+                        return error("LoadBlockIndex() : ambiguous parent prefix at height %d", pindex->nHeight);
+                    pprev = it->second;
+                }
+            }
+            if (!pprev)
+                return error("LoadBlockIndex() : no parent found at height %d", pindex->nHeight);
+            pindex->pprev = pprev;
         }
     }
 

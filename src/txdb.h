@@ -124,6 +124,23 @@ public:
     bool WriteBlockIndexVersion(int nVersion);
     bool ReadBlockIndexVersion(int &nVersion);
     bool LoadBlockIndexGuts(std::function<CBlockIndex*(const uint256&)> insertBlockIndex);
+
+    //! Write block index entries in the slim format (-slimblockindex). Reading accepts both formats.
+    void SetSlimBlockIndex(bool fSlim) { fWriteSlimIndex = fSlim; }
+    bool WritesSlimBlockIndex() const { return fWriteSlimIndex; }
+
+    //! Compact the database after the next WriteBatchSync(). Used once after converting legacy entries,
+    //! whose old copies would otherwise stay on disk until LevelDB gets round to compacting them.
+    void CompactAfterNextWrite() { fCompactAfterWrite = true; }
+
+    //! Statistics from the last LoadBlockIndexGuts() call.
+    size_t nLegacyEntries = 0;
+    uint64_t nLegacyBytes = 0;
+    uint64_t nSlimBytes = 0;
+
+private:
+    bool fWriteSlimIndex = false;
+    bool fCompactAfterWrite = false;
 };
 
 #endif // BITCOIN_TXDB_H

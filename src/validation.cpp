@@ -3844,6 +3844,22 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
     if (!pblocktree->LoadBlockIndexGuts(InsertBlockIndex))
         return false;
 
+    LogPrintf("%s: block index entries: %u legacy (%u value bytes), %u slim (%u value bytes)\n", __func__,
+        (unsigned)pblocktree->nLegacyEntries, (unsigned)pblocktree->nLegacyBytes,
+        (unsigned)(mapBlockIndex.size() - pblocktree->nLegacyEntries), (unsigned)pblocktree->nSlimBytes);
+
+    // With -slimblockindex, rewrite every legacy entry in the slim format once, through the normal
+    // dirty-set flush. Entries are never converted back; reading accepts both formats.
+    if (pblocktree->WritesSlimBlockIndex() && pblocktree->nLegacyEntries > 0) {
+        BOOST_FOREACH(const PAIRTYPE(uint256, CBlockIndex*)& item, mapBlockIndex)
+        {
+            setDirtyBlockIndex.insert(item.second);
+        }
+        pblocktree->CompactAfterNextWrite();
+        LogPrintf("%s: queued %u legacy block index entries for rewrite in slim format\n", __func__,
+            (unsigned)pblocktree->nLegacyEntries);
+    }
+
     boost::this_thread::interruption_point();
 
     // Calculate nChainWork

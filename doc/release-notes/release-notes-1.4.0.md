@@ -46,7 +46,8 @@ per block) height 371,337 is about two weeks after the 1.4.0 release and
 height 600,000 about a month. The rate is not constant, so treat these as
 rough: watch `getblockcount`, not the calendar.
 
-There is no wallet or chain-data migration; the on-disk format is unchanged.
+There is no wallet or chain-data migration. The on-disk format is unchanged
+unless you opt in to `-slimblockindex` (see Experimental, below).
 
 
 What changed in block timestamps
@@ -139,6 +140,25 @@ The `generate` RPC stops early because `maxtries` (1,000,000 hashes) is
 shared by the whole call; pass `maxtries` as the second argument to mine
 more blocks at one go.
 
+
+Experimental: `-slimblockindex`
+=================================
+
+Off by default. With `-slimblockindex=1` the block index (`blocks/index`) is
+stored in a smaller format: the parent hash is cut to a 4-byte prefix and a
+cached difficulty that nothing reads is dropped. On a 170,000-block mainnet
+index the entry data shrank by about a third and the directory by about a
+quarter (25 MB to 19.6 MB). Existing entries are converted once at startup
+and the database is compacted afterwards. A reindex is not needed.
+
+- It is **one way**: once a node has written slim entries, versions before
+  1.4.0 cannot read its block index without `-reindex`. Turning the option
+  off again keeps the slim entries and still works with 1.4.0.
+- Two blocks at the same height whose hashes share the first 4 bytes would
+  stop the node starting ("ambiguous parent prefix"); the chance is about 1
+  in 4 billion per pair of forked blocks.
+- Block and undo files (`blk*.dat`, `rev*.dat`) and the chainstate are not
+  touched. With the option off the block index is written exactly as in 1.3.1.
 
 Regtest options
 ================

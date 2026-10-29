@@ -13,6 +13,7 @@
 #include "pow.h"
 #include "tinyformat.h"
 #include "uint256.h"
+#include "utilstrencodings.h"
 
 #include <vector>
 
@@ -378,16 +379,29 @@ double GetDifficultyFromBits(unsigned int nBits);
 class CDiskBlockIndex : public CBlockIndex
 {
 public:
+    //! Full hash when read from a legacy entry; only the first
+    //! SLIM_PREV_BYTES bytes are valid when fSlim is set.
     uint256 hashPrev;
+    //! True if this entry was read in (or will be written in) the slim format.
+    bool fSlim;
+
+    //! Tag stored in place of the client version to mark slim entries.
+    static const int SLIM_FORMAT_TAG = 0x7e000001;
+    static const unsigned int SLIM_PREV_BYTES = 4;
 
     CDiskBlockIndex() {
         hashPrev = uint256();
+        fSlim = false;
     }
 
-    explicit CDiskBlockIndex(const CBlockIndex* pindex) : CBlockIndex(*pindex) {
+    //! fSlimIn selects the slim format (-slimblockindex); otherwise the entry is byte-identical to 1.3.1.
+    explicit CDiskBlockIndex(const CBlockIndex* pindex, bool fSlimIn = false) : CBlockIndex(*pindex) {
         hashPrev = (pprev ? pprev->GetBlockHash() : uint256());
-        // Pre-compute difficulty from nBits for storage
-        dDifficulty = GetDifficultyFromBits(nBits);
+        fSlim = fSlimIn;
+        if (!fSlim) {
+            // Pre-compute difficulty from nBits for storage
+            dDifficulty = GetDifficultyFromBits(nBits);
+        }
     }
 
     ADD_SERIALIZE_METHODS;
@@ -395,8 +409,12 @@ public:
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action) {
         int nVersion = s.GetVersion();
+        if (!ser_action.ForRead() && fSlim)
+            nVersion = SLIM_FORMAT_TAG;
         if (!(s.GetType() & SER_GETHASH))
             READWRITE(VARINT(nVersion));
+        if (ser_action.ForRead())
+            fSlim = (nVersion == SLIM_FORMAT_TAG);
 
         READWRITE(VARINT(nHeight));
         READWRITE(VARINT(nStatus));
@@ -410,18 +428,29 @@ public:
 
         // block header
         READWRITE(this->nVersion);
-        READWRITE(hashPrev);
+        if (fSlim) {
+            // Parent is recovered on load by matching this prefix against
+            // the entries at height-1.
+            READWRITE(REF(CFlatData(hashPrev.begin(), hashPrev.begin() + SLIM_PREV_BYTES)));
+        } else {
+            READWRITE(hashPrev);
+        }
         READWRITE(hashMerkleRoot);
         READWRITE(nTime);
         READWRITE(nBits);
         READWRITE(nNonce);
 
-        // Cached difficulty - stored to avoid recalculation during startup
-        READWRITE(dDifficulty);
+        // Cached difficulty - stored to avoid recalculation during startup. Slim entries omit it:
+        // nothing reads it, and it is derived from nBits.
+        if (!fSlim) {
+            READWRITE(dDifficulty);
+        }
     }
 
+    //! Only valid for legacy entries; slim entries must use the db key.
     uint256 GetBlockHash() const
     {
+        assert(!fSlim);
         CBlockHeader block;
         block.nVersion        = nVersion;
         block.hashPrevBlock   = hashPrev;
@@ -437,9 +466,13 @@ public:
     {
         std::string str = "CDiskBlockIndex(";
         str += CBlockIndex::ToString();
-        str += strprintf("\n                hashBlock=%s, hashPrev=%s)",
-            GetBlockHash().ToString(),
-            hashPrev.ToString());
+        if (fSlim)
+            str += strprintf("\n                slim, hashPrev prefix=%s)",
+                HexStr(hashPrev.begin(), hashPrev.begin() + SLIM_PREV_BYTES));
+        else
+            str += strprintf("\n                hashBlock=%s, hashPrev=%s)",
+                GetBlockHash().ToString(),
+                hashPrev.ToString());
         return str;
     }
 };

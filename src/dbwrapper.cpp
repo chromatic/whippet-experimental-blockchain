@@ -114,6 +114,11 @@ std::vector<unsigned char> CDBWrapper::CreateObfuscateKey() const
 
 }
 
+void CDBWrapper::CompactAll()
+{
+    pdb->CompactRange(NULL, NULL);
+}
+
 bool CDBWrapper::IsEmpty()
 {
     std::unique_ptr<CDBIterator> it(NewIterator());

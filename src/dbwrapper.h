@@ -285,6 +285,12 @@ public:
      * Return true if the database managed by this class contains no entries.
      */
     bool IsEmpty();
+
+    /**
+     * Compact the whole key range, so that space held by overwritten or deleted entries is returned
+     * to the filesystem.
+     */
+    void CompactAll();
 };
 
 #endif // BITCOIN_DBWRAPPER_H
