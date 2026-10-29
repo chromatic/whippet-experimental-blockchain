@@ -33,8 +33,8 @@ Miners and pools should upgrade before height 360,000.
 **Height 600,000 (hard fork).** From this height a block's required
 difficulty (`nBits`) depends on how long after its parent the block is
 stamped. Nodes that have not upgraded compute a different value, so they
-refuse every block that follows a wait of more than 36 s and fall onto a
-separate chain. **Every node, miner and pool must be running 1.4.0 before
+refuse every block that follows a wait of more than 36 s, so they may stall
+or fall onto a separate chain. **Every node, miner and pool must be running 1.4.0 before
 height 600,000.** A node that is not upgraded may stall at the first block
 that follows a long wait, because it refuses that block. If any old miner is
 still producing blocks, those nodes may instead follow a separate chain. We
