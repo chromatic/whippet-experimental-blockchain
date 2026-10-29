@@ -1679,18 +1679,44 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
     return true;
 }
 
+/**
+ * Undo record framing: magic(4) | size(4) | CBlockUndo | checksum. The size word is the byte
+ * length of the CBlockUndo. Bit 31 of it marks a short record whose checksum is only the first 8
+ * bytes of the SHA256d(prev block hash + undo); legacy records have the bit clear and a 32 byte
+ * checksum. The size word sits at nPos - 4 for every undo position, so the reader learns the
+ * encoding before it reads the undo, and the checksum length is known. The bit is free because
+ * an undo is far smaller than 2^31 bytes.
+ */
+static const uint32_t UNDO_SHORT_CHECKSUM_FLAG = 0x80000000;
+static const unsigned int UNDO_SHORT_CHECKSUM_SIZE = 8;
+
+unsigned int UndoRecordOverhead()
+{
+    // magic + size word + checksum
+    return 8 + (fSlimUndo ? UNDO_SHORT_CHECKSUM_SIZE : 32);
+}
+
 bool UndoReadFromDisk(CBlockUndo& blockundo, const CDiskBlockPos& pos, const uint256& hashBlock)
 {
-    // Open history file to read
-    CAutoFile filein(OpenUndoFile(pos, true), SER_DISK, CLIENT_VERSION);
+    if (pos.nPos < 4)
+        return error("%s: bad undo position", __func__);
+
+    // Open history file to read, at the size word in front of the payload
+    CDiskBlockPos sizepos(pos.nFile, pos.nPos - 4);
+    CAutoFile filein(OpenUndoFile(sizepos, true), SER_DISK, CLIENT_VERSION);
     if (filein.IsNull())
         return error("%s: OpenUndoFile failed", __func__);
 
     // Read block
     uint256 hashChecksum;
+    unsigned int nChecksumBytes = 32;
     try {
+        uint32_t nSizeWord;
+        filein >> nSizeWord;
+        if (nSizeWord & UNDO_SHORT_CHECKSUM_FLAG)
+            nChecksumBytes = UNDO_SHORT_CHECKSUM_SIZE;
         filein >> blockundo;
-        filein >> hashChecksum;
+        filein.read((char*)hashChecksum.begin(), nChecksumBytes);
     }
     catch (const std::exception& e) {
         return error("%s: Deserialize or I/O error - %s", __func__, e.what());
@@ -1700,13 +1726,12 @@ bool UndoReadFromDisk(CBlockUndo& blockundo, const CDiskBlockPos& pos, const uin
     CHashWriter hasher(SER_GETHASH, PROTOCOL_VERSION);
     hasher << hashBlock;
     hasher << blockundo;
-    if (hashChecksum != hasher.GetHash())
+    uint256 hashExpected = hasher.GetHash();
+    if (memcmp(hashChecksum.begin(), hashExpected.begin(), nChecksumBytes) != 0)
         return error("%s: Checksum mismatch", __func__);
 
     return true;
 }
-
-namespace {
 
 bool UndoWriteToDisk(const CBlockUndo& blockundo, CDiskBlockPos& pos, const uint256& hashBlock, const CMessageHeader::MessageStartChars& messageStart)
 {
@@ -1716,7 +1741,9 @@ bool UndoWriteToDisk(const CBlockUndo& blockundo, CDiskBlockPos& pos, const uint
         return error("%s: OpenUndoFile failed", __func__);
 
     // Write index header
-    unsigned int nSize = GetSerializeSize(fileout, blockundo);
+    uint32_t nSize = GetSerializeSize(fileout, blockundo);
+    if (fSlimUndo)
+        nSize |= UNDO_SHORT_CHECKSUM_FLAG;
     fileout << FLATDATA(messageStart) << nSize;
 
     // Write undo data
@@ -1730,10 +1757,13 @@ bool UndoWriteToDisk(const CBlockUndo& blockundo, CDiskBlockPos& pos, const uint
     CHashWriter hasher(SER_GETHASH, PROTOCOL_VERSION);
     hasher << hashBlock;
     hasher << blockundo;
-    fileout << hasher.GetHash();
+    uint256 hashChecksum = hasher.GetHash();
+    fileout.write((const char*)hashChecksum.begin(), fSlimUndo ? UNDO_SHORT_CHECKSUM_SIZE : 32);
 
     return true;
 }
+
+namespace {
 
 /** Abort with a message */
 bool AbortNode(const std::string& strMessage, const std::string& userMessage="")
@@ -2195,7 +2225,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     {
         if (pindex->GetUndoPos().IsNull() && !(fSlimUndo && blockundo.vtxundo.empty())) {
             CDiskBlockPos _pos;
-            if (!FindUndoPos(state, pindex->nFile, _pos, ::GetSerializeSize(blockundo, SER_DISK, CLIENT_VERSION) + 40))
+            if (!FindUndoPos(state, pindex->nFile, _pos, ::GetSerializeSize(blockundo, SER_DISK, CLIENT_VERSION) + UndoRecordOverhead()))
                 return error("ConnectBlock(): FindUndoPos failed");
             if (!UndoWriteToDisk(blockundo, _pos, pindex->pprev->GetBlockHash(), chainparams.MessageStart()))
                 return AbortNode(state, "Failed to write undo data");

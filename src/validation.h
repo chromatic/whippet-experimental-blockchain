@@ -174,7 +174,7 @@ extern std::atomic_bool fImporting;
 extern bool fReindex;
 extern int nScriptCheckThreads;
 extern bool fTxIndex;
-/** Do not write an undo record for a block that spent nothing (-slimundo). Reading never needs the flag. */
+/** -slimundo: no undo record for a block that spent nothing, and an 8 byte undo checksum. Reading never needs the flag. */
 extern bool fSlimUndo;
 extern bool fIsBareMultisigStd;
 extern bool fRequireStandard;
@@ -534,6 +534,10 @@ bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus
 bool ReadBlockHeaderFromDisk(CBlockHeader& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams, bool fCheckPOW = true);
 
 bool UndoReadFromDisk(CBlockUndo& blockundo, const CDiskBlockPos& pos, const uint256& hashBlock);
+/** Append an undo record at pos.nFile, set pos.nPos. With -slimundo the checksum is 8 bytes, else 32. */
+bool UndoWriteToDisk(const CBlockUndo& blockundo, CDiskBlockPos& pos, const uint256& hashBlock, const CMessageHeader::MessageStartChars& messageStart);
+/** Bytes a record adds to the undo payload: magic, size word, checksum. */
+unsigned int UndoRecordOverhead();
 
 /** Functions for validating blocks and updating the block tree */
 

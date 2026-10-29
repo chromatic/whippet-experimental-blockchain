@@ -94,6 +94,7 @@ BITCOIN_TESTS =\
   test/bip32_tests.cpp \
   test/blockencodings_tests.cpp \
   test/bloom_tests.cpp \
+  test/undo_tests.cpp \
   test/bswap_tests.cpp \
   test/chainparams_tests.cpp \
   test/checkqueue_tests.cpp \
