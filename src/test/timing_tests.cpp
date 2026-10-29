@@ -168,28 +168,30 @@ BOOST_AUTO_TEST_CASE(soft_fork_boundary_on_mainnet)
     BOOST_CHECK_EQUAL(MainnetDriftResult(H - 1, 72), "accepted");
     BOOST_CHECK_EQUAL(MainnetDriftResult(H - 1, 73), "time-too-new");
     BOOST_CHECK_EQUAL(MainnetDriftResult(H - 1, 7200), "time-too-new");
-    // It stays in force after the AuxPoW height.
-    BOOST_CHECK_EQUAL(MainnetDriftResult(371336, 72), "accepted");
-    BOOST_CHECK_EQUAL(MainnetDriftResult(371336, 73), "time-too-new");
+    // It stays in force afterwards.
+    BOOST_CHECK_EQUAL(MainnetDriftResult(H + 1000, 72), "accepted");
+    BOOST_CHECK_EQUAL(MainnetDriftResult(H + 1000, 73), "time-too-new");
     SelectParams(CBaseChainParams::REGTEST);
 }
 
 BOOST_AUTO_TEST_CASE(soft_fork_row_only_tightens_the_drift)
 {
-    // A soft fork may only make validation stricter. Every other field must be what it was the block before.
+    // The cap shares the AuxPoW row. Next to the row before it the drift must be tighter, legacy blocks
+    // must be the only other change, and every other field must be unchanged.
     SelectParams(CBaseChainParams::MAIN);
+    BOOST_CHECK_EQUAL(MAINNET_DRIFT_CAP_HEIGHT, 371337);
     const Consensus::Params& before = Params().GetConsensus(MAINNET_DRIFT_CAP_HEIGHT - 1);
     const Consensus::Params& after = Params().GetConsensus(MAINNET_DRIFT_CAP_HEIGHT);
     BOOST_CHECK(after.nMaxFutureDrift < before.nMaxFutureDrift);
+    BOOST_CHECK_EQUAL(after.fLWMADifficultyCalculation, before.fLWMADifficultyCalculation);
+    BOOST_CHECK(!after.fAllowLegacyBlocks && before.fAllowLegacyBlocks);
     BOOST_CHECK_EQUAL(after.nMinBlockSpacing, before.nMinBlockSpacing);
     BOOST_CHECK_EQUAL(after.nPowTargetSpacing, before.nPowTargetSpacing);
     BOOST_CHECK_EQUAL(after.nPowTargetTimespan, before.nPowTargetTimespan);
-    BOOST_CHECK_EQUAL(after.fLWMADifficultyCalculation, before.fLWMADifficultyCalculation);
     BOOST_CHECK_EQUAL(after.fDigishieldDifficultyCalculation, before.fDigishieldDifficultyCalculation);
     BOOST_CHECK_EQUAL(after.fPowAllowMinDifficultyBlocks, before.fPowAllowMinDifficultyBlocks);
     BOOST_CHECK_EQUAL(after.fPowNoRetargeting, before.fPowNoRetargeting);
     BOOST_CHECK(after.powLimit == before.powLimit);
-    BOOST_CHECK_EQUAL(after.fAllowLegacyBlocks, before.fAllowLegacyBlocks);
     BOOST_CHECK_EQUAL(after.fStrictChainId, before.fStrictChainId);
     BOOST_CHECK_EQUAL(after.nAuxpowChainId, before.nAuxpowChainId);
     BOOST_CHECK_EQUAL(after.nCoinbaseMaturity, before.nCoinbaseMaturity);
@@ -197,11 +199,6 @@ BOOST_AUTO_TEST_CASE(soft_fork_row_only_tightens_the_drift)
     BOOST_CHECK_EQUAL(after.fSimplifiedRewards, before.fSimplifiedRewards);
     BOOST_CHECK_EQUAL(after.UAPMintHeight, before.UAPMintHeight);
     BOOST_CHECK(after.hashGenesisBlock == before.hashGenesisBlock);
-    // And the AuxPoW row after it keeps the cap while changing only what it always changed.
-    const Consensus::Params& auxpow = Params().GetConsensus(371337);
-    BOOST_CHECK_EQUAL(auxpow.nMaxFutureDrift, after.nMaxFutureDrift);
-    BOOST_CHECK_EQUAL(auxpow.nMinBlockSpacing, after.nMinBlockSpacing);
-    BOOST_CHECK(auxpow.hashGenesisBlock == after.hashGenesisBlock);
     SelectParams(CBaseChainParams::REGTEST);
 }
 

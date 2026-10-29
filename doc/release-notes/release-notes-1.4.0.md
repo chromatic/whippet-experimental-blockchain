@@ -8,7 +8,7 @@ different heights**, and the second is a hard fork:
 
 | Height | Change | Kind | Who must upgrade |
 |--------|--------|------|------------------|
-| 360,000 | Block timestamps may be at most 72 s ahead of adjusted time (was 2 hours) | soft fork | most hashrate, before the height |
+| 371,337 | Block timestamps may be at most 72 s ahead of adjusted time (was 2 hours); same height as AuxPoW | soft fork | most hashrate, before the height |
 | 600,000 | Difficulty eases while the chain waits for a block (LWMA with easing) | **hard fork** | **every miner and node, before the height** |
 
 Please report bugs using the issue tracker at GitHub:
@@ -22,13 +22,14 @@ Compatibility
 Whippet Core is extensively tested on Ubuntu Server LTS, macOS and Windows.
 Minimum OS compatibility can be found [in the INSTALL guide](../../INSTALL.md).
 
-**Height 360,000 (soft fork).** From this height, upgraded nodes refuse a
+**Height 371,337 (soft fork).** From this height, upgraded nodes refuse a
 block whose timestamp is more than 72 s ahead of their adjusted time. Every
 block that upgraded nodes accept is also accepted by older nodes, so older
 nodes keep following the chain. What matters is the miners: a miner on 1.3.1
 or earlier that stamps a block more than 72 s ahead produces a block the
 upgraded nodes refuse, and its blocks are orphaned until it upgrades.
-Miners and pools should upgrade before height 360,000.
+This is also the height at which AuxPoW blocks become acceptable, so miners and
+pools have one date to prepare for. They should upgrade before height 371,337.
 
 **Height 600,000 (hard fork).** From this height a block's required
 difficulty (`nBits`) depends on how long after its parent the block is
@@ -41,7 +42,7 @@ still producing blocks, those nodes may instead follow a separate chain. We
 cannot predict which will happen, so upgrade everything.
 
 At the block rate seen in the weeks before this release (about 6 to 6.5 s
-per block) height 360,000 is about two weeks after the 1.4.0 release and
+per block) height 371,337 is about two weeks after the 1.4.0 release and
 height 600,000 about a month. The rate is not constant, so treat these as
 rough: watch `getblockcount`, not the calendar.
 
@@ -59,8 +60,8 @@ of real time and collect a share of blocks well above its hashrate. In the
 simulator, an attacker with 0.3 of the hashrate took 0.38 of the blocks under
 the old rules and about 0.25 under a 72 s cap.
 
-**The cap (soft fork, height 360,000).** The future-time limit is now a
-consensus parameter, `nMaxFutureDrift`. It is 7,200 s below height 360,000
+**The cap (soft fork, height 371,337).** The future-time limit is now a
+consensus parameter, `nMaxFutureDrift`. It is 7,200 s below height 371,337
 and 72 s (12 block times) from it. 72 s was the best of the values compared
 (36, 48, 72, 120, 180 s): it bounds the lead like the smaller caps but
 without their stalls of honest miners.
@@ -113,8 +114,8 @@ did not change an attacker's share of blocks.
 creates the job, not when the block is found. A pool that refreshes its jobs
 at least every 30 s loses nothing; a 60 s refresh costs about 40 s of extra
 waiting after a burst. (Simulator result; no real pool has been tested.)
-AuxPoW blocks become acceptable at height 371,337, between the two heights
-above; a standalone block whose version carries the chain ID (0x5750) stays
+AuxPoW blocks become acceptable at height 371,337, the soft-fork height above;
+a standalone block whose version carries the chain ID (0x5750) stays
 valid before and after it, and only legacy-format blocks (version 1, or
 version 2 with no chain ID) are refused from that height. Check that your
 miner takes the version field from `getblocktemplate`.
@@ -185,14 +186,14 @@ Upgrading from Prior Versions
 5. **Confirm the clock**: make sure an NTP client is running and that your
    system time is within a few seconds of UTC.
 
-Miners: do this **before height 360,000**. Everyone else: **before height
+Miners: do this **before height 371,337**. Everyone else: **before height
 600,000**.
 
 
 Testing
 ========
 
-- `timing_tests` pins the mainnet rows (the cap from 360,000, the easing
+- `timing_tests` pins the mainnet rows (the cap from 371,337, the easing
   row from 600,000), the header rules either side of the AuxPoW height, the
   easing arithmetic (doubling per tau, clamping at the proof-of-work limit)
   and the regtest hooks.
@@ -224,7 +225,7 @@ Release Information
 **Version:** 1.4.0
 **GitHub Tag:** v1.4.0
 **Consensus changes:**
-- soft fork at height 360,000: block timestamps at most 72 s ahead of
+- soft fork at height 371,337 (with AuxPoW): block timestamps at most 72 s ahead of
   adjusted time (`MAINNET_DRIFT_CAP_HEIGHT`)
 - **hard fork at height 600,000**: LWMA target eased while the chain waits
   (`MAINNET_EASING_HEIGHT`, tau 30 s, free wait 36 s)

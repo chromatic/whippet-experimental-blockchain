@@ -73,7 +73,6 @@ private:
     Consensus::Params digishieldConsensus;
     Consensus::Params chainIdFixConsensus;
     Consensus::Params minSpacingConsensus;
-    Consensus::Params driftCapConsensus;
     Consensus::Params auxpowConsensus;
     Consensus::Params easingConsensus;
 public:
@@ -162,16 +161,12 @@ public:
         minSpacingConsensus.nHeightEffective = 100000;
         minSpacingConsensus.nMinBlockSpacing = 4;
 
-        // Soft fork: from MAINNET_DRIFT_CAP_HEIGHT a block may be at most 72s (12 block times) ahead
-        // of the node's adjusted time instead of 2 hours. Nothing else changes in this row.
-        static_assert(MAINNET_DRIFT_CAP_HEIGHT > 100000 && MAINNET_DRIFT_CAP_HEIGHT < 371337,
-                      "the drift cap row must sit between the 100000 and 371337 rows");
-        driftCapConsensus = minSpacingConsensus;
-        driftCapConsensus.nHeightEffective = MAINNET_DRIFT_CAP_HEIGHT;
-        driftCapConsensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
-
-        // Blocks 371337+ are AuxPoW with LWMA
-        auxpowConsensus = driftCapConsensus;
+        // Blocks 371337+ are AuxPoW with LWMA. The same height carries the soft fork: from
+        // MAINNET_DRIFT_CAP_HEIGHT a block may be at most 72s (12 block times) ahead of the node's
+        // adjusted time instead of 2 hours.
+        static_assert(MAINNET_DRIFT_CAP_HEIGHT == 371337, "the drift cap shares the 371337 row");
+        auxpowConsensus = minSpacingConsensus;
+        auxpowConsensus.nMaxFutureDrift = MAX_FUTURE_DRIFT_CAPPED;
         auxpowConsensus.nHeightEffective = 371337;
         auxpowConsensus.fAllowLegacyBlocks = false;
         auxpowConsensus.fLWMADifficultyCalculation = true;
@@ -189,8 +184,7 @@ public:
         digishieldConsensus.pLeft = &consensus;
         digishieldConsensus.pRight = &chainIdFixConsensus;
         chainIdFixConsensus.pRight = &minSpacingConsensus;
-        minSpacingConsensus.pRight = &driftCapConsensus;
-        driftCapConsensus.pRight = &auxpowConsensus;
+        minSpacingConsensus.pRight = &auxpowConsensus;
         auxpowConsensus.pRight = &easingConsensus;
 
         /**
@@ -211,7 +205,6 @@ public:
         digishieldConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         chainIdFixConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         minSpacingConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
-        driftCapConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         auxpowConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
         easingConsensus.hashGenesisBlock = consensus.hashGenesisBlock;
 
@@ -570,7 +563,7 @@ public:
 
     /**
      * Rehearse the mainnet soft fork on regtest: from nHeight on, blocks may be at most
-     * MAX_FUTURE_DRIFT_CAPPED ahead of adjusted time, as in the driftCapConsensus row of mainnet.
+     * MAX_FUTURE_DRIFT_CAPPED ahead of adjusted time, as in the 371337 row of mainnet.
      * Nothing else changes. 0 removes the row. Call it before ApplyTimingProfile and again after.
      * @throws std::runtime_error unless 20 < nHeight < the chain id fix height.
      */

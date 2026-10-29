@@ -33,11 +33,11 @@ static const int64_t MIN_CONSENSUS_BLOCK_SPACING = 6;
 static const int64_t MAX_FUTURE_DRIFT_CAPPED = 72;
 
 /**
- * PROVISIONAL: the mainnet height from which MAX_FUTURE_DRIFT_CAPPED applies. Choose it so that
- * most hashrate has upgraded by then (upgraded nodes refuse blocks stamped further ahead).
- * It must lie between the 100000 and 371337 rows in chainparams.cpp.
+ * The mainnet height from which MAX_FUTURE_DRIFT_CAPPED applies: the AuxPoW height, so miners have
+ * one upgrade date for both. Upgraded nodes refuse blocks stamped further ahead from here on.
+ * chainparams.cpp asserts that it equals the 371337 row.
  */
-static const int MAINNET_DRIFT_CAP_HEIGHT = 360000;
+static const int MAINNET_DRIFT_CAP_HEIGHT = 371337;
 
 /**
  * Hard fork: from MAINNET_EASING_HEIGHT the LWMA target is eased for a candidate block stamped more

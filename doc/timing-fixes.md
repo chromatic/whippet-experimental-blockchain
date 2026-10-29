@@ -14,7 +14,7 @@ A block's timestamp is chosen by its miner. Three rules constrain it: it must ex
 4. **Testnet** (`924fa431d`, plus the testnet edits in `89233fb96`). Own genesis, Dogecoin leftovers removed, 4s floor and 72s cap from genesis (a floor equal to the 6s target blinds LWMA: every solvetime is clamped to the target and difficulty never moves).
 5. **Simulator** (`contrib/timing-sim/`, see its README), including sim-only candidates for a later hard fork. They are not implemented in C++ and are not part of the soft fork.
 
-`MAINNET_DRIFT_CAP_HEIGHT = 360000` is a **placeholder**. It has to be late enough that most hashrate has upgraded.
+`MAINNET_DRIFT_CAP_HEIGHT = 371337`, the AuxPoW height, so the cap and AuxPoW share one row and one upgrade date for miners.
 
 ## Why 72s
 
@@ -123,7 +123,7 @@ Why the real R0 runs disagree with simulator seeds 2-5: the replay starts differ
 
 So the R0 figures above are not a typical R0 outcome: it is bimodal and depends on the starting difficulty. Whether the attack runs away or only gets part of the way, R0 has no bound and R1 has one.
 
-Old and new binaries across the activation height (`--scenario activation`; the new node takes `-timingdriftcapheight=100`, a regtest-only option that adds the same kind of row as mainnet's `driftCapConsensus`; the old node is the commit before the soft fork, built separately, plain regtest rules):
+Old and new binaries across the activation height (`--scenario activation`; the new node takes `-timingdriftcapheight=100`, a regtest-only option that adds the same kind of row as mainnet's 371337 row; the old node is the commit before the soft fork, built separately, plain regtest rules):
 
 | | result |
 |---|---|
