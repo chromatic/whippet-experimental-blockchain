@@ -360,6 +360,7 @@ std::string HelpMessage(HelpMessageMode mode)
             "(default: 0 = disable pruning blocks, 1 = allow manual pruning via RPC, >%u = automatically prune block files to stay under the specified target size in MiB)"), MIN_DISK_SPACE_FOR_BLOCK_FILES / 1024 / 1024));
     strUsage += HelpMessageOpt("-reindex-chainstate", _("Rebuild chain state from the currently indexed blocks"));
     strUsage += HelpMessageOpt("-reindex", _("Rebuild chain state and block index from the blk*.dat files on disk"));
+    strUsage += HelpMessageOpt("-slimblocks", _("Experimental: write new blocks to blk*.dat without the header fields that can be recomputed (merkle root of a single-transaction block, derivable AuxPoW fields). Versions before 1.4.0 cannot read such blocks and need -reindex from a backup; blocks already on disk are not rewritten (default: 0)"));
     strUsage += HelpMessageOpt("-slimblockindex", _("Experimental: store the block index in a smaller format (about a third smaller). Existing entries are converted at startup. Versions before 1.4.0 cannot read the result without -reindex (default: 0)"));
 #ifndef WIN32
     strUsage += HelpMessageOpt("-sysperms", _("Create new files with system default permissions, instead of umask 077 (only effective with disabled wallet functionality)"));
@@ -1427,6 +1428,7 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     // ********************************************************* Step 7: load block chain
 
+    fSlimBlocks = GetBoolArg("-slimblocks", false);
     fReindex = GetBoolArg("-reindex", false);
     bool fReindexChainState = GetBoolArg("-reindex-chainstate", false);
 

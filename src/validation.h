@@ -200,6 +200,8 @@ static const uint64_t nMinDiskSpace = 52428800;
 /** Pruning-related variables and constants */
 /** True if any block files have ever been pruned. */
 extern bool fHavePruned;
+/** Write new blocks as slim records (-slimblocks). Reading never needs the flag. */
+extern bool fSlimBlocks;
 /** True if we're running in -prune mode. */
 extern bool fPruneMode;
 /** Number of MiB of block files that we're trying to stay below. */
@@ -527,6 +529,14 @@ public:
 
 /** Functions for disk access for blocks */
 bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHeader::MessageStartChars& messageStart);
+/** Write with an already prepared slim payload (empty: a legacy record). */
+bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHeader::MessageStartChars& messageStart, const std::vector<unsigned char>& vchSlim);
+/** With -slimblocks, encode the block as a slim payload; vchSlim is empty if it must stay a legacy record. */
+void PrepareBlockRecord(const CBlock& block, std::vector<unsigned char>& vchSlim);
+/** Bytes the record payload takes on disk. */
+unsigned int BlockRecordPayloadSize(const CBlock& block, const std::vector<unsigned char>& vchSlim);
+/** The size word in front of the payload at pos: bit 31 set means a slim record. */
+bool ReadBlockRecordSizeWord(const CDiskBlockPos& pos, uint32_t& nSizeWord);
 bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams, bool fCheckPOW = true);
 bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams, bool fCheckPOW = true);
 bool ReadBlockHeaderFromDisk(CBlockHeader& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams, bool fCheckPOW = true);

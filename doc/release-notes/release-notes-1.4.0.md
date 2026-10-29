@@ -160,6 +160,28 @@ and the database is compacted afterwards. A reindex is not needed.
 - Block and undo files (`blk*.dat`, `rev*.dat`) and the chainstate are not
   touched. With the option off the block index is written exactly as in 1.3.1.
 
+
+Experimental: `-slimblocks`
+============================
+
+Off by default. With `-slimblocks=1` a new block is written to `blk*.dat`
+without the header fields that can be recomputed: the merkle root of a block
+with one transaction (it is the coinbase txid), and for merge-mined blocks the
+parent merkle root, `nIndex`, and `hashBlock` and `nChainIndex` when they hold
+their usual values. `hashPrevBlock` is kept, because `-reindex` reads it from
+the record. A block is only stored this way after it has been decoded again and
+compared byte for byte with the original; otherwise it is stored as before.
+`getblock` and block relay return exactly the same bytes. A single-transaction
+block takes 32 bytes less.
+
+- It is **one way**: versions before 1.4.0 cannot read such a record and need
+  `-reindex` from the block files of another node (or a re-download). Take a
+  backup before turning it on.
+- Records already on disk are not rewritten. Old and new records can share a
+  file, and a node reads both whether or not the option is on.
+- `-txindex`, `-reindex`, `verifychain`, pruning and `-loadblock` handle both
+  kinds of record.
+
 Regtest options
 ================
 

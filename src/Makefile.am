@@ -83,6 +83,7 @@ BITCOIN_CORE_H = \
   base58.h \
   bloom.h \
   blockencodings.h \
+  blockrecord.h \
   chain.h \
   chainparams.h \
   chainparamsbase.h \
@@ -195,6 +196,7 @@ libwhippet_server_a_SOURCES = \
   addrdb.cpp \
   bloom.cpp \
   blockencodings.cpp \
+  blockrecord.cpp \
   chain.cpp \
   checkpoints.cpp \
   httprpc.cpp \

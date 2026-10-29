@@ -5,6 +5,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "validation.h"
+#include "blockrecord.h"
 
 #include "arith_uint256.h"
 #include "chainparams.h"
@@ -69,6 +70,7 @@ int nScriptCheckThreads = 0;
 std::atomic_bool fImporting(false);
 bool fReindex = false;
 bool fTxIndex = false;
+bool fSlimBlocks = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fIsBareMultisigStd = DEFAULT_PERMIT_BAREMULTISIG;
@@ -1157,9 +1159,30 @@ bool GetTransaction(const uint256 &hash, CTransactionRef &txOut, const Consensus
                 return error("%s: OpenBlockFile failed", __func__);
             CBlockHeader header;
             try {
-                file >> header;
-                fseek(file.Get(), postx.nTxOffset, SEEK_CUR);
-                file >> txOut;
+                // The size word in front of the payload tells the encoding.
+                uint32_t nSizeWord = 0;
+                if (postx.nPos < 4 || fseek(file.Get(), (long)postx.nPos - 4, SEEK_SET))
+                    return error("%s: bad block position", __func__);
+                file >> nSizeWord;
+                if (nSizeWord & blockrecord::SLIM_FLAG) {
+                    unsigned char flags;
+                    blockrecord::UnserializeSlimHeader(file, header, flags);
+                    // Offsets count the tx count byte; a single-tx slim record has none.
+                    unsigned int nSkip = postx.nTxOffset;
+                    if (flags & blockrecord::FLAG_SINGLE_TX) {
+                        if (nSkip < 1)
+                            return error("%s: bad tx offset", __func__);
+                        nSkip--;
+                    }
+                    fseek(file.Get(), nSkip, SEEK_CUR);
+                    file >> txOut;
+                    if (flags & blockrecord::FLAG_SINGLE_TX)
+                        header.hashMerkleRoot = txOut->GetHash();
+                } else {
+                    file >> header;
+                    fseek(file.Get(), postx.nTxOffset, SEEK_CUR);
+                    file >> txOut;
+                }
             } catch (const std::exception& e) {
                 return error("%s: Deserialize or I/O error - %s", __func__, e.what());
             }
@@ -1208,7 +1231,19 @@ bool GetTransaction(const uint256 &hash, CTransactionRef &txOut, const Consensus
 // CBlock and CBlockIndex
 //
 
-bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHeader::MessageStartChars& messageStart)
+unsigned int BlockRecordPayloadSize(const CBlock& block, const std::vector<unsigned char>& vchSlim)
+{
+    return vchSlim.empty() ? ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION) : vchSlim.size();
+}
+
+void PrepareBlockRecord(const CBlock& block, std::vector<unsigned char>& vchSlim)
+{
+    vchSlim.clear();
+    if (fSlimBlocks)
+        blockrecord::EncodeSlim(block, vchSlim); // on failure vchSlim is empty: legacy record
+}
+
+bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHeader::MessageStartChars& messageStart, const std::vector<unsigned char>& vchSlim)
 {
     // Open history file to append
     CAutoFile fileout(OpenBlockFile(pos), SER_DISK, CLIENT_VERSION);
@@ -1216,7 +1251,9 @@ bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHea
         return error("WriteBlockToDisk: OpenBlockFile failed");
 
     // Write index header
-    unsigned int nSize = GetSerializeSize(fileout, block);
+    uint32_t nSize = BlockRecordPayloadSize(block, vchSlim);
+    if (!vchSlim.empty())
+        nSize |= blockrecord::SLIM_FLAG;
     fileout << FLATDATA(messageStart) << nSize;
 
     // Write block
@@ -1224,27 +1261,60 @@ bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHea
     if (fileOutPos < 0)
         return error("WriteBlockToDisk: ftell failed");
     pos.nPos = (unsigned int)fileOutPos;
-    fileout << block;
+    if (vchSlim.empty())
+        fileout << block;
+    else
+        fileout.write((const char*)vchSlim.data(), vchSlim.size());
 
     return true;
 }
 
+bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHeader::MessageStartChars& messageStart)
+{
+    std::vector<unsigned char> vchSlim;
+    PrepareBlockRecord(block, vchSlim);
+    return WriteBlockToDisk(block, pos, messageStart, vchSlim);
+}
+
 /* Generic implementation of block reading that can handle
    both a block and its header.  */
+
+bool ReadBlockRecordSizeWord(const CDiskBlockPos& pos, uint32_t& nSizeWord)
+{
+    if (pos.nPos < 4)
+        return false;
+    CAutoFile filein(OpenBlockFile(CDiskBlockPos(pos.nFile, pos.nPos - 4), true), SER_DISK, CLIENT_VERSION);
+    if (filein.IsNull())
+        return false;
+    try {
+        filein >> nSizeWord;
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
 
 template<typename T>
 static bool ReadBlockOrHeader(T& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams, bool fCheckPOW)
 {
     block.SetNull();
 
-    // Open history file to read
-    CAutoFile filein(OpenBlockFile(pos, true), SER_DISK, CLIENT_VERSION);
+    if (pos.nPos < 4)
+        return error("ReadBlockFromDisk: bad position %s", pos.ToString());
+
+    // Open history file to read, at the size word in front of the payload
+    CAutoFile filein(OpenBlockFile(CDiskBlockPos(pos.nFile, pos.nPos - 4), true), SER_DISK, CLIENT_VERSION);
     if (filein.IsNull())
         return error("ReadBlockFromDisk: OpenBlockFile failed for %s", pos.ToString());
 
-    // Read block
+    // Read block, legacy or slim
     try {
-        filein >> block;
+        uint32_t nSizeWord;
+        filein >> nSizeWord;
+        if (nSizeWord & blockrecord::SLIM_FLAG)
+            blockrecord::UnserializeSlim(filein, block);
+        else
+            filein >> block;
     }
     catch (const std::exception& e) {
         return error("%s: Deserialize or I/O error - %s at %s", __func__, e.what(), pos.ToString());
@@ -3546,14 +3616,24 @@ static bool AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CValidation
 
     // Write block to history file
     try {
-        unsigned int nBlockSize = ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION);
+        std::vector<unsigned char> vchSlim;
+        unsigned int nBlockSize;
         CDiskBlockPos blockPos;
-        if (dbp != NULL)
+        if (dbp != NULL) {
+            // Already on disk (reindex): the record keeps whatever encoding it has.
             blockPos = *dbp;
+            nBlockSize = ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION);
+            uint32_t nSizeWord;
+            if (ReadBlockRecordSizeWord(*dbp, nSizeWord) && (nSizeWord & blockrecord::SLIM_FLAG))
+                nBlockSize = nSizeWord & blockrecord::SIZE_MASK;
+        } else {
+            PrepareBlockRecord(block, vchSlim);
+            nBlockSize = BlockRecordPayloadSize(block, vchSlim);
+        }
         if (!FindBlockPos(state, blockPos, nBlockSize+8, nHeight, block.GetBlockTime(), dbp != NULL))
             return error("AcceptBlock(): FindBlockPos failed");
         if (dbp == NULL)
-            if (!WriteBlockToDisk(block, blockPos, chainparams.MessageStart()))
+            if (!WriteBlockToDisk(block, blockPos, chainparams.MessageStart(), vchSlim))
                 AbortNode(state, "Failed to write block");
         if (!ReceivedBlockTransactions(block, state, pindex, blockPos))
             return error("AcceptBlock(): ReceivedBlockTransactions failed");
@@ -4213,12 +4293,14 @@ bool InitBlockIndex(const CChainParams& chainparams)
         try {
             CBlock &block = const_cast<CBlock&>(chainparams.GenesisBlock());
             // Start new block file
-            unsigned int nBlockSize = ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION);
+            std::vector<unsigned char> vchSlim;
+            PrepareBlockRecord(block, vchSlim);
+            unsigned int nBlockSize = BlockRecordPayloadSize(block, vchSlim);
             CDiskBlockPos blockPos;
             CValidationState state;
             if (!FindBlockPos(state, blockPos, nBlockSize+8, 0, block.GetBlockTime()))
                 return error("LoadBlockIndex(): FindBlockPos failed");
-            if (!WriteBlockToDisk(block, blockPos, chainparams.MessageStart()))
+            if (!WriteBlockToDisk(block, blockPos, chainparams.MessageStart(), vchSlim))
                 return error("LoadBlockIndex(): writing genesis block to disk failed");
             CBlockIndex *pindex = AddToBlockIndex(block);
             if (!ReceivedBlockTransactions(block, state, pindex, blockPos))
@@ -4256,6 +4338,7 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
             nRewind++; // start one byte further next time, in case of failure
             blkdat.SetLimit(); // remove former limit
             unsigned int nSize = 0;
+            bool fSlim = false;
             try {
                 // locate a header
                 unsigned char buf[CMessageHeader::MESSAGE_START_SIZE];
@@ -4266,7 +4349,9 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                     continue;
                 // read size
                 blkdat >> nSize;
-                if (nSize < 80 || nSize > MAX_BLOCK_SERIALIZED_SIZE)
+                fSlim = (nSize & blockrecord::SLIM_FLAG) != 0;
+                nSize &= blockrecord::SIZE_MASK;
+                if (nSize < (fSlim ? blockrecord::MIN_SLIM_PAYLOAD : 80U) || nSize > MAX_BLOCK_SERIALIZED_SIZE)
                     continue;
             } catch (const std::exception&) {
                 // no valid block header found; don't complain
@@ -4281,7 +4366,10 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                 blkdat.SetPos(nBlockPos);
                 std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
                 CBlock& block = *pblock;
-                blkdat >> block;
+                if (fSlim)
+                    blockrecord::UnserializeSlim(blkdat, block);
+                else
+                    blkdat >> block;
                 nRewind = blkdat.GetPos();
 
                 // detect out of order blocks, and store them for later
