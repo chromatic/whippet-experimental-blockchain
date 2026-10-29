@@ -216,6 +216,7 @@ testScriptsExt = [
     'txn_clone.py --mineblock',
     'forknotify.py',
     'invalidateblock.py',
+    'slimundo.py',
     'maxblocksinflight.py',
 ]
 

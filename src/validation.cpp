@@ -69,6 +69,7 @@ int nScriptCheckThreads = 0;
 std::atomic_bool fImporting(false);
 bool fReindex = false;
 bool fTxIndex = false;
+bool fSlimUndo = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fIsBareMultisigStd = DEFAULT_PERMIT_BAREMULTISIG;
@@ -1797,11 +1798,15 @@ bool DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockI
     bool fClean = true;
 
     CBlockUndo blockUndo;
-    CDiskBlockPos pos = pindex->GetUndoPos();
-    if (pos.IsNull())
-        return error("DisconnectBlock(): no undo data available");
-    if (!UndoReadFromDisk(blockUndo, pos, pindex->pprev->GetBlockHash()))
-        return error("DisconnectBlock(): failure reading undo data");
+    // A block with only a coinbase spends nothing, so its undo is empty. With -slimundo no record is
+    // written for it; data written without the option has one, which is not needed either.
+    if (block.vtx.size() > 1) {
+        CDiskBlockPos pos = pindex->GetUndoPos();
+        if (pos.IsNull())
+            return error("DisconnectBlock(): no undo data available");
+        if (!UndoReadFromDisk(blockUndo, pos, pindex->pprev->GetBlockHash()))
+            return error("DisconnectBlock(): failure reading undo data");
+    }
 
     if (blockUndo.vtxundo.size() + 1 != block.vtx.size())
         return error("DisconnectBlock(): block and undo data inconsistent");
@@ -2188,7 +2193,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     // Write undo information to disk
     if (pindex->GetUndoPos().IsNull() || !pindex->IsValid(BLOCK_VALID_SCRIPTS))
     {
-        if (pindex->GetUndoPos().IsNull()) {
+        if (pindex->GetUndoPos().IsNull() && !(fSlimUndo && blockundo.vtxundo.empty())) {
             CDiskBlockPos _pos;
             if (!FindUndoPos(state, pindex->nFile, _pos, ::GetSerializeSize(blockundo, SER_DISK, CLIENT_VERSION) + 40))
                 return error("ConnectBlock(): FindUndoPos failed");

@@ -769,6 +769,9 @@ static CBlockUndo GetUndoChecked(const CBlockIndex* pblockindex)
         throw JSONRPCError(RPC_MISC_ERROR, "Undo data not available (pruned data)");
     }
 
+    // A block with only a coinbase spends nothing; -slimundo writes no undo record for it.
+    if (pblockindex->nTx == 1) return blockUndo;
+
     if (!UndoReadFromDisk(blockUndo, pblockindex->GetUndoPos(), pblockindex->pprev->GetBlockHash())) {
         throw JSONRPCError(RPC_MISC_ERROR, "Can't read undo data from disk");
     }

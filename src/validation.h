@@ -174,6 +174,8 @@ extern std::atomic_bool fImporting;
 extern bool fReindex;
 extern int nScriptCheckThreads;
 extern bool fTxIndex;
+/** Do not write an undo record for a block that spent nothing (-slimundo). Reading never needs the flag. */
+extern bool fSlimUndo;
 extern bool fIsBareMultisigStd;
 extern bool fRequireStandard;
 extern bool fCheckBlockIndex;
