@@ -4221,6 +4221,11 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
 {
     // Map of disk positions for blocks with unknown parent (only used for reindex)
     static std::multimap<uint256, CDiskBlockPos> mapBlocksUnknownParent;
+    // Blocks with unknown parent from a file with no disk position (-loadblock, bootstrap.dat),
+    // kept in memory up to a cap. Without this such a block was dropped, and so was its whole chain.
+    static const size_t MAX_UNKNOWN_PARENT_BYTES = 128 * 1024 * 1024;
+    static std::multimap<uint256, std::shared_ptr<CBlock> > mapBlocksUnknownParentMem;
+    static size_t nUnknownParentMemBytes = 0;
     int64_t nStart = GetTimeMillis();
 
     int nLoaded = 0;
@@ -4268,8 +4273,15 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                 if (hash != chainparams.GetConsensus(0).hashGenesisBlock && mapBlockIndex.find(block.hashPrevBlock) == mapBlockIndex.end()) {
                     LogPrint("reindex", "%s: Out of order block %s, parent %s not known\n", __func__, hash.ToString(),
                             block.hashPrevBlock.ToString());
-                    if (dbp)
+                    if (dbp) {
                         mapBlocksUnknownParent.insert(std::make_pair(block.hashPrevBlock, *dbp));
+                    } else if (nUnknownParentMemBytes + ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION) <= MAX_UNKNOWN_PARENT_BYTES) {
+                        mapBlocksUnknownParentMem.insert(std::make_pair(block.hashPrevBlock, pblock));
+                        nUnknownParentMemBytes += ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION);
+                    } else {
+                        LogPrintf("%s: Out of order block %s dropped, more than %u MiB waiting for a parent\n", __func__,
+                                hash.ToString(), MAX_UNKNOWN_PARENT_BYTES >> 20);
+                    }
                     continue;
                 }
 
@@ -4328,6 +4340,19 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                         }
                         range.first++;
                         mapBlocksUnknownParent.erase(it);
+                        NotifyHeaderTip();
+                    }
+                    std::pair<std::multimap<uint256, std::shared_ptr<CBlock> >::iterator, std::multimap<uint256, std::shared_ptr<CBlock> >::iterator> rangeMem = mapBlocksUnknownParentMem.equal_range(head);
+                    while (rangeMem.first != rangeMem.second) {
+                        std::shared_ptr<CBlock> pblockchild = rangeMem.first->second;
+                        nUnknownParentMemBytes -= ::GetSerializeSize(*pblockchild, SER_DISK, CLIENT_VERSION);
+                        rangeMem.first = mapBlocksUnknownParentMem.erase(rangeMem.first);
+                        LOCK(cs_main);
+                        CValidationState dummy;
+                        if (AcceptBlock(pblockchild, dummy, chainparams, NULL, true, NULL, NULL)) {
+                            nLoaded++;
+                            queue.push_back(pblockchild->GetHash());
+                        }
                         NotifyHeaderTip();
                     }
                 }
