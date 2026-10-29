@@ -4305,8 +4305,16 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                     while (range.first != range.second) {
                         std::multimap<uint256, CDiskBlockPos>::iterator it = range.first;
                         std::shared_ptr<CBlock> pblockrecursive = std::make_shared<CBlock>();
-                        // TODO: Need a valid consensus height
-                        if (ReadBlockFromDisk(*pblockrecursive, it->second, chainparams.GetConsensus(0)))
+                        // The child extends head, which was just accepted, so its height is known.
+                        // GetConsensus(0) would check the AuxPoW chain ID against the pre-fix value.
+                        int nChildHeight = 0;
+                        {
+                            LOCK(cs_main);
+                            BlockMap::iterator mi = mapBlockIndex.find(head);
+                            if (mi != mapBlockIndex.end())
+                                nChildHeight = mi->second->nHeight + 1;
+                        }
+                        if (ReadBlockFromDisk(*pblockrecursive, it->second, chainparams.GetConsensus(nChildHeight)))
                         {
                             LogPrint("reindex", "%s: Processing out of order child %s of %s\n", __func__, pblockrecursive->GetHash().ToString(),
                                     head.ToString());
