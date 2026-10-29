@@ -9,24 +9,6 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
 from test_framework.netutil import *
 
-import socket
-
-
-def have_ipv6_loopback():
-    '''Return True if this host can bind an IPv6 socket to ::1.'''
-    try:
-        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-    except (OSError, AttributeError):
-        return False
-    try:
-        s.bind(('::1', 0))
-        return True
-    except OSError:
-        return False
-    finally:
-        s.close()
-
-
 class RPCBindTest(BitcoinTestFramework):
 
     def __init__(self):
@@ -39,6 +21,19 @@ class RPCBindTest(BitcoinTestFramework):
 
     def setup_nodes(self):
         pass
+
+    def node_binds_ipv6(self):
+        '''
+        Start a node with the default bind and report whether it managed to
+        bind ::1. A socket probe from this process is not enough: in CI
+        containers it can bind ::1 where the node's own bind still fails.
+        '''
+        self.nodes = start_nodes(self.num_nodes, self.options.tmpdir, [['-disablewallet', '-nolisten']])
+        stop_nodes(self.nodes)
+        with open(log_filename(self.options.tmpdir, 0, "debug.log"), 'r', encoding='utf8') as f:
+            log = f.read()
+        return ('Binding RPC on address ::1' in log and
+                'Binding RPC on address ::1 port %d failed' % rpc_port(0) not in log)
 
     def run_bind_test(self, allow_ips, connect_to, addresses, expected):
         '''
@@ -85,9 +80,9 @@ class RPCBindTest(BitcoinTestFramework):
 
         # Containers (e.g. Docker's default network) may have IPv6 disabled,
         # in which case the node cannot bind ::1 or ::. Expect only IPv4 there.
-        have_ipv6 = have_ipv6_loopback()
+        have_ipv6 = self.node_binds_ipv6()
         if not have_ipv6:
-            print("IPv6 loopback unavailable, skipping IPv6 bind checks")
+            print("node cannot bind ::1, skipping IPv6 bind checks")
 
         # check default without rpcallowip (IPv4 and IPv6 localhost)
         expected = [('127.0.0.1', defaultport)]
