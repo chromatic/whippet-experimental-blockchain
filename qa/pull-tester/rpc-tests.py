@@ -160,6 +160,7 @@ testScripts = [
     'importprunedfunds.py',
     'createauxblock.py',
     'slimblocks.py',
+    'slimprevprefix.py',
     'signmessages.py',
     # 'nulldummy.py',
     'import-rescan.py',

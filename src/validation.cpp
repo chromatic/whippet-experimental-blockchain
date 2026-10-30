@@ -73,6 +73,10 @@ bool fReindex = false;
 bool fTxIndex = false;
 bool fSlimBlocks = false;
 bool fSlimPrevPrefix = false;
+
+/** Hash of the block whose record starts at (file, nPos); filled when a block gets its position. */
+static std::unordered_map<uint64_t, uint256> mapBlockPosToHash;
+static uint64_t BlockPosKey(int nFile, unsigned int nPos) { return ((uint64_t)(unsigned int)nFile << 32) | nPos; }
 bool fSlimUndo = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
@@ -1193,16 +1197,11 @@ bool GetTransaction(const uint256 &hash, CTransactionRef &txOut, const Consensus
             }
             if (fPrefixOnly) {
                 // The record keeps only a prefix of the parent hash, so the header hash is not computable
-                // here: find the block by its position (a linear scan; txindex stores no block hash).
-                hashBlock.SetNull();
-                for (const auto& item : mapBlockIndex) {
-                    const CBlockIndex* pi = item.second;
-                    if ((pi->nStatus & BLOCK_HAVE_DATA) && pi->nFile == postx.nFile && pi->nDataPos == postx.nPos) {
-                        hashBlock = pi->GetBlockHash();
-                        break;
-                    }
-                }
-                if (hashBlock.IsNull())
+                // here: look the block up by its position (txindex stores no block hash).
+                std::unordered_map<uint64_t, uint256>::const_iterator mp = mapBlockPosToHash.find(BlockPosKey(postx.nFile, postx.nPos));
+                if (mp != mapBlockPosToHash.end())
+                    hashBlock = mp->second;
+                else
                     return error("%s: no block index entry for the record at %s", __func__, postx.ToString());
             } else {
                 hashBlock = header.GetHash();
@@ -3107,6 +3106,7 @@ bool ReceivedBlockTransactions(const CBlock &block, CValidationState& state, CBl
     pindexNew->nDataPos = pos.nPos;
     pindexNew->nUndoPos = 0;
     pindexNew->nStatus |= BLOCK_HAVE_DATA;
+    mapBlockPosToHash[BlockPosKey(pos.nFile, pos.nPos)] = pindexNew->GetBlockHash();
     if (IsWitnessEnabled(pindexNew->pprev, Params().GetConsensus(pindexNew->nHeight))) {
         pindexNew->nStatus |= BLOCK_OPT_WITNESS;
     }
@@ -4018,6 +4018,8 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
     BOOST_FOREACH(const PAIRTYPE(int, CBlockIndex*)& item, vSortedByHeight)
     {
         CBlockIndex* pindex = item.second;
+        if (pindex->nStatus & BLOCK_HAVE_DATA)
+            mapBlockPosToHash[BlockPosKey(pindex->nFile, pindex->nDataPos)] = pindex->GetBlockHash();
         pindex->nChainWork = (pindex->pprev ? pindex->pprev->nChainWork : 0) + GetBlockProof(*pindex);
         pindex->nTimeMax = (pindex->pprev ? std::max(pindex->pprev->nTimeMax, pindex->nTime) : pindex->nTime);
         // We can link the chain of blocks for which we've received transactions at some point.
@@ -4313,6 +4315,7 @@ void UnloadBlockIndex()
     pindexBestHeader = NULL;
     mempool.clear();
     mapBlocksUnlinked.clear();
+    mapBlockPosToHash.clear();
     vinfoBlockFile.clear();
     nLastBlockFile = 0;
     nBlockSequenceId = 1;
