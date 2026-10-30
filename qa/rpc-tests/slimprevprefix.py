@@ -110,11 +110,13 @@ class SlimPrevPrefixTest(BitcoinTestFramework):
         self.check_chain(n1, ref, tip)
         assert self.count_out_of_order(1) >= tip - 1
         assert n1.verifychain(4, 0)
-        print("-reindex of a reversed prefix-only file: %d blocks, %d out of order" % (tip + 1, self.count_out_of_order(1)))
+        print("-reindex of a prefix-only file in reverse order: %d blocks, %d out of order" % (tip + 1, self.count_out_of_order(1)))
 
         # -loadblock: no disk position, so the blocks wait in memory.
+        # (Genesis stays first: a fresh node activates its chain only when it meets genesis in the file,
+        # and with -checkblockindex, on in regtest, accepting a block before that trips an assertion.)
         rev_path = os.path.join(self.options.tmpdir, "reversed.dat")
-        open(rev_path, "wb").write(rev)
+        open(rev_path, "wb").write(recs[0] + b"".join(reversed(recs[1:])))
         n2 = start_node(2, self.options.tmpdir, ["-debug", "-loadblock=" + rev_path])
         self.nodes.append(n2)
         wait_until = 0
@@ -123,7 +125,7 @@ class SlimPrevPrefixTest(BitcoinTestFramework):
             wait_until += 1
         self.check_chain(n2, ref, tip)
         assert self.count_out_of_order(2) >= tip - 1
-        print("-loadblock of a reversed prefix-only file: %d blocks, %d out of order" % (tip + 1, self.count_out_of_order(2)))
+        print("-loadblock of a prefix-only file in reverse order: %d blocks, %d out of order" % (tip + 1, self.count_out_of_order(2)))
 
 
 if __name__ == '__main__':
