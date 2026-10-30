@@ -101,11 +101,14 @@ unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int
 
             int64_t solvetime = block->GetBlockTime() - block->pprev->GetBlockTime();
 
-            // Clamp solve times to reasonable range
+            /* Clamp solve times to reasonable range. The lower clamp is
+               symmetric with the upper one: substituting T/6 left every
+               solvetime in [-6T, 0) negative, which can drive sum_time to
+               zero or below. */
             if (solvetime > T * 6)
                 solvetime = T * 6;
             if (solvetime < -6 * T)
-                solvetime = T / 6;
+                solvetime = -6 * T;
 
             j++;
             sum_time += solvetime * j;
@@ -120,8 +123,18 @@ unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int
         if (j < N - 1)
             return pindexLast->nBits; // Not enough blocks yet
 
-        // Calculate new target: next_target = avg_target * sum_time / k
-        arith_uint256 next_target = sum_target * sum_time;
+        /* sum_time is the only signed input to the target arithmetic below.
+           The multiply resolves to operator*(base_uint, uint32_t), so a
+           negative sum_time would be reinterpreted as a ~4e9 multiplier and a
+           zero one would yield target 0, which no header can satisfy. A
+           non-positive sum means the window carries no usable pace signal, so
+           hold the previous target; easing below still applies, since it keys
+           on how long this candidate has waited rather than on the window. */
+        arith_uint256 next_target;
+        if (sum_time <= 0)
+            next_target.SetCompact(pindexLast->nBits);
+        else
+            next_target = sum_target * (uint32_t)sum_time;
 
         const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
         if (params.nEasingTau > 0 && nCandidateTime != 0) {
