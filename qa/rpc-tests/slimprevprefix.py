@@ -107,6 +107,11 @@ class SlimPrevPrefixTest(BitcoinTestFramework):
         ref = self.nodes[0]
         n1 = start_node(1, self.options.tmpdir, ["-debug", "-txindex", "-slimblocks", "-slimprevprefix", "-reindex"])
         self.nodes.append(n1)
+        # The reindex runs in the import thread after the RPC server is up.
+        for _ in range(3000):
+            if n1.getblockcount() >= tip:
+                break
+            time.sleep(0.1)
         self.check_chain(n1, ref, tip)
         assert self.count_out_of_order(1) >= tip - 1
         assert n1.verifychain(4, 0)
