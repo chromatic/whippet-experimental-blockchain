@@ -481,7 +481,7 @@ class UAPMintTransferSpendTest(BitcoinTestFramework):
         orphan = CTransaction()
         utxo = self.get_coinbase_utxo(Decimal('1'))
         inputs = [{"txid": utxo["txid"], "vout": utxo["vout"]}]
-        outputs = {node.getnewaddress(): float(utxo["amount"]) - 0.01}
+        outputs = {node.getnewaddress(): utxo["amount"] - Decimal("0.01")}
         orphan = FromHex(CTransaction(), node.createrawtransaction(inputs, outputs))
         orphan.vout[0].scriptPubKey = transfer_script(
             mint_key.get_pubkey(), 1000, origin_of(mint_txid, 0))
