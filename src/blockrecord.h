@@ -24,7 +24,8 @@
  *
  *   byte  flags
  *   i32   nVersion
- *   u256  hashPrevBlock                   (kept: -reindex reads it straight from the record)
+ *   u256  hashPrevBlock                   (only its first PREV_PREFIX_SIZE bytes with PREV_PREFIX: the reader
+ *                                          resolves the prefix against a known block hash, see below)
  *   u256  hashMerkleRoot                  (omitted when SINGLE_TX: it is the coinbase txid)
  *   u32   nTime, nBits, nNonce
  *   [AuxPoW, when nVersion has VERSION_AUXPOW]
@@ -37,6 +38,12 @@
  *         parent header without hashMerkleRoot (recomputed from the coinbase txid and vMerkleBranch)
  *   compact size tx count                 (omitted when SINGLE_TX)
  *   transactions
+ *
+ * With PREV_PREFIX the record keeps only the first 8 bytes of hashPrevBlock. A reader that has the
+ * block index entry (the parent is pindex->pprev) passes the parent hash. -reindex and -loadblock
+ * resolve the prefix against the hashes of blocks they have already accepted; a block whose prefix
+ * matches nothing yet waits like any other out-of-order block. A wrong match changes the block hash
+ * and fails the proof of work check.
  *
  * The encoder only emits a slim record after decoding it again and comparing the network
  * serialization byte for byte with the input block; otherwise the caller writes a legacy record.
@@ -52,19 +59,26 @@ static const uint32_t SIZE_MASK = 0x7fffffff;
 static const unsigned char FLAG_SINGLE_TX = 1 << 0;
 static const unsigned char FLAG_AUX_HASHBLOCK_DERIVED = 1 << 1;
 static const unsigned char FLAG_AUX_CHAININDEX_ZERO = 1 << 2;
-static const unsigned char FLAGS_KNOWN = FLAG_SINGLE_TX | FLAG_AUX_HASHBLOCK_DERIVED | FLAG_AUX_CHAININDEX_ZERO;
+static const unsigned char FLAG_PREV_PREFIX = 1 << 3;
+static const unsigned char FLAGS_KNOWN = FLAG_SINGLE_TX | FLAG_AUX_HASHBLOCK_DERIVED | FLAG_AUX_CHAININDEX_ZERO | FLAG_PREV_PREFIX;
+
+static const unsigned int PREV_PREFIX_SIZE = 8;
 
 /** Smallest payload a slim record can have (flags, header fields without merkle root, nothing else). */
-static const unsigned int MIN_SLIM_PAYLOAD = 1 + 4 + 32 + 12;
+static const unsigned int MIN_SLIM_PAYLOAD = 1 + 4 + PREV_PREFIX_SIZE + 12;
 
 /** Flags a block would be encoded with, or false if it cannot be (no verification here). */
-bool ChooseFlags(const CBlock& block, unsigned char& flags);
+bool ChooseFlags(const CBlock& block, unsigned char& flags, bool fPrevPrefix = false);
 
 template <typename Stream>
 void SerializeSlim(Stream& s, const CBlock& block, unsigned char flags)
 {
     ser_writedata8(s, flags);
-    s << block.nVersion << block.hashPrevBlock;
+    s << block.nVersion;
+    if (flags & FLAG_PREV_PREFIX)
+        s.write((const char*)block.hashPrevBlock.begin(), PREV_PREFIX_SIZE);
+    else
+        s << block.hashPrevBlock;
     if (!(flags & FLAG_SINGLE_TX))
         s << block.hashMerkleRoot;
     s << block.nTime << block.nBits << block.nNonce;
@@ -90,13 +104,24 @@ void SerializeSlim(Stream& s, const CBlock& block, unsigned char flags)
  * the record is SINGLE_TX: the caller sets it once it has the coinbase.
  */
 template <typename Stream>
-void UnserializeSlimHeader(Stream& s, CBlockHeader& header, unsigned char& flags)
+void UnserializeSlimHeader(Stream& s, CBlockHeader& header, unsigned char& flags, const uint256* hashPrev = NULL)
 {
     header.SetNull();
     flags = ser_readdata8(s);
     if (flags & ~FLAGS_KNOWN)
         throw std::ios_base::failure("slim block record: reserved flag bits set");
-    s >> header.nVersion >> header.hashPrevBlock;
+    s >> header.nVersion;
+    if (flags & FLAG_PREV_PREFIX) {
+        // Only the prefix is on disk; the rest stays null unless the caller knows the parent.
+        s.read((char*)header.hashPrevBlock.begin(), PREV_PREFIX_SIZE);
+        if (hashPrev) {
+            if (memcmp(hashPrev->begin(), header.hashPrevBlock.begin(), PREV_PREFIX_SIZE) != 0)
+                throw std::ios_base::failure("slim block record: parent hash does not match the stored prefix");
+            header.hashPrevBlock = *hashPrev;
+        }
+    } else {
+        s >> header.hashPrevBlock;
+    }
     if (!(flags & FLAG_SINGLE_TX))
         s >> header.hashMerkleRoot;
     s >> header.nTime >> header.nBits >> header.nNonce;
@@ -121,13 +146,18 @@ void UnserializeSlimHeader(Stream& s, CBlockHeader& header, unsigned char& flags
     }
 }
 
-/** Read a whole slim block record payload. */
+/**
+ * Read a whole slim block record payload. For a PREV_PREFIX record hashPrevBlock is the full hash when
+ * hashPrev is given, otherwise only its first bytes (fPrefixOnly is set so the caller resolves it).
+ */
 template <typename Stream>
-void UnserializeSlim(Stream& s, CBlock& block)
+void UnserializeSlim(Stream& s, CBlock& block, const uint256* hashPrev = NULL, bool* fPrefixOnly = NULL)
 {
     block.SetNull();
     unsigned char flags;
-    UnserializeSlimHeader(s, block, flags);
+    UnserializeSlimHeader(s, block, flags, hashPrev);
+    if (fPrefixOnly)
+        *fPrefixOnly = (flags & FLAG_PREV_PREFIX) && !hashPrev;
     if (flags & FLAG_SINGLE_TX) {
         CTransactionRef tx;
         s >> tx;
@@ -142,10 +172,12 @@ void UnserializeSlim(Stream& s, CBlock& block)
 
 /** Read only the header of a slim record; SINGLE_TX needs the coinbase to recover the merkle root. */
 template <typename Stream>
-void UnserializeSlim(Stream& s, CBlockHeader& header)
+void UnserializeSlim(Stream& s, CBlockHeader& header, const uint256* hashPrev = NULL, bool* fPrefixOnly = NULL)
 {
     unsigned char flags;
-    UnserializeSlimHeader(s, header, flags);
+    UnserializeSlimHeader(s, header, flags, hashPrev);
+    if (fPrefixOnly)
+        *fPrefixOnly = (flags & FLAG_PREV_PREFIX) && !hashPrev;
     if (flags & FLAG_SINGLE_TX) {
         CTransactionRef tx;
         s >> tx;
@@ -160,7 +192,7 @@ void UnserializeSlim(Stream& s, CBlockHeader& header)
  * leaves vchPayload empty, if the block must be stored as a legacy record: it has fields that are not
  * derivable, or the decoded payload does not serialize to the same bytes as the block.
  */
-bool EncodeSlim(const CBlock& block, std::vector<unsigned char>& vchPayload);
+bool EncodeSlim(const CBlock& block, std::vector<unsigned char>& vchPayload, bool fPrevPrefix = false);
 
 } // namespace blockrecord
 

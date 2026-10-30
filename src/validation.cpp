@@ -50,6 +50,7 @@
 #include <boost/bind/bind.hpp>
 #include <boost/math/distributions/poisson.hpp>
 #include <boost/thread.hpp>
+#include <unordered_map>
 
 #if defined(NDEBUG)
 # error "Whippet cannot be compiled without assertions."
@@ -71,6 +72,7 @@ std::atomic_bool fImporting(false);
 bool fReindex = false;
 bool fTxIndex = false;
 bool fSlimBlocks = false;
+bool fSlimPrevPrefix = false;
 bool fSlimUndo = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
@@ -1159,6 +1161,7 @@ bool GetTransaction(const uint256 &hash, CTransactionRef &txOut, const Consensus
             if (file.IsNull())
                 return error("%s: OpenBlockFile failed", __func__);
             CBlockHeader header;
+            bool fPrefixOnly = false;
             try {
                 // The size word in front of the payload tells the encoding.
                 uint32_t nSizeWord = 0;
@@ -1168,6 +1171,7 @@ bool GetTransaction(const uint256 &hash, CTransactionRef &txOut, const Consensus
                 if (nSizeWord & blockrecord::SLIM_FLAG) {
                     unsigned char flags;
                     blockrecord::UnserializeSlimHeader(file, header, flags);
+                    fPrefixOnly = (flags & blockrecord::FLAG_PREV_PREFIX) != 0;
                     // Offsets count the tx count byte; a single-tx slim record has none.
                     unsigned int nSkip = postx.nTxOffset;
                     if (flags & blockrecord::FLAG_SINGLE_TX) {
@@ -1187,7 +1191,22 @@ bool GetTransaction(const uint256 &hash, CTransactionRef &txOut, const Consensus
             } catch (const std::exception& e) {
                 return error("%s: Deserialize or I/O error - %s", __func__, e.what());
             }
-            hashBlock = header.GetHash();
+            if (fPrefixOnly) {
+                // The record keeps only a prefix of the parent hash, so the header hash is not computable
+                // here: find the block by its position (a linear scan; txindex stores no block hash).
+                hashBlock.SetNull();
+                for (const auto& item : mapBlockIndex) {
+                    const CBlockIndex* pi = item.second;
+                    if ((pi->nStatus & BLOCK_HAVE_DATA) && pi->nFile == postx.nFile && pi->nDataPos == postx.nPos) {
+                        hashBlock = pi->GetBlockHash();
+                        break;
+                    }
+                }
+                if (hashBlock.IsNull())
+                    return error("%s: no block index entry for the record at %s", __func__, postx.ToString());
+            } else {
+                hashBlock = header.GetHash();
+            }
             if (txOut->GetHash() != hash)
                 return error("%s: txid mismatch", __func__);
             return true;
@@ -1240,8 +1259,11 @@ unsigned int BlockRecordPayloadSize(const CBlock& block, const std::vector<unsig
 void PrepareBlockRecord(const CBlock& block, std::vector<unsigned char>& vchSlim)
 {
     vchSlim.clear();
-    if (fSlimBlocks)
-        blockrecord::EncodeSlim(block, vchSlim); // on failure vchSlim is empty: legacy record
+    if (fSlimBlocks) {
+        // The prefix is resolved against the parent's hash on read, so the parent must be in the index.
+        bool fPrefix = fSlimPrevPrefix && mapBlockIndex.count(block.hashPrevBlock);
+        blockrecord::EncodeSlim(block, vchSlim, fPrefix); // on failure vchSlim is empty: legacy record
+    }
 }
 
 bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHeader::MessageStartChars& messageStart, const std::vector<unsigned char>& vchSlim)
@@ -1296,7 +1318,7 @@ bool ReadBlockRecordSizeWord(const CDiskBlockPos& pos, uint32_t& nSizeWord)
 }
 
 template<typename T>
-static bool ReadBlockOrHeader(T& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams, bool fCheckPOW)
+static bool ReadBlockOrHeader(T& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams, bool fCheckPOW, const uint256* hashPrev = NULL)
 {
     block.SetNull();
 
@@ -1312,10 +1334,14 @@ static bool ReadBlockOrHeader(T& block, const CDiskBlockPos& pos, const Consensu
     try {
         uint32_t nSizeWord;
         filein >> nSizeWord;
-        if (nSizeWord & blockrecord::SLIM_FLAG)
-            blockrecord::UnserializeSlim(filein, block);
-        else
+        if (nSizeWord & blockrecord::SLIM_FLAG) {
+            bool fPrefixOnly = false;
+            blockrecord::UnserializeSlim(filein, block, hashPrev, &fPrefixOnly);
+            if (fPrefixOnly)
+                return error("%s: the record at %s keeps only a prefix of the parent hash and none was given", __func__, pos.ToString());
+        } else {
             filein >> block;
+        }
     }
     catch (const std::exception& e) {
         return error("%s: Deserialize or I/O error - %s at %s", __func__, e.what(), pos.ToString());
@@ -1331,7 +1357,10 @@ static bool ReadBlockOrHeader(T& block, const CDiskBlockPos& pos, const Consensu
 template<typename T>
 static bool ReadBlockOrHeader(T& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams, bool fCheckPOW)
 {
-    if (!ReadBlockOrHeader(block, pindex->GetBlockPos(), consensusParams, fCheckPOW))
+    uint256 hashPrev;
+    if (pindex->pprev)
+        hashPrev = pindex->pprev->GetBlockHash();
+    if (!ReadBlockOrHeader(block, pindex->GetBlockPos(), consensusParams, fCheckPOW, pindex->pprev ? &hashPrev : NULL))
         return false;
     if (block.GetHash() != pindex->GetBlockHash())
         return error("ReadBlockOrHeader(CBlock&, CBlockIndex*): GetHash() doesn't match index for %s at %s",
@@ -1339,9 +1368,9 @@ static bool ReadBlockOrHeader(T& block, const CBlockIndex* pindex, const Consens
     return true;
 }
 
-bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams, bool fCheckPOW)
+bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams, bool fCheckPOW, const uint256* hashPrev)
 {
-    return ReadBlockOrHeader(block, pos, consensusParams, fCheckPOW);
+    return ReadBlockOrHeader(block, pos, consensusParams, fCheckPOW, hashPrev);
 }
 
 bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams, bool fCheckPOW)
@@ -4352,13 +4381,23 @@ bool InitBlockIndex(const CChainParams& chainparams)
 
 bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskBlockPos *dbp)
 {
+    // Both maps are keyed by the first 8 bytes of the parent hash, which is all a -slimprevprefix record has.
+    // A child found under that key is checked against the full parent hash before it is used.
     // Map of disk positions for blocks with unknown parent (only used for reindex)
-    static std::multimap<uint256, CDiskBlockPos> mapBlocksUnknownParent;
+    static std::multimap<uint64_t, CDiskBlockPos> mapBlocksUnknownParent;
     // Blocks with unknown parent from a file with no disk position (-loadblock, bootstrap.dat),
     // kept in memory up to a cap. Without this such a block was dropped, and so was its whole chain.
     static const size_t MAX_UNKNOWN_PARENT_BYTES = 128 * 1024 * 1024;
-    static std::multimap<uint256, std::shared_ptr<CBlock> > mapBlocksUnknownParentMem;
+    typedef std::pair<std::shared_ptr<CBlock>, bool> UnknownParentEntry; // block, hashPrevBlock is only a prefix
+    static std::multimap<uint64_t, UnknownParentEntry> mapBlocksUnknownParentMem;
     static size_t nUnknownParentMemBytes = 0;
+    // First 8 bytes of the hash of every block accepted so far, to resolve prefix-only parents.
+    std::unordered_map<uint64_t, uint256> mapPrefixToHash;
+    {
+        LOCK(cs_main);
+        for (const auto& item : mapBlockIndex)
+            mapPrefixToHash.insert(std::make_pair(item.first.GetUint64(0), item.first));
+    }
     int64_t nStart = GetTimeMillis();
 
     int nLoaded = 0;
@@ -4401,21 +4440,33 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                 blkdat.SetPos(nBlockPos);
                 std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
                 CBlock& block = *pblock;
+                bool fPrefixOnly = false;
                 if (fSlim)
-                    blockrecord::UnserializeSlim(blkdat, block);
+                    blockrecord::UnserializeSlim(blkdat, block, NULL, &fPrefixOnly);
                 else
                     blkdat >> block;
                 nRewind = blkdat.GetPos();
 
+                // A prefix-only parent hash is resolved against the blocks accepted so far. Until then the
+                // block hash cannot be computed.
+                if (fPrefixOnly) {
+                    std::unordered_map<uint64_t, uint256>::const_iterator mp = mapPrefixToHash.find(block.hashPrevBlock.GetUint64(0));
+                    if (mp != mapPrefixToHash.end()) {
+                        block.hashPrevBlock = mp->second;
+                        fPrefixOnly = false;
+                    }
+                }
+
                 // detect out of order blocks, and store them for later
-                uint256 hash = block.GetHash();
-                if (hash != chainparams.GetConsensus(0).hashGenesisBlock && mapBlockIndex.find(block.hashPrevBlock) == mapBlockIndex.end()) {
+                uint256 hash = fPrefixOnly ? uint256() : block.GetHash();
+                if (fPrefixOnly || (hash != chainparams.GetConsensus(0).hashGenesisBlock && mapBlockIndex.find(block.hashPrevBlock) == mapBlockIndex.end())) {
                     LogPrint("reindex", "%s: Out of order block %s, parent %s not known\n", __func__, hash.ToString(),
                             block.hashPrevBlock.ToString());
+                    uint64_t nKey = block.hashPrevBlock.GetUint64(0);
                     if (dbp) {
-                        mapBlocksUnknownParent.insert(std::make_pair(block.hashPrevBlock, *dbp));
+                        mapBlocksUnknownParent.insert(std::make_pair(nKey, *dbp));
                     } else if (nUnknownParentMemBytes + ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION) <= MAX_UNKNOWN_PARENT_BYTES) {
-                        mapBlocksUnknownParentMem.insert(std::make_pair(block.hashPrevBlock, pblock));
+                        mapBlocksUnknownParentMem.insert(std::make_pair(nKey, UnknownParentEntry(pblock, fPrefixOnly)));
                         nUnknownParentMemBytes += ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION);
                     } else {
                         LogPrintf("%s: Out of order block %s dropped, more than %u MiB waiting for a parent\n", __func__,
@@ -4428,8 +4479,10 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                 if (mapBlockIndex.count(hash) == 0 || (mapBlockIndex[hash]->nStatus & BLOCK_HAVE_DATA) == 0) {
                     LOCK(cs_main);
                     CValidationState state;
-                    if (AcceptBlock(pblock, state, chainparams, NULL, true, dbp, NULL))
+                    if (AcceptBlock(pblock, state, chainparams, NULL, true, dbp, NULL)) {
                         nLoaded++;
+                        mapPrefixToHash.insert(std::make_pair(hash.GetUint64(0), hash));
+                    }
                     if (state.IsError())
                         break;
                 } else if (hash != chainparams.GetConsensus(0).hashGenesisBlock && mapBlockIndex[hash]->nHeight % 1000 == 0) {
@@ -4452,9 +4505,10 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                 while (!queue.empty()) {
                     uint256 head = queue.front();
                     queue.pop_front();
-                    std::pair<std::multimap<uint256, CDiskBlockPos>::iterator, std::multimap<uint256, CDiskBlockPos>::iterator> range = mapBlocksUnknownParent.equal_range(head);
+                    std::pair<std::multimap<uint64_t, CDiskBlockPos>::iterator, std::multimap<uint64_t, CDiskBlockPos>::iterator> range = mapBlocksUnknownParent.equal_range(head.GetUint64(0));
                     while (range.first != range.second) {
-                        std::multimap<uint256, CDiskBlockPos>::iterator it = range.first;
+                        std::multimap<uint64_t, CDiskBlockPos>::iterator it = range.first;
+                        range.first++;
                         std::shared_ptr<CBlock> pblockrecursive = std::make_shared<CBlock>();
                         // The child extends head, which was just accepted, so its height is known.
                         // GetConsensus(0) would check the AuxPoW chain ID against the pre-fix value.
@@ -4465,32 +4519,50 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                             if (mi != mapBlockIndex.end())
                                 nChildHeight = mi->second->nHeight + 1;
                         }
-                        if (ReadBlockFromDisk(*pblockrecursive, it->second, chainparams.GetConsensus(nChildHeight)))
-                        {
-                            LogPrint("reindex", "%s: Processing out of order child %s of %s\n", __func__, pblockrecursive->GetHash().ToString(),
+                        // A child under the same 8-byte prefix may belong to another parent: leave it.
+                        if (ReadBlockFromDisk(*pblockrecursive, it->second, chainparams.GetConsensus(nChildHeight), false, &head)) {
+                            if (pblockrecursive->hashPrevBlock != head)
+                                continue;
+                            if (!CheckAuxPowProofOfWork(*pblockrecursive, chainparams.GetConsensus(nChildHeight))) {
+                                // Not this parent (or a bad block): with a prefix, try the next candidate.
+                                LogPrintf("%s: block under prefix of %s fails its header check\n", __func__, head.ToString());
+                                mapBlocksUnknownParent.erase(it);
+                                continue;
+                            }
+                            uint256 hashChild = pblockrecursive->GetHash();
+                            LogPrint("reindex", "%s: Processing out of order child %s of %s\n", __func__, hashChild.ToString(),
                                     head.ToString());
                             LOCK(cs_main);
                             CValidationState dummy;
                             if (AcceptBlock(pblockrecursive, dummy, chainparams, NULL, true, &it->second, NULL))
                             {
                                 nLoaded++;
-                                queue.push_back(pblockrecursive->GetHash());
+                                mapPrefixToHash.insert(std::make_pair(hashChild.GetUint64(0), hashChild));
+                                queue.push_back(hashChild);
                             }
                         }
-                        range.first++;
                         mapBlocksUnknownParent.erase(it);
                         NotifyHeaderTip();
                     }
-                    std::pair<std::multimap<uint256, std::shared_ptr<CBlock> >::iterator, std::multimap<uint256, std::shared_ptr<CBlock> >::iterator> rangeMem = mapBlocksUnknownParentMem.equal_range(head);
+                    std::pair<std::multimap<uint64_t, UnknownParentEntry>::iterator, std::multimap<uint64_t, UnknownParentEntry>::iterator> rangeMem = mapBlocksUnknownParentMem.equal_range(head.GetUint64(0));
                     while (rangeMem.first != rangeMem.second) {
-                        std::shared_ptr<CBlock> pblockchild = rangeMem.first->second;
+                        std::shared_ptr<CBlock> pblockchild = rangeMem.first->second.first;
+                        bool fChildPrefixOnly = rangeMem.first->second.second;
+                        if (!fChildPrefixOnly && pblockchild->hashPrevBlock != head) {
+                            ++rangeMem.first; // same prefix, another parent
+                            continue;
+                        }
                         nUnknownParentMemBytes -= ::GetSerializeSize(*pblockchild, SER_DISK, CLIENT_VERSION);
                         rangeMem.first = mapBlocksUnknownParentMem.erase(rangeMem.first);
+                        if (fChildPrefixOnly)
+                            pblockchild->hashPrevBlock = head;
                         LOCK(cs_main);
                         CValidationState dummy;
                         if (AcceptBlock(pblockchild, dummy, chainparams, NULL, true, NULL, NULL)) {
                             nLoaded++;
-                            queue.push_back(pblockchild->GetHash());
+                            uint256 hashChild = pblockchild->GetHash();
+                            mapPrefixToHash.insert(std::make_pair(hashChild.GetUint64(0), hashChild));
+                            queue.push_back(hashChild);
                         }
                         NotifyHeaderTip();
                     }

@@ -8,9 +8,11 @@
 
 namespace blockrecord {
 
-bool ChooseFlags(const CBlock& block, unsigned char& flags)
+bool ChooseFlags(const CBlock& block, unsigned char& flags, bool fPrevPrefix)
 {
     flags = 0;
+    if (fPrevPrefix && !block.hashPrevBlock.IsNull())
+        flags |= FLAG_PREV_PREFIX;
     if (block.vtx.empty() || !block.vtx[0])
         return false;
     for (const auto& tx : block.vtx)
@@ -35,11 +37,11 @@ bool ChooseFlags(const CBlock& block, unsigned char& flags)
     return true;
 }
 
-bool EncodeSlim(const CBlock& block, std::vector<unsigned char>& vchPayload)
+bool EncodeSlim(const CBlock& block, std::vector<unsigned char>& vchPayload, bool fPrevPrefix)
 {
     vchPayload.clear();
     unsigned char flags;
-    if (!ChooseFlags(block, flags))
+    if (!ChooseFlags(block, flags, fPrevPrefix))
         return false;
 
     CDataStream ss(SER_DISK, CLIENT_VERSION);
@@ -49,7 +51,7 @@ bool EncodeSlim(const CBlock& block, std::vector<unsigned char>& vchPayload)
         // Verify-on-write: decode what we just wrote and compare the full serialization.
         CDataStream check(ss.begin(), ss.end(), SER_DISK, CLIENT_VERSION);
         CBlock decoded;
-        UnserializeSlim(check, decoded);
+        UnserializeSlim(check, decoded, &block.hashPrevBlock);
         if (!check.empty())
             return false;
         CDataStream a(SER_DISK, CLIENT_VERSION), b(SER_DISK, CLIENT_VERSION);

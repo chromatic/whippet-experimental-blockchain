@@ -252,4 +252,43 @@ BOOST_AUTO_TEST_CASE(disk_roundtrip_mixed_file)
     }
 }
 
+BOOST_AUTO_TEST_CASE(prev_prefix)
+{
+    CBlock b = MakeBlock(3); // multi-tx: only the prefix makes the record smaller
+    b.hashPrevBlock = uint256S("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+
+    std::vector<unsigned char> plain;
+    BOOST_CHECK(!blockrecord::EncodeSlim(b, plain, false));
+    std::vector<unsigned char> payload;
+    BOOST_CHECK(blockrecord::EncodeSlim(b, payload, true));
+    BOOST_CHECK_EQUAL(Ser(b).size() - payload.size(), 32U - blockrecord::PREV_PREFIX_SIZE - 1U);
+
+    // given the parent hash the block comes back whole
+    CDataStream ss(payload, SER_DISK, CLIENT_VERSION);
+    CBlock out;
+    bool fPrefixOnly = true;
+    blockrecord::UnserializeSlim(ss, out, &b.hashPrevBlock, &fPrefixOnly);
+    BOOST_CHECK(!fPrefixOnly);
+    BOOST_CHECK(Ser(out) == Ser(b));
+
+    // without it only the prefix is there and the caller is told
+    CDataStream ss2(payload, SER_DISK, CLIENT_VERSION);
+    blockrecord::UnserializeSlim(ss2, out, NULL, &fPrefixOnly);
+    BOOST_CHECK(fPrefixOnly);
+    BOOST_CHECK(memcmp(out.hashPrevBlock.begin(), b.hashPrevBlock.begin(), blockrecord::PREV_PREFIX_SIZE) == 0);
+    BOOST_CHECK(out.hashPrevBlock != b.hashPrevBlock);
+
+    // a parent hash that does not start with the stored prefix is refused
+    uint256 other = uint256S("ff");
+    CDataStream ss3(payload, SER_DISK, CLIENT_VERSION);
+    BOOST_CHECK_THROW(blockrecord::UnserializeSlim(ss3, out, &other), std::ios_base::failure);
+
+    // a null parent (genesis) never uses the prefix
+    CBlock g = MakeBlock(1);
+    g.hashPrevBlock.SetNull();
+    std::vector<unsigned char> pg;
+    BOOST_CHECK(blockrecord::EncodeSlim(g, pg, true));
+    BOOST_CHECK(!(pg[0] & blockrecord::FLAG_PREV_PREFIX));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

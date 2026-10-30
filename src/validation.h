@@ -204,6 +204,8 @@ static const uint64_t nMinDiskSpace = 52428800;
 extern bool fHavePruned;
 /** Write new blocks as slim records (-slimblocks). Reading never needs the flag. */
 extern bool fSlimBlocks;
+/** With -slimblocks, keep only 8 bytes of hashPrevBlock in new records (-slimprevprefix). */
+extern bool fSlimPrevPrefix;
 /** True if we're running in -prune mode. */
 extern bool fPruneMode;
 /** Number of MiB of block files that we're trying to stay below. */
@@ -539,7 +541,8 @@ void PrepareBlockRecord(const CBlock& block, std::vector<unsigned char>& vchSlim
 unsigned int BlockRecordPayloadSize(const CBlock& block, const std::vector<unsigned char>& vchSlim);
 /** The size word in front of the payload at pos: bit 31 set means a slim record. */
 bool ReadBlockRecordSizeWord(const CDiskBlockPos& pos, uint32_t& nSizeWord);
-bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams, bool fCheckPOW = true);
+/** hashPrev: the parent hash, needed for a record that keeps only a prefix of it (-slimprevprefix). */
+bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus::Params& consensusParams, bool fCheckPOW = true, const uint256* hashPrev = NULL);
 bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams, bool fCheckPOW = true);
 bool ReadBlockHeaderFromDisk(CBlockHeader& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams, bool fCheckPOW = true);
 
