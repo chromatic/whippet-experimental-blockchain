@@ -162,6 +162,7 @@ testScripts = [
     'createauxblock.py',
     'slimblocks.py',
     'slimprevprefix.py',
+    'slimprune.py',
     'signmessages.py',
     # 'nulldummy.py',
     'import-rescan.py',
