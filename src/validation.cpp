@@ -2906,6 +2906,7 @@ bool ResetBlockFailureFlags(CBlockIndex *pindex) {
     while (it != mapBlockIndex.end()) {
         if (!it->second->IsValid() && it->second->GetAncestor(nHeight) == pindex) {
             it->second->nStatus &= ~BLOCK_FAILED_MASK;
+            gFailedBlocks.erase(it->second);
             setDirtyBlockIndex.insert(it->second);
             if (it->second->IsValid(BLOCK_VALID_TRANSACTIONS) && it->second->nChainTx && setBlockIndexCandidates.value_comp()(chainActive.Tip(), it->second)) {
                 setBlockIndexCandidates.insert(it->second);
@@ -2924,6 +2925,8 @@ bool ResetBlockFailureFlags(CBlockIndex *pindex) {
             pindex->nStatus &= ~BLOCK_FAILED_MASK;
             setDirtyBlockIndex.insert(pindex);
         }
+        // AcceptBlockHeader asserts that every entry of gFailedBlocks is still flagged as failed.
+        gFailedBlocks.erase(pindex);
         pindex = pindex->pprev;
     }
     return true;
