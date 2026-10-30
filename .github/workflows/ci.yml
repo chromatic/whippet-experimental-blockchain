@@ -127,10 +127,11 @@ jobs:
             config-opts: "--with-gui=qt5 --enable-glibc-back-compat --disable-wallet LDFLAGS=-static-libstdc++"
             goal: install
           # Only this job runs the -extended set, of the three that run
-          # rpc-tests.py. pruning.py alone can take ~2 hours, and the extended
-          # tests exercise node behaviour (relay policy, block assembly, disk
-          # pruning) rather than anything architecture- or flag-specific, so
-          # one native x86_64 run covers them. This is the DEBUG_LOCKORDER
+          # rpc-tests.py. The extended tests exercise node behaviour (relay
+          # policy, block assembly) rather than anything architecture- or
+          # flag-specific, so one native x86_64 run covers them. (pruning.py
+          # used to be one of them and take ~2 hours; with -fastprune it is
+          # part of the default set.) This is the DEBUG_LOCKORDER
           # build, the one most likely to turn a subtle bug into a hard failure.
           - name: x86_64-linux-dbg
             host: x86_64-unknown-linux-gnu

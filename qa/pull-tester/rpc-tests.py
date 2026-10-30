@@ -101,6 +101,7 @@ if ENABLE_ZMQ:
 
 testScripts = [
     # longest test should go first, to favor running tests in parallel
+    'pruning.py',
     'wallet-hd.py',
     'walletbackup.py',
     # vv Tests less than 5m vv
@@ -196,7 +197,6 @@ if ENABLE_ZMQ:
     testScripts.append('zmq_test.py')
 
 testScriptsExt = [
-    'pruning.py',
     # vv Tests less than 20m vv
     'smartfees.py',
     # vv Tests less than 5m vv

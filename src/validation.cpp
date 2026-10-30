@@ -3157,7 +3157,8 @@ bool FindBlockPos(CValidationState &state, CDiskBlockPos &pos, unsigned int nAdd
     }
 
     if (!fKnown) {
-        while (vinfoBlockFile[nFile].nSize + nAddSize >= MAX_BLOCKFILE_SIZE) {
+        // A block larger than a whole (-fastprune) file goes into an empty one instead of looping forever.
+        while (vinfoBlockFile[nFile].nSize != 0 && vinfoBlockFile[nFile].nSize + nAddSize >= GetMaxBlockfileSize()) {
             nFile++;
             if (vinfoBlockFile.size() <= nFile) {
                 vinfoBlockFile.resize(nFile + 1);
@@ -3182,16 +3183,16 @@ bool FindBlockPos(CValidationState &state, CDiskBlockPos &pos, unsigned int nAdd
         vinfoBlockFile[nFile].nSize += nAddSize;
 
     if (!fKnown) {
-        unsigned int nOldChunks = (pos.nPos + BLOCKFILE_CHUNK_SIZE - 1) / BLOCKFILE_CHUNK_SIZE;
-        unsigned int nNewChunks = (vinfoBlockFile[nFile].nSize + BLOCKFILE_CHUNK_SIZE - 1) / BLOCKFILE_CHUNK_SIZE;
+        unsigned int nOldChunks = (pos.nPos + GetBlockfileChunkSize() - 1) / GetBlockfileChunkSize();
+        unsigned int nNewChunks = (vinfoBlockFile[nFile].nSize + GetBlockfileChunkSize() - 1) / GetBlockfileChunkSize();
         if (nNewChunks > nOldChunks) {
             if (fPruneMode)
                 fCheckForPruning = true;
-            if (CheckDiskSpace(nNewChunks * BLOCKFILE_CHUNK_SIZE - pos.nPos)) {
+            if (CheckDiskSpace(nNewChunks * GetBlockfileChunkSize() - pos.nPos)) {
                 FILE *file = OpenBlockFile(pos);
                 if (file) {
-                    LogPrintf("Pre-allocating up to position 0x%x in blk%05u.dat\n", nNewChunks * BLOCKFILE_CHUNK_SIZE, pos.nFile);
-                    AllocateFileRange(file, pos.nPos, nNewChunks * BLOCKFILE_CHUNK_SIZE - pos.nPos);
+                    LogPrintf("Pre-allocating up to position 0x%x in blk%05u.dat\n", nNewChunks * GetBlockfileChunkSize(), pos.nFile);
+                    AllocateFileRange(file, pos.nPos, nNewChunks * GetBlockfileChunkSize() - pos.nPos);
                     fclose(file);
                 }
             }
@@ -3215,16 +3216,16 @@ bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigne
     nNewSize = vinfoBlockFile[nFile].nUndoSize += nAddSize;
     setDirtyFileInfo.insert(nFile);
 
-    unsigned int nOldChunks = (pos.nPos + UNDOFILE_CHUNK_SIZE - 1) / UNDOFILE_CHUNK_SIZE;
-    unsigned int nNewChunks = (nNewSize + UNDOFILE_CHUNK_SIZE - 1) / UNDOFILE_CHUNK_SIZE;
+    unsigned int nOldChunks = (pos.nPos + GetUndofileChunkSize() - 1) / GetUndofileChunkSize();
+    unsigned int nNewChunks = (nNewSize + GetUndofileChunkSize() - 1) / GetUndofileChunkSize();
     if (nNewChunks > nOldChunks) {
         if (fPruneMode)
             fCheckForPruning = true;
-        if (CheckDiskSpace(nNewChunks * UNDOFILE_CHUNK_SIZE - pos.nPos)) {
+        if (CheckDiskSpace(nNewChunks * GetUndofileChunkSize() - pos.nPos)) {
             FILE *file = OpenUndoFile(pos);
             if (file) {
-                LogPrintf("Pre-allocating up to position 0x%x in rev%05u.dat\n", nNewChunks * UNDOFILE_CHUNK_SIZE, pos.nFile);
-                AllocateFileRange(file, pos.nPos, nNewChunks * UNDOFILE_CHUNK_SIZE - pos.nPos);
+                LogPrintf("Pre-allocating up to position 0x%x in rev%05u.dat\n", nNewChunks * GetUndofileChunkSize(), pos.nFile);
+                AllocateFileRange(file, pos.nPos, nNewChunks * GetUndofileChunkSize() - pos.nPos);
                 fclose(file);
             }
         }
@@ -3884,7 +3885,7 @@ void FindFilesToPrune(std::set<int>& setFilesToPrune, uint64_t nPruneAfterHeight
     // We don't check to prune until after we've allocated new space for files
     // So we should leave a buffer under our target to account for another allocation
     // before the next pruning.
-    uint64_t nBuffer = BLOCKFILE_CHUNK_SIZE + UNDOFILE_CHUNK_SIZE;
+    uint64_t nBuffer = GetBlockfileChunkSize() + GetUndofileChunkSize();
     uint64_t nBytesToPrune;
     int count=0;
 
@@ -3926,6 +3927,13 @@ bool CheckDiskSpace(uint64_t nAdditionalBytes)
 
     return true;
 }
+
+bool fFastPrune = false;
+
+unsigned int GetMaxBlockfileSize() { return fFastPrune ? MAX_BLOCKFILE_SIZE / FASTPRUNE_DIVISOR : MAX_BLOCKFILE_SIZE; }
+unsigned int GetBlockfileChunkSize() { return fFastPrune ? BLOCKFILE_CHUNK_SIZE / FASTPRUNE_DIVISOR : BLOCKFILE_CHUNK_SIZE; }
+unsigned int GetUndofileChunkSize() { return fFastPrune ? UNDOFILE_CHUNK_SIZE / FASTPRUNE_DIVISOR : UNDOFILE_CHUNK_SIZE; }
+uint64_t GetMinDiskSpaceForBlockFiles() { return fFastPrune ? MIN_DISK_SPACE_FOR_BLOCK_FILES / FASTPRUNE_DIVISOR : MIN_DISK_SPACE_FOR_BLOCK_FILES; }
 
 FILE* OpenDiskFile(const CDiskBlockPos &pos, const char *prefix, bool fReadOnly)
 {
