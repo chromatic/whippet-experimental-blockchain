@@ -86,6 +86,8 @@ static const unsigned int MAX_BLOCKFILE_SIZE = 0x8000000; // 128 MiB
 static const unsigned int BLOCKFILE_CHUNK_SIZE = 0x1000000; // 16 MiB
 /** The pre-allocation chunk size for rev?????.dat files (since 0.8) */
 static const unsigned int UNDOFILE_CHUNK_SIZE = 0x100000; // 1 MiB
+/** With -fastprune (regtest only) the three sizes above and the minimum prune target are divided by this. */
+static const unsigned int FASTPRUNE_DIVISOR = 50;
 
 /** Maximum number of script-checking threads allowed */
 static const int MAX_SCRIPTCHECK_THREADS = 16;
@@ -219,6 +221,13 @@ static const unsigned int DEFAULT_CHECKLEVEL = 3;
 // one 128MB block file + added 15% undo data = 147MB greater for a total of 2,134MB
 // Setting the target to > than 2200MB will make it likely we can respect the target.
 static const uint64_t MIN_DISK_SPACE_FOR_BLOCK_FILES = 2200ULL * 1024 * 1024;
+
+/** -fastprune: shrink the block file sizes and the minimum prune target so pruning can be tested with small blocks. */
+extern bool fFastPrune;
+unsigned int GetMaxBlockfileSize();
+unsigned int GetBlockfileChunkSize();
+unsigned int GetUndofileChunkSize();
+uint64_t GetMinDiskSpaceForBlockFiles();
 
 /** 
  * Process an incoming block. This only returns after the best known valid
