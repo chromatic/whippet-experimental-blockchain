@@ -368,7 +368,7 @@ Testing
     height a block mined after a 66 s wait is refused by the other side in
     both directions, and the nodes end on different chains. The "old" node
     in this test is the build before the easing row, not a 1.3.1 binary.
-- Full unit test suite: 350 test cases, all passing.
+- Full unit test suite: 362 test cases, all passing.
 - `slimblocks.py`, `slimundo.py`, `slimprevprefix.py` and `slimprune.py` run
   nodes with the storage options and compare every block, header and
   transaction with a node on the default format, through restarts with and
