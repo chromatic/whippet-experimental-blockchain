@@ -106,6 +106,10 @@ def mine_large_blocks(node, n):
 # height 1000, 25.3s per 1000 at height 4000). It is deliberately left on --
 # this is the test that does deep reorgs and prunes block files, which is
 # exactly what that check is there to police.
+#
+# That was measured with the full size 950k blocks. With -fastprune the blocks are
+# 1/50 of that and the whole test takes a few minutes, so the deadline is now far
+# more than needed; it is kept as a backstop for slow CI machines.
 SYNC_TIMEOUT = 1800
 
 def calc_usage(blockdir):
