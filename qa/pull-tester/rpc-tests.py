@@ -158,6 +158,7 @@ testScripts = [
     # 'invalidtxrequest.py',
     # 'p2p-versionbits-warning.py',
     'preciousblock.py',
+    'reconsider_headers.py',
     'importprunedfunds.py',
     'createauxblock.py',
     'slimblocks.py',
