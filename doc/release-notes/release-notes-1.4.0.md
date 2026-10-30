@@ -11,6 +11,11 @@ different heights**, and the second is a hard fork:
 | 371,337 | Block timestamps may be at most 72 s ahead of adjusted time (was 2 hours); same height as AuxPoW | soft fork | most hashrate, before the height |
 | 600,000 | Difficulty eases while the chain waits for a block (LWMA with easing) | **hard fork** | **every miner and node, before the height** |
 
+The release also fixes two bugs that stopped `-reindex` and `-loadblock` on the
+live chain and a node crash after `reconsiderblock`, and adds four
+experimental options that make the block files, the undo files and the block
+index smaller. Those options are **off by default**.
+
 Please report bugs using the issue tracker at GitHub:
 
   <https://github.com/chromatic/whippet-experimental-blockchain/issues>
@@ -47,7 +52,9 @@ height 600,000 about a month. The rate is not constant, so treat these as
 rough: watch `getblockcount`, not the calendar.
 
 There is no wallet or chain-data migration. The on-disk format is unchanged
-unless you opt in to `-slimblockindex` (see Experimental, below).
+unless you opt in to one of the experimental storage options (`-slimblocks`,
+`-slimprevprefix`, `-slimundo`, `-slimblockindex`; see Experimental, below).
+Data written with those cannot be read by 1.3.x.
 
 
 What changed in block timestamps
@@ -122,6 +129,43 @@ version 2 with no chain ID) are refused from that height. Check that your
 miner takes the version field from `getblocktemplate`.
 
 
+Fixes
+======
+
+**`-reindex` stopped at height 166,639.** A block that arrived before its
+parent was read back with the consensus rules of height 0, so its AuxPoW
+chain ID was compared with the value from before the chain-ID fix (98). Every
+such block past the fix was refused ("block does not have our chain ID (got
+22352, expected 98)") and the reindex ended there on a copy of the live chain.
+The child's height is now taken from its parent.
+
+**`-loadblock` and `bootstrap.dat` dropped blocks that preceded their
+parent.** Only `-reindex`, which has a position on disk, kept such a block
+until its parent arrived. An import from a file dropped it together with
+every descendant, so a file in arrival order stopped at the first block that
+came before its parent (height 166,639 of 180,504 on a copy of the live
+`blk00000.dat`). Such blocks are now kept in memory, keyed by parent hash, up
+to 128 MiB; past that a block is dropped with a log line, as before. Checked
+on the chain to height 180,633 with the file as it was, with windows of 100
+and 5,000 blocks shuffled, fully random and fully reversed: every case
+reached the tip with `verifychain 3 1000` true and nothing dropped. That
+chain has no AuxPoW blocks and is 75 MB, so it never reached the cap; at
+about 950 bytes an AuxPoW block, the cap holds roughly 140,000 blocks
+waiting for a parent.
+
+A fresh node still wants the genesis block first in the file: it activates
+its chain when it meets genesis, and with `-checkblockindex` (on in regtest)
+accepting a block before that trips an assertion.
+
+**A crash after `reconsiderblock`.** `reconsiderblock` cleared the failure
+flags of a block but left it in the node's set of failed blocks. A header
+from a peer that built on a descendant of that block, before the descendant
+was fully validated, then hit `assert(failedit->nStatus & BLOCK_FAILED_VALID)`
+in `AcceptBlockHeader` and the node aborted. A peer could trigger it, but only
+on a node whose operator had run `invalidateblock` and then `reconsiderblock`.
+`reconsiderblock` now removes the entry.
+
+
 Testnet
 ========
 
@@ -168,8 +212,8 @@ Off by default. With `-slimblocks=1` a new block is written to `blk*.dat`
 without the header fields that can be recomputed: the merkle root of a block
 with one transaction (it is the coinbase txid), and for merge-mined blocks the
 parent merkle root, `nIndex`, and `hashBlock` and `nChainIndex` when they hold
-their usual values. `hashPrevBlock` is kept, because `-reindex` reads it from
-the record. A block is only stored this way after it has been decoded again and
+their usual values. `hashPrevBlock` is kept in full (see `-slimprevprefix`
+for the option that shortens it). A block is only stored this way after it has been decoded again and
 compared byte for byte with the original; otherwise it is stored as before.
 `getblock` and block relay return exactly the same bytes. A single-transaction
 block takes 32 bytes less.
@@ -181,6 +225,71 @@ block takes 32 bytes less.
   file, and a node reads both whether or not the option is on.
 - `-txindex`, `-reindex`, `verifychain`, pruning and `-loadblock` handle both
   kinds of record.
+
+
+Experimental: `-slimundo`
+============================
+
+Off by default. With `-slimundo=1` a block that spent nothing (a coinbase
+only block) gets no record in `rev*.dat`, and the undo checksum of the other
+blocks is cut from 32 to 8 bytes. Disconnecting a block with no record needs
+no undo data, so reorgs work as before.
+
+- It is **one way**: versions before 1.4.0 cannot disconnect such a block
+  without `-reindex`.
+- Records already on disk are not rewritten.
+
+
+Experimental: `-slimprevprefix`
+=================================
+
+Off by default, and only with `-slimblocks`. A `blk*.dat` record then keeps
+the first 8 bytes of the previous block hash instead of all 32.
+
+- Reads that come through the block index (RPC, relay, `verifychain`, wallet
+  rescan, reorgs) take the parent hash from the index.
+- `-reindex` and `-loadblock` resolve the prefix against the hashes of the
+  blocks they have accepted so far. A block whose parent has not arrived yet
+  waits with the other out-of-order blocks. A wrong match changes the block
+  hash and fails the proof-of-work check.
+- The genesis block, and a block whose parent is not in the block index when
+  it is written, keep the full hash.
+- The `txindex` stores a file position, not a block hash, so
+  `getrawtransaction` finds the block hash of such a record from a position
+  map the node keeps in memory.
+- Two known blocks whose hashes share their first 8 bytes are not detected
+  when the record is written; at this chain size the chance is about 1 in
+  1e9, and a wrong match is rejected by the proof-of-work check.
+
+
+Storage savings on the live chain
+===================================
+
+A node importing `bootstrap.dat` in height order to block 180,633. Sizes are
+bytes in use; the files themselves are preallocated in chunks (16 MiB for
+`blk`, 1 MiB for `rev`), so the directory looks bigger.
+
+| | Default | `-slimblocks -slimundo -slimblockindex` | plus `-slimprevprefix` |
+|---|---|---|---|
+| `blk00000.dat` | 75,086,721 | 69,905,633 (-6.9%) | 65,589,166 (-12.6%) |
+| `rev00000.dat` | 14,050,876 | 6,963,248 (-50.4%) | 6,963,248 |
+| block index | 25,440,245 | 18,652,234 (-26.7%) | 18,652,122 |
+| total | 114,577,842 | 95,521,115 (-16.6%) | 91,204,536 (-20.4%) |
+
+The chainstate is 10.5 MB in every case. 161,909 of the 180,634 `blk` records
+are in the shorter form. Only 18,725 of the 180,633 blocks have an `rev`
+record. `verifychain 3 1000` returned true in every run, and a `-reindex`
+from the prefix-only `blk` file reached the same tip with the same
+chainstate and block index sizes.
+
+The saving follows the chain: it comes from blocks with one transaction and
+blocks that spent nothing, which are most of the early chain. Expect less on
+a chain of large blocks.
+
+Not tested on real data: AuxPoW blocks (none exist on the chain before height
+371,337, so the AuxPoW part of `-slimblocks` is covered only by unit tests
+and regtest), a downgrade, and pruning with slim files on a live chain
+(regtest covers it, see Testing).
 
 Regtest options
 ================
@@ -194,6 +303,11 @@ Regtest-only test hooks (rejected on mainnet and testnet):
 - `-timingdriftcapheight=H` adds the mainnet 72 s cap at height `H`.
 - `-timingeasingheight=H` adds the mainnet easing row (tau 30, free wait
   36 s) at height `H`.
+- `-fastprune` divides the block file size (128 MiB), the preallocation chunks
+  (16 MiB and 1 MiB) and the minimum prune target (2200 MiB) by 50, so
+  pruning can be tested with blocks 1/50 the normal size. `pruning.py` uses
+  it: it needs about 1 GB and a few minutes where it needed 21 GB and up to
+  two hours, so it now runs in the default test set.
 
 
 Upgrading from Prior Versions
@@ -255,6 +369,14 @@ Testing
     both directions, and the nodes end on different chains. The "old" node
     in this test is the build before the easing row, not a 1.3.1 binary.
 - Full unit test suite: 350 test cases, all passing.
+- `slimblocks.py`, `slimundo.py`, `slimprevprefix.py` and `slimprune.py` run
+  nodes with the storage options and compare every block, header and
+  transaction with a node on the default format, through restarts with and
+  without the options, `-reindex`, the `txindex`, deep reorgs and automatic
+  pruning. `slimprevprefix.py` also feeds a file with every block before its
+  parent to `-reindex` and to `-loadblock`.
+- `reconsider_headers.py` reproduces the `reconsiderblock` crash; it aborts a
+  node that lacks the fix.
 
 See `doc/timing-fixes.md` for the full write-up, the simulator results and
 how to reproduce them.
