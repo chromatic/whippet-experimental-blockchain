@@ -12,6 +12,7 @@
 
 import os
 import struct
+import time
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
@@ -57,6 +58,13 @@ class SlimBlocksTest(BitcoinTestFramework):
         stop_node(self.nodes[n], n)
         self.nodes[n] = start_node(n, self.options.tmpdir, ["-debug", "-txindex"] + extra)
         connect_nodes_bi(self.nodes, 0, 1)
+
+    def wait_for_height(self, node, height):
+        """A -reindex runs in the import thread after the RPC server is up."""
+        for _ in range(3000):
+            if node.getblockcount() >= height:
+                return
+            time.sleep(0.1)
 
     def check_same(self, tip):
         """Both nodes serve identical blocks and transactions for the whole chain."""
@@ -142,6 +150,7 @@ class SlimBlocksTest(BitcoinTestFramework):
         self.nodes[0] = start_node(0, self.options.tmpdir, ["-debug", "-txindex", "-slimblocks=1", "-reindex"])
         connect_nodes_bi(self.nodes, 0, 1)
         a = self.nodes[0]
+        self.wait_for_height(a, tip)
         assert_equal(a.getbestblockhash(), best)
         assert_equal(a.getblockcount(), tip)
         self.check_same(tip)
@@ -158,6 +167,7 @@ class SlimBlocksTest(BitcoinTestFramework):
         stop_node(a, 0)
         self.nodes[0] = start_node(0, self.options.tmpdir, ["-debug", "-txindex", "-slimblocks=0", "-reindex"])
         connect_nodes_bi(self.nodes, 0, 1)
+        self.wait_for_height(self.nodes[0], tip)
         assert_equal(self.nodes[0].getbestblockhash(), best)
         self.check_same(tip)
         print("-reindex without the option reads slim records too")
