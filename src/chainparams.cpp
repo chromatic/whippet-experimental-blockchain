@@ -119,8 +119,9 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_SEGWIT].nTimeout = 0; // Disabled
 
         // The best chain should have at least this much work.
-        // Use zero for a new chain so nodes exit IBD and relay blocks immediately.
-        consensus.nMinimumChainWork = uint256S("0x0");
+        // Chainwork of block 190000 (da5158e4f6566df4e4e3408ad547fcc39f77db763f83d41243d1afc1c97b56de),
+        // about 1,650 blocks below the tip when this was set.
+        consensus.nMinimumChainWork = uint256S("0x000000000000000000000000000000000000000000000000000011543c6f49c0");
 
         // By default assume that the signatures in ancestors of this block are valid.
         // Block 79000, one block above the last stretch of contested history (a
@@ -239,20 +240,13 @@ public:
         };
 
         chainTxData = ChainTxData{
-            // Data as of block c000c2bc5c9cc8842bb1eb6a2589b0cfb2b39b87319a302eb1c12f9b12dd2238 (height 79991).
-            //
-            // The transaction count is derived rather than read directly: tx= is
-            // only logged by UpdateTip(), and with nothing mining, the chain has
-            // connected no block since this one. Inverting the progress figure
-            // that LoadBlockIndexDB reported against the previous (Dogecoin)
-            // constants gives 167615, good to about +/- 300 given that progress
-            // prints to six decimals. That is 2.10 transactions per block, which
-            // is a coinbase plus roughly one spend.
-            1786301508, // * UNIX timestamp of last checkpoint block
-            167615,     // * total number of transactions between genesis and last checkpoint
+            // Data as of block a687bb6eefe57f4b660f4f00d01390c18a177291fdace936caa1fa3bc1d01424 (height 191645),
+            // read from the tx= field of its UpdateTip() line.
+            1793379226, // * UNIX timestamp of last checkpoint block
+            279297,     // * total number of transactions between genesis and last checkpoint
                         //   (the tx=... number in the SetBestChain debug.log lines)
-            0.0088      // * estimated number of transactions per second after checkpoint
-                        // 167615 / 19047108 seconds since genesis = 0.0088
+            0.0107      // * estimated number of transactions per second after checkpoint
+                        // 279297 / 26124826 seconds since genesis = 0.0107
         };
     }
 };
