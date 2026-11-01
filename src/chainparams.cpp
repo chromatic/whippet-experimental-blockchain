@@ -124,10 +124,10 @@ public:
         consensus.nMinimumChainWork = uint256S("0x000000000000000000000000000000000000000000000000000011543c6f49c0");
 
         // By default assume that the signatures in ancestors of this block are valid.
-        // Block 79000, one block above the last stretch of contested history (a
-        // run of one-block stale tips around 78920-78925) and just under the tip
-        // at the time this was set.
-        consensus.defaultAssumeValid = uint256S("0x947d56182dde4d07af5e0ddeb880ae77d8ab770a2693ee62a610390cea5f5e1a");
+        // Block 209000, about 3,400 blocks below the tip when this was set. The only
+        // competing branches in the index are one-block stale tips at or below
+        // height 191529.
+        consensus.defaultAssumeValid = uint256S("0x062c153a5fab74324e96b32009ac82c6607fff142fa95ca186bd52329b7a9eca");
 
         // AuxPoW parameters
         consensus.nAuxpowChainId = 0x0062; // 98 - Josh Wise!
