@@ -484,20 +484,4 @@ BOOST_AUTO_TEST_CASE(mainnet_easing_starts_at_its_height_and_changes_nothing_els
     SelectParams(CBaseChainParams::REGTEST);
 }
 
-BOOST_AUTO_TEST_CASE(easing_signal_bit_is_clear_of_version_fields)
-{
-    const int32_t bit = CPureBlockHeader::VERSION_EASING_SIGNAL;
-    BOOST_CHECK(bit > 0);
-    BOOST_CHECK_EQUAL(bit & (CPureBlockHeader::VERSION_AUXPOW - 1), 0);          // base version
-    BOOST_CHECK_EQUAL(bit & CPureBlockHeader::VERSION_AUXPOW, 0);                // auxpow flag
-    BOOST_CHECK(bit < CPureBlockHeader::VERSION_CHAIN_START);                    // chain ID
-
-    CBlockHeader header;
-    header.SetBaseVersion(4, 98);
-    header.nVersion |= bit;
-    BOOST_CHECK_EQUAL(header.GetBaseVersion(), 4);
-    BOOST_CHECK_EQUAL(header.GetChainId(), 98);
-    BOOST_CHECK(!header.IsAuxpow());
-}
-
 BOOST_AUTO_TEST_SUITE_END()

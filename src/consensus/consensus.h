@@ -44,13 +44,9 @@ static const int MAINNET_DRIFT_CAP_HEIGHT = 371337;
  * than 9 block times after its parent: target * 2^((gap - 54s) / MAINNET_EASING_TAU). Old nodes
  * require the old nBits and will not follow the new chain, so every miner and node must upgrade
  * before this height. It must lie above the 371337 row in chainparams.cpp.
- * Miners signal readiness with EASING_SIGNAL_BIT until then; geteasingsignal reports the share.
  */
 static const int MAINNET_EASING_HEIGHT = 600000;
 static const int64_t MAINNET_EASING_TAU = 30;
-
-/** Blocks counted by geteasingsignal by default: one day at 6 s per block. */
-static const int EASING_SIGNAL_WINDOW = 14400;
 
 /** Flags for nSequence and nLockTime locks */
 enum {

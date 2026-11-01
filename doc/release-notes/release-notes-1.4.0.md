@@ -11,15 +11,7 @@ at two different heights**, and the second is a hard fork:
 | 371,337 | Block timestamps may be at most 72 s ahead of adjusted time (was 2 hours); same height as AuxPoW | soft fork | most hashrate, before the height |
 | 600,000 | Difficulty eases while the chain waits for a block (LWMA with easing) | **hard fork** | **every miner and node, before the height** |
 
-Please upgrade soon: the hard fork height is fixed in this release. Miners
-also signal that they run the easing code. The signal is
-bit 9 of the block version (`0x200`), which nothing else reads, so old nodes
-ignore it. The node sets it in every block template, so a miner using
-`getblocktemplate`, `getauxblock` or `createauxblock` signals without any
-change, provided it uses the `version` the node returned. Run
-`whippet-cli geteasingsignal [nblocks]` to see the share of the last
-14,400 blocks (about a day) that signal. `-signaleasing=0` turns the signal
-off.
+Please upgrade soon: the hard fork height is fixed in this release.
 
 The release also fixes two bugs that stopped `-reindex` and `-loadblock` on the
 live chain and a node crash after `reconsiderblock`, and adds four
@@ -353,8 +345,7 @@ Upgrading from Prior Versions
    system time is within a few seconds of UTC.
 
 Miners: do this **before height 371,337**. Everyone else: **before height
-600,000**. Keep signaling on (the default) so everyone can see how much
-hashpower has upgraded.
+600,000**.
 
 
 Testing
@@ -379,7 +370,7 @@ Testing
     height a block mined after a 66 s wait is refused by the other side in
     both directions, and the nodes end on different chains. The "old" node
     in this test is the build before the easing row, not a 1.3.1 binary.
-- Full unit test suite: 363 test cases, all passing.
+- Full unit test suite: 362 test cases, all passing.
 - `slimblocks.py`, `slimundo.py`, `slimprevprefix.py` and `slimprune.py` run
   nodes with the storage options and compare every block, header and
   transaction with a node on the default format, through restarts with and

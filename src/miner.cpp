@@ -166,10 +166,6 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     // -blockversion=N to test forking scenarios
     if (chainparams.MineBlocksOnDemand())
         pblock->SetBaseVersion(GetArg("-blockversion", pblock->GetBaseVersion()), nChainId);
-    // Tell the network this miner runs the easing code, until easing is in force. Opt out with
-    // -signaleasing=0.
-    if (consensus.nEasingTau <= 0 && GetBoolArg("-signaleasing", true))
-        pblock->nVersion |= CPureBlockHeader::VERSION_EASING_SIGNAL;
 
     pblock->nTime = GetAdjustedTime();
     const int64_t nMedianTimePast = pindexPrev->GetMedianTimePast();
