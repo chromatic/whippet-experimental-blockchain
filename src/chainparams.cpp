@@ -234,7 +234,7 @@ public:
         // accumulated work that does not exist yet.
         checkpointData = (CCheckpointData) {
             boost::assign::map_list_of
-            (     0, uint256S("e7c8ca400e600680341f25c6a26814101366201a598132ba1d32116f5c5a0d35"))
+            (     0, uint256S("0x863714e1c1a15526a0081a35097c56e28dbd43ef97f76fec0ccd5a7510326292"))
             ( 78000, uint256S("0x82230c60ae78e053bee0345b31c73a8e68f1129de06d133d79f144be9e0dca37"))
         };
 
