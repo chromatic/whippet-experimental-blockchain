@@ -259,6 +259,67 @@ UniValue generatetoaddress(const JSONRPCRequest& request)
     return generateBlocks(coinbaseScript, nGenerate, nMaxTries, false, nMineAuxPow);
 }
 
+UniValue geteasingsignal(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() > 1)
+        throw runtime_error(
+            "geteasingsignal ( nblocks )\n"
+            "\nReports how many recent blocks carry the easing hard fork readiness bit.\n"
+            "The bit is informational: no consensus rule reads it. Miners set it automatically\n"
+            "(the node puts it in every block template; -signaleasing=0 turns it off).\n"
+            "\nArguments:\n"
+            "1. nblocks     (numeric, optional, default=" + strprintf("%d", EASING_SIGNAL_WINDOW) + ") Number of blocks to count, ending at the tip.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"blocks\": n,        (numeric) Blocks counted (fewer than asked near genesis)\n"
+            "  \"signaling\": n,     (numeric) Of those, blocks with the bit set\n"
+            "  \"share\": x.xxx,     (numeric) signaling / blocks\n"
+            "  \"scheduled\": true|false, (boolean) Whether this node has an activation height for easing\n"
+            "  \"activationheight\": n,   (numeric, only if scheduled) The activation height\n"
+            "  \"active\": true|false     (boolean) Whether easing applies to the next block\n"
+            "}\n"
+            "\nExamples:\n"
+            + HelpExampleCli("geteasingsignal", "")
+            + HelpExampleRpc("geteasingsignal", "1000")
+        );
+
+    int nBlocks = EASING_SIGNAL_WINDOW;
+    if (request.params.size() > 0 && !request.params[0].isNull())
+        nBlocks = request.params[0].get_int();
+    if (nBlocks < 1)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "nblocks must be positive");
+
+    LOCK(cs_main);
+
+    int nCounted = 0, nSignaling = 0;
+    for (const CBlockIndex* pindex = chainActive.Tip(); pindex && nCounted < nBlocks; pindex = pindex->pprev) {
+        ++nCounted;
+        if (pindex->nVersion & CPureBlockHeader::VERSION_EASING_SIGNAL)
+            ++nSignaling;
+    }
+
+    const int nNext = chainActive.Height() + 1;
+    const Consensus::Params& next = Params().GetConsensus(nNext);
+    const bool fScheduled = Params().GetConsensus(0x7ffffffe).nEasingTau > 0;
+
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("blocks", nCounted);
+    obj.pushKV("signaling", nSignaling);
+    obj.pushKV("share", nCounted ? (double)nSignaling / nCounted : 0.0);
+    obj.pushKV("scheduled", fScheduled);
+    if (fScheduled) {
+        // The row that first sets a tau is the activation height; search for it.
+        int lo = 0, hi = 0x7ffffffe;
+        while (lo < hi) {
+            const int mid = lo + (hi - lo) / 2;
+            if (Params().GetConsensus(mid).nEasingTau > 0) hi = mid; else lo = mid + 1;
+        }
+        obj.pushKV("activationheight", lo);
+    }
+    obj.pushKV("active", next.nEasingTau > 0);
+    return obj;
+}
+
 UniValue getmininginfo(const JSONRPCRequest& request)
 {
     if (request.fHelp || request.params.size() != 0)
@@ -980,6 +1041,7 @@ static const CRPCCommand commands[] =
   //  --------------------- ------------------------  -----------------------  ----------
     { "mining",             "getnetworkhashps",       &getnetworkhashps,       true,  {"nblocks","height"} },
     { "mining",             "getmininginfo",          &getmininginfo,          true,  {} },
+    { "mining",             "geteasingsignal",        &geteasingsignal,        true,  {"nblocks"} },
     { "mining",             "prioritisetransaction",  &prioritisetransaction,  true,  {"txid","priority_delta","fee_delta"} },
     { "mining",             "getblocktemplate",       &getblocktemplate,       true,  {"template_request"} },
     { "mining",             "submitblock",            &submitblock,            true,  {"hexdata","parameters"} },

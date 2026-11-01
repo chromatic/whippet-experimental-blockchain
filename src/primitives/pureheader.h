@@ -22,6 +22,12 @@ public:
     /* Modifiers to the version.  */
     static const int32_t VERSION_AUXPOW = (1 << 8);
 
+    /**
+     * Readiness signal for the easing hard fork. Bits 9-15 are used by neither the base version
+     * nor the chain ID, so old nodes ignore it. Purely informational: no consensus rule reads it.
+     */
+    static const int32_t VERSION_EASING_SIGNAL = (1 << 9);
+
     /** Bits above are reserved for the auxpow chain ID.  */
     static const int32_t VERSION_CHAIN_START = (1 << 16);
 

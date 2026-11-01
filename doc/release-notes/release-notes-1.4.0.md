@@ -2,14 +2,25 @@ Whippet Core version 1.4.0 is now available from:
 
   <https://github.com/chromatic/whippet-experimental-blockchain/releases/tag/v1.4.0/>
 
-This release hardens block timestamps and changes how difficulty reacts when
-the chain stops finding blocks. It contains **two consensus changes at two
-different heights**, and the second is a hard fork:
+This release hardens block timestamps and carries a change to how difficulty
+reacts when the chain stops finding blocks. It contains **one consensus change
+that takes effect at 371,337** and **one hard fork that ships switched off**:
 
 | Height | Change | Kind | Who must upgrade |
 |--------|--------|------|------------------|
 | 371,337 | Block timestamps may be at most 72 s ahead of adjusted time (was 2 hours); same height as AuxPoW | soft fork | most hashrate, before the height |
-| 600,000 | Difficulty eases while the chain waits for a block (LWMA with easing) | **hard fork** | **every miner and node, before the height** |
+| not yet set | Difficulty eases while the chain waits for a block (LWMA with easing) | **hard fork** | **every miner and node, before the height** |
+
+The easing code is in this release but has **no activation height on
+mainnet**, so mainnet follows the old rules. A later release will name the
+height once enough hashpower signals that it runs this code. The signal is
+bit 9 of the block version (`0x200`), which nothing else reads, so old nodes
+ignore it. The node sets it in every block template, so a miner using
+`getblocktemplate`, `getauxblock` or `createauxblock` signals without any
+change, provided it uses the `version` the node returned. Run
+`whippet-cli geteasingsignal [nblocks]` to see the share of the last
+14,400 blocks (about a day) that signal. `-signaleasing=0` turns the signal
+off.
 
 The release also fixes two bugs that stopped `-reindex` and `-loadblock` on the
 live chain and a node crash after `reconsiderblock`, and adds four
@@ -36,19 +47,18 @@ upgraded nodes refuse, and its blocks are orphaned until it upgrades.
 This is also the height at which AuxPoW blocks become acceptable, so miners and
 pools have one date to prepare for. They should upgrade before height 371,337.
 
-**Height 600,000 (hard fork).** From this height a block's required
+**Easing hard fork (height to be announced; switched off in this release).** From the activation height a block's required
 difficulty (`nBits`) depends on how long after its parent the block is
 stamped. Nodes that have not upgraded compute a different value, so they
 refuse every block that follows a wait of more than 54 s, so they may stall
 or fall onto a separate chain. **Every node, miner and pool must be running 1.4.0 before
-height 600,000.** A node that is not upgraded may stall at the first block
+the activation height.** A node that is not upgraded may stall at the first block
 that follows a long wait, because it refuses that block. If any old miner is
 still producing blocks, those nodes may instead follow a separate chain. We
 cannot predict which will happen, so upgrade everything.
 
 At the block rate seen in the weeks before this release (about 6 to 6.5 s
-per block) height 371,337 is about two weeks after the 1.4.0 release and
-height 600,000 about a month. The rate is not constant, so treat these as
+per block) height 371,337 is about two weeks after the 1.4.0 release. The rate is not constant, so treat these as
 rough: watch `getblockcount`, not the calendar.
 
 There is no wallet or chain-data migration. The on-disk format is unchanged
@@ -103,7 +113,7 @@ simulator, after a 100x burst of hashrate for 300 s followed by its
 departure, the first block took a median of 1,079 s (worst 2,700 s). The
 72 s cap does not change this.
 
-**The fix (hard fork, height 600,000).** A candidate block stamped more than
+**The fix (hard fork, height to be announced).** A candidate block stamped more than
 54 s (nine block times) after its parent gets its target multiplied by
 2^((gap - 54) / 30), up to the proof-of-work limit. The longer the chain
 waits, the easier the next block becomes: the same burst now recovers in a
@@ -342,15 +352,16 @@ Upgrading from Prior Versions
 5. **Confirm the clock**: make sure an NTP client is running and that your
    system time is within a few seconds of UTC.
 
-Miners: do this **before height 371,337**. Everyone else: **before height
-600,000**.
+Miners: do this **before height 371,337**. Everyone else: do it before the
+easing height is announced; keep signaling on (the default) so that the
+announcement can be timed to the share of hashpower that has upgraded.
 
 
 Testing
 ========
 
 - `timing_tests` pins the mainnet rows (the cap from 371,337, the easing
-  row from 600,000), the header rules either side of the AuxPoW height, the
+  row, unscheduled), the header rules either side of the AuxPoW height, the
   easing arithmetic (doubling per tau, clamping at the proof-of-work limit)
   and the regtest hooks.
 - `contrib/timing-sim` is a block-timestamp rule simulator whose difficulty
@@ -391,7 +402,7 @@ Release Information
 **Consensus changes:**
 - soft fork at height 371,337 (with AuxPoW): block timestamps at most 72 s ahead of
   adjusted time (`MAINNET_DRIFT_CAP_HEIGHT`)
-- **hard fork at height 600,000**: LWMA target eased while the chain waits
+- **hard fork, no height yet** (dormant; `MAINNET_EASING_UNSCHEDULED`): LWMA target eased while the chain waits
   (`MAINNET_EASING_HEIGHT`, tau 30 s, free wait 54 s)
 
 For the latest information, visit:

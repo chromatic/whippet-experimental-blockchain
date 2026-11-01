@@ -41,12 +41,20 @@ static const int MAINNET_DRIFT_CAP_HEIGHT = 371337;
 
 /**
  * Hard fork: from MAINNET_EASING_HEIGHT the LWMA target is eased for a candidate block stamped more
- * than 6 block times after its parent: target * 2^((gap - 36s) / MAINNET_EASING_TAU). Old nodes
+ * than 9 block times after its parent: target * 2^((gap - 54s) / MAINNET_EASING_TAU). Old nodes
  * require the old nBits and will not follow the new chain, so every miner and node must upgrade
  * before this height. It must lie above the 371337 row in chainparams.cpp.
+ *
+ * The code ships dormant: MAINNET_EASING_UNSCHEDULED is a height no chain reaches, so mainnet runs
+ * the old rules. A later release replaces it with a real height once enough hashpower signals
+ * readiness (EASING_SIGNAL_BIT, reported by the geteasingsignal RPC).
  */
-static const int MAINNET_EASING_HEIGHT = 600000;
+static const int MAINNET_EASING_UNSCHEDULED = 0x7fffffff;
+static const int MAINNET_EASING_HEIGHT = MAINNET_EASING_UNSCHEDULED;
 static const int64_t MAINNET_EASING_TAU = 30;
+
+/** Blocks counted by geteasingsignal by default: one day at 6 s per block. */
+static const int EASING_SIGNAL_WINDOW = 14400;
 
 /** Flags for nSequence and nLockTime locks */
 enum {
