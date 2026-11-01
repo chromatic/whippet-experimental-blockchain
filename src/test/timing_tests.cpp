@@ -462,6 +462,7 @@ BOOST_AUTO_TEST_CASE(easing_is_off_on_testnet)
 BOOST_AUTO_TEST_CASE(mainnet_easing_starts_at_its_height_and_changes_nothing_else)
 {
     SelectParams(CBaseChainParams::MAIN);
+    BOOST_CHECK_EQUAL(MAINNET_EASING_HEIGHT, 600000);
     BOOST_CHECK_EQUAL(MAINNET_EASING_TAU, 30);
 
     const Consensus::Params& before = Params().GetConsensus(MAINNET_EASING_HEIGHT - 1);
@@ -470,6 +471,7 @@ BOOST_AUTO_TEST_CASE(mainnet_easing_starts_at_its_height_and_changes_nothing_els
     BOOST_CHECK_EQUAL(before.nEasingFreeWait, 0);
     BOOST_CHECK_EQUAL(after.nEasingTau, 30);
     BOOST_CHECK_EQUAL(after.nEasingFreeWait, 54);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(MAINNET_EASING_HEIGHT + 1000000).nEasingTau, 30);
 
     // The row inherits the 371337 row: LWMA, floor, drift cap and AuxPoW rules are unchanged.
     BOOST_CHECK(after.fLWMADifficultyCalculation);
@@ -479,18 +481,6 @@ BOOST_AUTO_TEST_CASE(mainnet_easing_starts_at_its_height_and_changes_nothing_els
     BOOST_CHECK_EQUAL(after.fAllowLegacyBlocks, before.fAllowLegacyBlocks);
     BOOST_CHECK_EQUAL(after.nEveryBlockRetargetHeight, before.nEveryBlockRetargetHeight);
     BOOST_CHECK(after.powLimit == before.powLimit);
-    SelectParams(CBaseChainParams::REGTEST);
-}
-
-BOOST_AUTO_TEST_CASE(mainnet_easing_ships_unscheduled)
-{
-    SelectParams(CBaseChainParams::MAIN);
-    // Dormant until a release names a height: no height a chain can reach has easing.
-    BOOST_CHECK_EQUAL(MAINNET_EASING_HEIGHT, MAINNET_EASING_UNSCHEDULED);
-    BOOST_CHECK_EQUAL(Params().GetConsensus(371337).nEasingTau, 0);
-    BOOST_CHECK_EQUAL(Params().GetConsensus(600000).nEasingTau, 0);
-    BOOST_CHECK_EQUAL(Params().GetConsensus(100000000).nEasingTau, 0);
-    BOOST_CHECK_EQUAL(Params().GetConsensus(0x7ffffffe).nEasingTau, 0);
     SelectParams(CBaseChainParams::REGTEST);
 }
 
