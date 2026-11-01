@@ -101,12 +101,12 @@
       }
     },
     {
-      "label": "R6d default (300/60/36/72)",
+      "label": "R6d default (300/60/54/72)",
       "rule": "R6d",
       "params": {
         "tau_s": 300,
         "tau_wait_s": 60,
-        "free_wait_s": 36,
+        "free_wait_s": 54,
         "drift": 72
       }
     },
@@ -116,7 +116,7 @@
       "params": {
         "tau_s": 120,
         "tau_wait_s": 60,
-        "free_wait_s": 36,
+        "free_wait_s": 54,
         "drift": 72
       }
     },
@@ -126,7 +126,7 @@
       "params": {
         "tau_s": 600,
         "tau_wait_s": 60,
-        "free_wait_s": 36,
+        "free_wait_s": 54,
         "drift": 72
       }
     },
@@ -136,7 +136,7 @@
       "params": {
         "tau_s": 1200,
         "tau_wait_s": 60,
-        "free_wait_s": 36,
+        "free_wait_s": 54,
         "drift": 72
       }
     },
@@ -146,7 +146,7 @@
       "params": {
         "tau_s": 300,
         "tau_wait_s": 30,
-        "free_wait_s": 36,
+        "free_wait_s": 54,
         "drift": 72
       }
     },
@@ -156,7 +156,7 @@
       "params": {
         "tau_s": 300,
         "tau_wait_s": 120,
-        "free_wait_s": 36,
+        "free_wait_s": 54,
         "drift": 72
       }
     },
@@ -176,7 +176,7 @@
       "params": {
         "tau_s": 300,
         "tau_wait_s": 60,
-        "free_wait_s": 36,
+        "free_wait_s": 54,
         "drift": 48
       }
     },
@@ -186,7 +186,7 @@
       "params": {
         "tau_s": 300,
         "tau_wait_s": 60,
-        "free_wait_s": 36,
+        "free_wait_s": 54,
         "drift": 120
       }
     }
