@@ -25,6 +25,7 @@
 #include <exception>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <stdint.h>
 #include <string>
@@ -470,6 +471,14 @@ bool SequenceLocks(const CTransaction &tx, int flags, std::vector<int>* prevHeig
  */
 bool CheckSequenceLocks(const CTransaction &tx, int flags, LockPoints* lp = NULL, bool useExistingLockPoints = false);
 
+/** Prevout scriptPubKeys and amounts of every input of one transaction (-1 and an empty script for an unavailable one). */
+struct CPrevoutSnapshot
+{
+    std::vector<CScript> vScriptPubKeys;
+    std::vector<CAmount> vAmounts;
+    CPrevoutSnapshot(const CTransaction& tx, const CCoinsViewCache& view);
+};
+
 /**
  * Closure representing one script verification
  * Note that this stores references to the spending transaction 
@@ -485,39 +494,25 @@ private:
     bool cacheStore;
     ScriptError error;
     PrecomputedTransactionData *txdata;
-    // Prevout scriptPubKeys for every input of this transaction, so UAP
-    // opcodes (e.g. OP_MINT's one-shot check) can inspect sibling inputs.
-    // Snapshotted eagerly here, on the same (serial, main) thread that
-    // constructs this check, rather than looked up lazily from a live
-    // CCoinsViewCache* inside operator() -- operator() runs on a
+    // Prevout scriptPubKeys and amounts for every input of this transaction,
+    // so UAP opcodes (e.g. OP_MINT's one-shot check, conservation) can inspect
+    // sibling inputs. Snapshotted eagerly by CheckInputs, on the same (serial,
+    // main) thread that constructs the checks, rather than looked up lazily
+    // from a live CCoinsViewCache* inside operator() -- operator() runs on a
     // scriptcheckqueue worker thread, concurrently with the main thread's
     // UpdateCoins() calls for later transactions in the same block, and
     // CCoinsViewCache's underlying map is not safe for that kind of
-    // concurrent read-vs-mutate access (was corrupting the map and
-    // crashing on the copied-out CScript).
-    std::vector<CScript> vPrevScriptPubKeys;
-    // Parallel to vPrevScriptPubKeys, and snapshotted for the same reason:
-    // UAP conservation sums every input belonging to one lineage, so it needs
-    // each prevout's value, not just the one being verified.
-    std::vector<CAmount> vPrevAmounts;
-    bool fHavePrevScriptPubKeys;
+    // concurrent read-vs-mutate access. The snapshot is immutable and shared
+    // by every input's check, so a transaction with n inputs costs O(n), not
+    // O(n^2).
+    std::shared_ptr<const CPrevoutSnapshot> prevouts;
 
 public:
-    CScriptCheck(): amount(0), ptxTo(0), nIn(0), nFlags(0), cacheStore(false), error(SCRIPT_ERR_UNKNOWN_ERROR), txdata(NULL), fHavePrevScriptPubKeys(false) {}
-    CScriptCheck(const CCoins& txFromIn, const CTransaction& txToIn, unsigned int nInIn, unsigned int nFlagsIn, bool cacheIn, PrecomputedTransactionData* txdataIn, const CCoinsViewCache* inputsViewIn = NULL) :
+    CScriptCheck(): amount(0), ptxTo(0), nIn(0), nFlags(0), cacheStore(false), error(SCRIPT_ERR_UNKNOWN_ERROR), txdata(NULL) {}
+    CScriptCheck(const CCoins& txFromIn, const CTransaction& txToIn, unsigned int nInIn, unsigned int nFlagsIn, bool cacheIn, PrecomputedTransactionData* txdataIn, std::shared_ptr<const CPrevoutSnapshot> prevoutsIn = nullptr) :
         scriptPubKey(txFromIn.vout[txToIn.vin[nInIn].prevout.n].scriptPubKey), amount(txFromIn.vout[txToIn.vin[nInIn].prevout.n].nValue),
-        ptxTo(&txToIn), nIn(nInIn), nFlags(nFlagsIn), cacheStore(cacheIn), error(SCRIPT_ERR_UNKNOWN_ERROR), txdata(txdataIn), fHavePrevScriptPubKeys(inputsViewIn != NULL)
+        ptxTo(&txToIn), nIn(nInIn), nFlags(nFlagsIn), cacheStore(cacheIn), error(SCRIPT_ERR_UNKNOWN_ERROR), txdata(txdataIn), prevouts(std::move(prevoutsIn))
     {
-        if (inputsViewIn) {
-            vPrevScriptPubKeys.reserve(txToIn.vin.size());
-            vPrevAmounts.reserve(txToIn.vin.size());
-            for (const auto& txin : txToIn.vin) {
-                const CCoins* coins = inputsViewIn->AccessCoins(txin.prevout.hash);
-                bool fAvailable = coins && coins->IsAvailable(txin.prevout.n);
-                vPrevScriptPubKeys.push_back(fAvailable ? coins->vout[txin.prevout.n].scriptPubKey : CScript());
-                vPrevAmounts.push_back(fAvailable ? coins->vout[txin.prevout.n].nValue : -1);
-            }
-        }
     }
 
     bool operator()();
@@ -531,9 +526,7 @@ public:
         std::swap(cacheStore, check.cacheStore);
         std::swap(error, check.error);
         std::swap(txdata, check.txdata);
-        vPrevScriptPubKeys.swap(check.vPrevScriptPubKeys);
-        vPrevAmounts.swap(check.vPrevAmounts);
-        std::swap(fHavePrevScriptPubKeys, check.fHavePrevScriptPubKeys);
+        prevouts.swap(check.prevouts);
     }
 
     ScriptError GetScriptError() const { return error; }

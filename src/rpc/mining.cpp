@@ -656,7 +656,10 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     arith_uint256 hashTarget = arith_uint256().SetCompact(pblock->nBits);
 
     UniValue aMutable(UniValue::VARR);
-    aMutable.push_back("time");
+    // With easing the required nBits depends on the block's own timestamp, so
+    // a miner that changes the time would invalidate the template's bits.
+    if (consensusParams.nEasingTau <= 0)
+        aMutable.push_back("time");
     aMutable.push_back("transactions");
     aMutable.push_back("prevblock");
 
@@ -726,7 +729,8 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     result.pushKV("coinbasevalue", (int64_t)pblock->vtx[0]->vout[0].nValue);
     result.pushKV("longpollid", chainActive.Tip()->GetBlockHash().GetHex() + i64tostr(nTransactionsUpdatedLast));
     result.pushKV("target", hashTarget.GetHex());
-    result.pushKV("mintime", (int64_t)pindexPrev->GetMedianTimePast()+1);
+    result.pushKV("mintime", std::max((int64_t)pindexPrev->GetMedianTimePast() + 1,
+                                      consensusParams.nMinBlockSpacing > 0 ? pindexPrev->GetBlockTime() + consensusParams.nMinBlockSpacing : (int64_t)0));
     result.pushKV("mutable", aMutable);
     result.pushKV("noncerange", "00000000ffffffff");
     int64_t nSigOpLimit = MAX_BLOCK_SIGOPS_COST;

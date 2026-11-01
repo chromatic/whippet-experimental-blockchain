@@ -71,7 +71,7 @@ The leading hard-fork candidate, LWMA plus easing while waiting, now exists in C
 
 - `Consensus::Params::nEasingFreeWait` / `nEasingTau`. In the LWMA branch of `CalculateWhippetNextWorkRequired()` (`src/whippet.cpp`), a candidate more than `nEasingFreeWait` seconds after its parent gets its target multiplied by `2^((gap - free) / tau)`, clamped to `powLimit`. `GetNextWorkRequired()` passes the candidate's timestamp.
 - `EaseTarget()` does the multiplication in integers: the integer part of the exponent is a shift, the fraction uses the cubic from Bitcoin Cash's aserti3-2d (error under 0.013%). The input is clamped to `powLimit` first, because the LWMA product can overshoot it and would otherwise wrap in 256 bits (found by the parity test).
-- Regtest profile `-timingprofile=scaled-drift-easing` (72s cap, free wait 36s, tau 30s, `-timingeasingtau` overrides). `UpdateTime()` in the miner now recomputes `nBits` whenever easing is on, because the required bits depend on the timestamp.
+- Regtest profile `-timingprofile=scaled-drift-easing` (72s cap, free wait 54s, tau 30s, `-timingeasingtau` overrides). `UpdateTime()` in the miner now recomputes `nBits` whenever easing is on, because the required bits depend on the timestamp.
 - Easing applies only where LWMA retargets, which is every block from height 145000. Below that heights retarget every 10 blocks and easing would not act on the blocks in between. Mainnet is above 145000.
 
 Tests: `timing_tests` has four new cases (doubling per tau and the half-tau value, clamping and the overshoot case, the profile and header check with a late block, easing off on mainnet and testnet). `contrib/timing-sim/tests/test_easing_parity.py` compares the Python LWMA with easing against the real C++ over random chains and gaps from 4s to 1500s; they agree bit for bit. The simulator's R1e now uses the same integer arithmetic instead of floats, so sim numbers for R1e may differ slightly from the earlier tables.
@@ -133,7 +133,7 @@ Old and new binaries across the activation height (`--scenario activation`; the 
 | old node mines block 101 stamped 73s ahead | the new node refuses it; the old node keeps it |
 | new node mines 2 more blocks on its own tip | the old node reorganises onto the new chain |
 
-Old and new binaries across the easing hard fork height (`--scenario easing_activation`). The new node takes `-timingeasingheight=100`, a regtest-only option that adds mainnet's easing row (tau 30, free wait 36s). The old node is `c7729597f`, the commit before that row, built in its own worktree (`WHIPPET_PREFORK_REPO`, default `../whippet-old-prefork`). A 1.3.1 binary cannot play the old node on regtest because it retargets every 10 blocks below height 145000, so both nodes run `scaled-drift-easing` with `-timingeasingtau=0` (every-block LWMA, easing off). Blocks are 4s apart except for a 66s gap before height 97 and another at height 100:
+Old and new binaries across the easing hard fork height (`--scenario easing_activation`). The new node takes `-timingeasingheight=100`, a regtest-only option that adds mainnet's easing row (tau 30, free wait 54s). The old node is `c7729597f`, the commit before that row, built in its own worktree (`WHIPPET_PREFORK_REPO`, default `../whippet-old-prefork`). A 1.3.1 binary cannot play the old node on regtest because it retargets every 10 blocks below height 145000, so both nodes run `scaled-drift-easing` with `-timingeasingtau=0` (every-block LWMA, easing off). Blocks are 4s apart except for a 84s gap before height 97 and another at height 100:
 
 | | new miner, old follower | old miner, new validator |
 |---|---|---|
@@ -142,7 +142,7 @@ Old and new binaries across the easing hard fork height (`--scenario easing_acti
 | block 100 after a 66s gap | new node mines eased bits (`2000813a`, plain would differ); the old node refuses it | old node mines plain bits (`1f409d1f`); the new node refuses it |
 | what follows | the old node mines 3 ordinary 4s blocks; the new node switches to them (both at 102) | the new node mines its own eased block 100 and the old node refuses it; each side builds 3 more blocks and the tips stay different (both at 103) |
 
-A hard fork splits only over blocks that follow a wait of more than 36s. Chains made of blocks closer together than that are valid under both rules, so the heavier chain wins; a miner on the old rules that lets the chain wait past 36s produces a block the new nodes refuse. Every miner and node has to upgrade before the height.
+A hard fork splits only over blocks that follow a wait of more than 54s. Chains made of blocks closer together than that are valid under both rules, so the heavier chain wins; a miner on the old rules that lets the chain wait past 36s produces a block the new nodes refuse. Every miner and node has to upgrade before the height.
 
 So an upgraded majority carries the old nodes with it, and a block stamped further ahead than the cap is orphaned once the upgraded side is ahead. A minority that has not upgraded and mines such blocks forks off until it upgrades. This covers one old and one new node on plain regtest rules (constant difficulty, 1s spacing), not mainnet's LWMA rows.
 

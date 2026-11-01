@@ -1559,11 +1559,23 @@ void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight)
     UpdateCoins(tx, inputs, txundo, nHeight);
 }
 
+CPrevoutSnapshot::CPrevoutSnapshot(const CTransaction& tx, const CCoinsViewCache& view)
+{
+    vScriptPubKeys.reserve(tx.vin.size());
+    vAmounts.reserve(tx.vin.size());
+    for (const auto& txin : tx.vin) {
+        const CCoins* coins = view.AccessCoins(txin.prevout.hash);
+        bool fAvailable = coins && coins->IsAvailable(txin.prevout.n);
+        vScriptPubKeys.push_back(fAvailable ? coins->vout[txin.prevout.n].scriptPubKey : CScript());
+        vAmounts.push_back(fAvailable ? coins->vout[txin.prevout.n].nValue : -1);
+    }
+}
+
 bool CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
 
-    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata, fHavePrevScriptPubKeys ? &vPrevScriptPubKeys : NULL, fHavePrevScriptPubKeys ? &vPrevAmounts : NULL), &error)) {
+    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, *txdata, prevouts ? &prevouts->vScriptPubKeys : NULL, prevouts ? &prevouts->vAmounts : NULL), &error)) {
         return false;
     }
     return true;
@@ -1738,13 +1750,15 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
         // Of course, if an assumed valid block is invalid due to false scriptSigs
         // this optimization would allow an invalid chain to be accepted.
         if (fScriptChecks) {
+            // One snapshot shared by all of this transaction's checks.
+            const std::shared_ptr<const CPrevoutSnapshot> prevouts = std::make_shared<const CPrevoutSnapshot>(tx, inputs);
             for (unsigned int i = 0; i < tx.vin.size(); i++) {
                 const COutPoint &prevout = tx.vin[i].prevout;
                 const CCoins* coins = inputs.AccessCoins(prevout.hash);
                 assert(coins);
 
                 // Verify signature
-                CScriptCheck check(*coins, tx, i, flags, cacheStore, &txdata, &inputs);
+                CScriptCheck check(*coins, tx, i, flags, cacheStore, &txdata, prevouts);
                 if (pvChecks) {
                     pvChecks->push_back(CScriptCheck());
                     check.swap(pvChecks->back());
@@ -1757,7 +1771,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                         // avoid splitting the network between upgraded and
                         // non-upgraded nodes.
                         CScriptCheck check2(*coins, tx, i,
-                                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS, cacheStore, &txdata, &inputs);
+                                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS, cacheStore, &txdata, prevouts);
                         if (check2())
                             return state.Invalid(false, REJECT_NONSTANDARD, strprintf("non-mandatory-script-verify-flag (%s)", ScriptErrorString(check.GetScriptError())));
                     }
@@ -3734,8 +3748,12 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
         if (fNewBlock) *fNewBlock = false;
         CValidationState state;
         // Ensure that CheckBlock() passes before calling AcceptBlock, as
-        // belt-and-suspenders.
-        bool ret = CheckBlock(*pblock, state);
+        // belt-and-suspenders. The proof of work is deliberately left to
+        // AcceptBlock, which checks it with the block's real height under
+        // cs_main: here the height is unknown, and guessing it from the tip
+        // misjudges the height-gated auxpow chain ID for blocks that arrive
+        // ahead of the tip.
+        bool ret = CheckBlock(*pblock, state, false);
 
         LOCK(cs_main);
 

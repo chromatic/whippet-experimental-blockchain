@@ -39,7 +39,7 @@ pools have one date to prepare for. They should upgrade before height 371,337.
 **Height 600,000 (hard fork).** From this height a block's required
 difficulty (`nBits`) depends on how long after its parent the block is
 stamped. Nodes that have not upgraded compute a different value, so they
-refuse every block that follows a wait of more than 36 s, so they may stall
+refuse every block that follows a wait of more than 54 s, so they may stall
 or fall onto a separate chain. **Every node, miner and pool must be running 1.4.0 before
 height 600,000.** A node that is not upgraded may stall at the first block
 that follows a long wait, because it refuses that block. If any old miner is
@@ -104,12 +104,12 @@ departure, the first block took a median of 1,079 s (worst 2,700 s). The
 72 s cap does not change this.
 
 **The fix (hard fork, height 600,000).** A candidate block stamped more than
-36 s (six block times) after its parent gets its target multiplied by
-2^((gap - 36) / 30), up to the proof-of-work limit. The longer the chain
+54 s (nine block times) after its parent gets its target multiplied by
+2^((gap - 54) / 30), up to the proof-of-work limit. The longer the chain
 waits, the easier the next block becomes: the same burst now recovers in a
-median of about 200 s. The 4 s spacing floor, the 72 s cap and the LWMA
+median of about 190 s. The 4 s spacing floor, the 72 s cap and the LWMA
 window are unchanged, and the term is exactly 1 for blocks that follow a
-wait of 36 s or less, which is almost every block.
+wait of 54 s or less, which is almost every block.
 
 The rule uses only block timestamps from the headers. It reads no wall
 clock, so NTP adjustments, time zones and daylight saving time cannot change
@@ -302,7 +302,7 @@ Regtest-only test hooks (rejected on mainnet and testnet):
   `-timingeasingtau` adjust them.
 - `-timingdriftcapheight=H` adds the mainnet 72 s cap at height `H`.
 - `-timingeasingheight=H` adds the mainnet easing row (tau 30, free wait
-  36 s) at height `H`.
+  54 s) at height `H`.
 - `-fastprune` divides the block file size (128 MiB), the preallocation chunks
   (16 MiB and 1 MiB) and the minimum prune target (2200 MiB) by 50, so
   pruning can be tested with blocks 1/50 the normal size. `pruning.py` uses
@@ -392,7 +392,7 @@ Release Information
 - soft fork at height 371,337 (with AuxPoW): block timestamps at most 72 s ahead of
   adjusted time (`MAINNET_DRIFT_CAP_HEIGHT`)
 - **hard fork at height 600,000**: LWMA target eased while the chain waits
-  (`MAINNET_EASING_HEIGHT`, tau 30 s, free wait 36 s)
+  (`MAINNET_EASING_HEIGHT`, tau 30 s, free wait 54 s)
 
 For the latest information, visit:
 - GitHub: <https://github.com/chromatic/whippet-experimental-blockchain/>

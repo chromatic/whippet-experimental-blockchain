@@ -1,6 +1,6 @@
 """Replay timing scenarios on real regtest nodes and compare them with the simulator.
 
-    python3 confirm_regtest.py --scenario far_future|walk_ahead --rules R0|R1
+    python3 confirm_regtest.py --scenario far_future|walk_ahead|clever_attacker --rules R0|R1|R1e
 
 Two regtest nodes run in a Docker container with -timingprofile. Node B is the
 honest network; node A is the attacker, whose clock (setmocktime) is moved to
@@ -28,7 +28,7 @@ IMAGE = os.environ.get("WHIPPET_TIMING_IMAGE", "whippet-ubuntu24")
 PROFILES = {"R0": "whippet", "R1": "scaled-drift", "R1e": "scaled-drift-easing"}
 DRIFT = {"R0": 7200, "R1": 72, "R1e": 72}
 EASING_TAU = 30
-EASING_FREE = 36
+EASING_FREE = 54
 FLOOR = 4
 PORTS = {"a": (18111, 18101), "b": (18112, 18102)}  # (p2p, rpc)
 START = BASE_TIME + 100  # first mocktime; the regtest genesis block is at BASE_TIME
@@ -221,7 +221,7 @@ def _target(bits_hex: str) -> int:
 
 def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, honest_rate: float = 1.0,
                             attacker_rate: float = 0.2, first_s: int = 60, step_s: int = 15, trace: bool = False,
-                            base_shift: int = 6) -> dict:
+                            base_shift: int = 6, clever: bool = False) -> dict:
     """Walk-ahead replay in which block finding follows the node's own target, as in the simulator.
 
     run_walk_ahead() mines on a fixed schedule, so LWMA keeps raising the difficulty until real
@@ -230,6 +230,10 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
     getblocktemplate at the stamp it would use. The block rate then follows the difficulty, and the
     difficulty stays near where it started. Only the choice of when to mine differs: the rules run
     in the real nodes.
+
+    With clever=True the attacker stamps first_s ahead only on a block that is not its own, and stamps
+    honestly on its own, so that no short gap of its own gives the easing back. Each accepted attacker
+    block is then checked against lwma.next_bits and its ease factor 2^((gap - free) / tau) is reported.
     """
     import math
     import random
@@ -249,6 +253,7 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
         honest = Honest(nodes)
         addr_a = nodes.a.getnewaddress()
         max_lead = attacker_blocks = 0
+        attacker_hashes = []
         st = {"honest_expected": 0.0, "honest_drawn": 0, "honest_failed": 0, "attacker_expected": 0.0,
               "attacker_drawn": 0, "attacker_rejected": 0, "attacker_skipped": 0}
         for t in range(18, duration_s):
@@ -275,6 +280,9 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
             tip = _tip_time(nodes.b)
             latest = now + DRIFT[rules]
             want = now + first_s if tip - now < first_s else tip + step_s
+            if clever:
+                own_tip = bool(attacker_hashes) and nodes.b.getbestblockhash() == attacker_hashes[-1]
+                want = max(now, tip + FLOOR) if own_tip else now + first_s
             stamp = min(want, latest)
             if tip + FLOOR <= latest:
                 nodes.a.setmocktime(stamp)
@@ -289,21 +297,42 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
                     st["attacker_drawn"] += 1
                     if _attack_block(nodes, addr_a, stamp, now):
                         attacker_blocks += 1
+                        attacker_hashes.append(nodes.b.getbestblockhash())
                     else:
                         st["attacker_rejected"] += 1
             else:
                 st["attacker_skipped"] += 1
             max_lead = max(max_lead, _tip_time(nodes.b) - now)
         height = nodes.b.getblockcount()
+        ease = {}
+        if clever:
+            import lwma
+            factors, mismatches = [], 0
+            for block in attacker_hashes:
+                header = nodes.b.getblockheader(block)
+                recent, h = [], nodes.b.getblockheader(header["previousblockhash"])
+                for _ in range(lwma.N + 1):
+                    recent.append((h["time"], int(h["bits"], 16)))
+                    if "previousblockhash" not in h:
+                        break
+                    h = nodes.b.getblockheader(h["previousblockhash"])
+                recent.reverse()
+                expected = lwma.next_bits(recent, candidate_time=header["time"], tau_wait_s=EASING_TAU,
+                                          free_wait_s=EASING_FREE)
+                mismatches += expected != int(header["bits"], 16)
+                factors.append(2 ** (max(0, header["time"] - recent[-1][0] - EASING_FREE) / EASING_TAU))
+            ease = {"attacker_bits_mismatches": mismatches,
+                    "attacker_mean_ease": sum(factors) / len(factors) if factors else 1.0,
+                    "attacker_max_ease": max(factors, default=1.0)}
         return {"blocks_per_hour": (height - 2) * 3600 / duration_s, "attacker_blocks": attacker_blocks,
                 "max_lead": max_lead, "max_stall": honest.max_stall, "total_stall": honest.total_stall,
-                "final_difficulty": nodes.b.getdifficulty(), **st,
+                "final_difficulty": nodes.b.getdifficulty(), **st, **ease,
                 **({"chain": [(h["time"], int(h["bits"], 16), h.get("height")) for h in
                               (nodes.b.getblockheader(nodes.b.getblockhash(i)) for i in range(1, height + 1))]}
                    if trace else {})}
 
 
-def run_easing_wait(rules: str = "R1e", gaps=(20, 36, 37, 51, 66, 96, 156, 306)) -> dict:
+def run_easing_wait(rules: str = "R1e", gaps=(20, 54, 55, 69, 84, 114, 174, 324)) -> dict:
     """After the honest chain goes quiet for `gap` seconds, the next block must carry the eased bits.
 
     For each gap: set both nodes' clocks to tip + gap, mine one block on B, and compare its nBits with the
@@ -449,7 +478,7 @@ EASING_ACTIVATION_HEIGHT = 100
 PREFORK_REPO = Path(os.environ.get("WHIPPET_PREFORK_REPO", REPO.parent / "whippet-old-prefork"))  # built at c7729597f
 
 
-def run_easing_activation(new_miner: bool, activation: int = EASING_ACTIVATION_HEIGHT, gap: int = 66) -> dict:
+def run_easing_activation(new_miner: bool, activation: int = EASING_ACTIVATION_HEIGHT, gap: int = 84) -> dict:
     """Old and new binaries across the easing hard fork height. Both run every-block LWMA with easing off.
 
     The new node adds -timingeasingheight=`activation` (the mainnet row: tau 30, free wait 36s). The old
@@ -572,7 +601,7 @@ def compare(scenario: str, rules: str, real: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "walk_ahead_modelled", "easing_wait", "activation", "easing_activation"], required=True)
+    ap.add_argument("--scenario", choices=["far_future", "walk_ahead", "walk_ahead_modelled", "clever_attacker", "easing_wait", "activation", "easing_activation"], required=True)
     ap.add_argument("--rules", choices=sorted(PROFILES))
     args = ap.parse_args()
     if args.scenario == "activation":
@@ -585,6 +614,9 @@ def main() -> None:
         return
     if not args.rules:
         ap.error("--rules is required for this scenario")
+    if args.scenario == "clever_attacker":
+        print(run_walk_ahead_modelled(args.rules, attacker_rate=0.3, first_s=DRIFT[args.rules], clever=True))
+        return
     if args.scenario == "walk_ahead_modelled":
         print(run_walk_ahead_modelled(args.rules))
         return

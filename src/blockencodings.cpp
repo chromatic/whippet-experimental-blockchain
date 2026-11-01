@@ -208,8 +208,9 @@ ReadStatus PartiallyDownloadedBlock::FillBlock(CBlock& block, const std::vector<
         return READ_STATUS_INVALID;
 
     CValidationState state;
-    // TODO: Make sure lack of block height doesn't cause verification problems
-    if (!CheckBlock(block, state)) {
+    // The header was already checked, with its real height, when it was
+    // accepted; skip the proof of work here, where the height is unknown.
+    if (!CheckBlock(block, state, false)) {
         // TODO: We really want to just check merkle tree manually here,
         // but that is expensive, and CheckBlock caches a block's
         // "checked-status" (in the CBlock?). CBlock should be able to

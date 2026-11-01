@@ -269,10 +269,21 @@ bool CBlockTreeDB::LoadBlockIndexGuts(std::function<CBlockIndex*(const uint256&)
             for (auto it = range.first; it != range.second; ++it) {
                 uint32_t candidate;
                 memcpy(&candidate, it->second->phashBlock->begin(), sizeof(candidate));
-                if (candidate == item.second) {
-                    if (pprev)
-                        return error("LoadBlockIndex() : ambiguous parent prefix at height %d", pindex->nHeight);
+                if (candidate != item.second)
+                    continue;
+                // The prefix is only a hint: 4 bytes of a block hash are cheap
+                // for an attacker to collide, so confirm the parent by
+                // recomputing this block's hash with it as hashPrevBlock.
+                CBlockHeader header;
+                header.nVersion       = pindex->nVersion;
+                header.hashPrevBlock  = *it->second->phashBlock;
+                header.hashMerkleRoot = pindex->hashMerkleRoot;
+                header.nTime          = pindex->nTime;
+                header.nBits          = pindex->nBits;
+                header.nNonce         = pindex->nNonce;
+                if (header.GetHash() == *pindex->phashBlock) {
                     pprev = it->second;
+                    break;
                 }
             }
             if (!pprev)

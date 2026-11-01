@@ -210,7 +210,7 @@ class R1a(R3):
 class R1e(R3):
     """R1's acceptance rules (floor, drift cap, median) with LWMA plus easing while waiting."""
 
-    def __init__(self, name, floor, min_difficulty=False, drift=72, tau_wait_s=60, free_wait_s=36):
+    def __init__(self, name, floor, min_difficulty=False, drift=72, tau_wait_s=60, free_wait_s=54):
         super().__init__(name, floor, min_difficulty, window=(0, 0), drift=drift)
         self.lwma_wait = tau_wait_s
         self.asert_free = free_wait_s

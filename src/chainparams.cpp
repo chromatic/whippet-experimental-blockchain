@@ -176,7 +176,7 @@ public:
         static_assert(MAINNET_EASING_HEIGHT > 371337, "the easing row must sit above the 371337 row");
         easingConsensus = auxpowConsensus;
         easingConsensus.nHeightEffective = MAINNET_EASING_HEIGHT;
-        easingConsensus.nEasingFreeWait = 6 * easingConsensus.nPowTargetSpacing;
+        easingConsensus.nEasingFreeWait = 9 * easingConsensus.nPowTargetSpacing;
         easingConsensus.nEasingTau = MAINNET_EASING_TAU;
 
         // Assemble the binary search tree of consensus parameters
@@ -588,7 +588,7 @@ public:
 
     /**
      * Rehearse the mainnet easing hard fork on regtest: from nHeight on, LWMA eases the target of a block
-     * stamped more than 6 block times after its parent, with the mainnet tau (MAINNET_EASING_TAU).
+     * stamped more than 9 block times after its parent, with the mainnet tau (MAINNET_EASING_TAU).
      * Nothing else changes, so run it with -timingprofile=scaled-drift-easing -timingeasingtau=0 (every-block
      * LWMA, easing off) to compare with a node that does not know the row. 0 removes the row.
      * Call it after ApplyDriftCapHeight and ApplyTimingProfile.
@@ -606,7 +606,7 @@ public:
                                                prev->nHeightEffective, chainIdFixConsensus.nHeightEffective));
         easingConsensus = *prev;
         easingConsensus.nHeightEffective = nHeight;
-        easingConsensus.nEasingFreeWait = 6 * easingConsensus.nPowTargetSpacing;
+        easingConsensus.nEasingFreeWait = 9 * easingConsensus.nPowTargetSpacing;
         easingConsensus.nEasingTau = MAINNET_EASING_TAU;
         easingConsensus.pLeft = NULL;
         easingConsensus.pRight = &chainIdFixConsensus;
@@ -644,7 +644,7 @@ public:
             if (profile == "scaled-drift" || profile == "scaled-drift-easing")
                 p->nMaxFutureDrift = 12 * p->nPowTargetSpacing;
             if (profile == "scaled-drift-easing") {
-                p->nEasingFreeWait = 6 * p->nPowTargetSpacing;
+                p->nEasingFreeWait = 9 * p->nPowTargetSpacing;
                 p->nEasingTau = nEasingTau;
                 p->nEveryBlockRetargetHeight = 0; // regtest chains are far below 145000 and easing needs a retarget on every block
             }

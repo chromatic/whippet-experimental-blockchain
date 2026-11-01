@@ -69,9 +69,9 @@ struct Params {
     int64_t nPowTargetSpacing;
     int64_t nPowTargetTimespan;
     /** Minimum seconds between consecutive block timestamps; 0 disables the rule (e.g. for fast tests). */
-    int64_t nMinBlockSpacing;
+    int64_t nMinBlockSpacing = 0;
     /** Maximum seconds a block timestamp may lie ahead of the node's adjusted time. */
-    int64_t nMaxFutureDrift;
+    int64_t nMaxFutureDrift = 2 * 60 * 60;
     /**
      * LWMA easing while waiting (hard-fork candidate "R1e", regtest profile only for now): a candidate
      * more than nEasingFreeWait seconds after its parent gets a target multiplied by

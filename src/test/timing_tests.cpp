@@ -293,7 +293,7 @@ BOOST_AUTO_TEST_CASE(regtest_easing_height_adds_the_mainnet_easing_row)
     SelectParams(CBaseChainParams::REGTEST);
     BOOST_CHECK_EQUAL(Params().GetConsensus(499).nEasingTau, 0);
     BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEasingTau, MAINNET_EASING_TAU);
-    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEasingFreeWait, 36);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEasingFreeWait, 54);
     BOOST_CHECK_EQUAL(Params().GetConsensus(80000).nEasingTau, 0); // the chain id fix row is not part of the rehearsal
     BOOST_CHECK_EQUAL(Params().GetConsensus(500).nMaxFutureDrift, Params().GetConsensus(499).nMaxFutureDrift);
     BOOST_CHECK_EQUAL(Params().GetConsensus(500).nEveryBlockRetargetHeight, 0);
@@ -406,7 +406,7 @@ BOOST_AUTO_TEST_CASE(profile_easing_values_and_header_check)
     TimingArgs args("scaled-drift-easing");
     SelectParams(CBaseChainParams::REGTEST);
     const Consensus::Params& p = Params().GetConsensus(145001);
-    BOOST_CHECK_EQUAL(p.nEasingFreeWait, 36);
+    BOOST_CHECK_EQUAL(p.nEasingFreeWait, 54);
     BOOST_CHECK_EQUAL(p.nEasingTau, 30);
     BOOST_CHECK_EQUAL(p.nMaxFutureDrift, 72);
 
@@ -421,9 +421,9 @@ BOOST_AUTO_TEST_CASE(profile_easing_values_and_header_check)
     CBlockIndex& parent = chain.back();
     CBlockHeader quick, inside, late, later;
     quick.nTime = parent.nTime + 6;
-    inside.nTime = parent.nTime + 36;
-    late.nTime = parent.nTime + 66;
-    later.nTime = parent.nTime + 96;
+    inside.nTime = parent.nTime + 54;
+    late.nTime = parent.nTime + 84;
+    later.nTime = parent.nTime + 114;
     const unsigned int bq = GetNextWorkRequired(&parent, &quick, p);
     const unsigned int bi = GetNextWorkRequired(&parent, &inside, p);
     const unsigned int bl = GetNextWorkRequired(&parent, &late, p);
@@ -470,7 +470,7 @@ BOOST_AUTO_TEST_CASE(mainnet_easing_starts_at_its_height_and_changes_nothing_els
     BOOST_CHECK_EQUAL(before.nEasingTau, 0);
     BOOST_CHECK_EQUAL(before.nEasingFreeWait, 0);
     BOOST_CHECK_EQUAL(after.nEasingTau, 30);
-    BOOST_CHECK_EQUAL(after.nEasingFreeWait, 36);
+    BOOST_CHECK_EQUAL(after.nEasingFreeWait, 54);
     BOOST_CHECK_EQUAL(Params().GetConsensus(MAINNET_EASING_HEIGHT + 1000000).nEasingTau, 30);
 
     // The row inherits the 371337 row: LWMA, floor, drift cap and AuxPoW rules are unchanged.
