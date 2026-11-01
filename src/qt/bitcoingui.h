@@ -120,6 +120,11 @@ private:
     QSystemTrayIcon *trayIcon;
     QMenu *trayIconMenu;
     Notificator *notificator;
+    /** Debounce for incoming transaction popups; with 6 s blocks a mining wallet receives one every few blocks. */
+    QTimer *incomingTxTimer;
+    int nPendingIncoming;
+    CAmount nPendingIncomingAmount;
+    int nPendingIncomingUnit;
     RPCConsole *rpcConsole;
     HelpMessageDialog *helpMessageDialog;
     ModalOverlay *modalOverlay;
@@ -192,6 +197,8 @@ public Q_SLOTS:
 
     /** Show incoming transaction notification for new transactions. */
     void incomingTransaction(const QString& date, int unit, const CAmount& amount, const QString& type, const QString& address, const QString& label);
+    /** Summarize the transactions that arrived while the popup debounce was running. */
+    void showPendingIncoming();
 #endif // ENABLE_WALLET
 
 private Q_SLOTS:

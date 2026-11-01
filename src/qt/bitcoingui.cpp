@@ -116,6 +116,10 @@ BitcoinGUI::BitcoinGUI(const PlatformStyle *_platformStyle, const NetworkStyle *
     trayIcon(0),
     trayIconMenu(0),
     notificator(0),
+    incomingTxTimer(0),
+    nPendingIncoming(0),
+    nPendingIncomingAmount(0),
+    nPendingIncomingUnit(0),
     rpcConsole(0),
     helpMessageDialog(0),
     modalOverlay(0),
@@ -1007,6 +1011,21 @@ void BitcoinGUI::showEvent(QShowEvent *event)
 #ifdef ENABLE_WALLET
 void BitcoinGUI::incomingTransaction(const QString& date, int unit, const CAmount& amount, const QString& type, const QString& address, const QString& label)
 {
+    // The first transaction pops up at once and starts a quiet window; later
+    // ones inside it are folded into a single summary when the window closes.
+    if (incomingTxTimer && incomingTxTimer->isActive()) {
+        nPendingIncoming++;
+        nPendingIncomingAmount += amount;
+        nPendingIncomingUnit = unit;
+        return;
+    }
+    if (!incomingTxTimer) {
+        incomingTxTimer = new QTimer(this);
+        incomingTxTimer->setSingleShot(true);
+        connect(incomingTxTimer, SIGNAL(timeout()), this, SLOT(showPendingIncoming()));
+    }
+    incomingTxTimer->start(INCOMING_TX_NOTIFY_INTERVAL);
+
     // On new transaction, make an info balloon
     QString msg = tr("Date: %1\n").arg(date) +
                   tr("Amount: %1\n").arg(BitcoinUnits::formatWithUnit(unit, amount, true)) +
@@ -1017,6 +1036,19 @@ void BitcoinGUI::incomingTransaction(const QString& date, int unit, const CAmoun
         msg += tr("Address: %1\n").arg(address);
     message((amount)<0 ? tr("Sent transaction") : tr("Incoming transaction"),
              msg, CClientUIInterface::MSG_INFORMATION);
+}
+
+void BitcoinGUI::showPendingIncoming()
+{
+    if (nPendingIncoming == 0)
+        return;
+    message(tr("Wallet activity"),
+            tr("%n more transaction(s)\n", "", nPendingIncoming) +
+            tr("Net amount: %1").arg(BitcoinUnits::formatWithUnit(nPendingIncomingUnit, nPendingIncomingAmount, true)),
+            CClientUIInterface::MSG_INFORMATION);
+    nPendingIncoming = 0;
+    nPendingIncomingAmount = 0;
+    incomingTxTimer->start(INCOMING_TX_NOTIFY_INTERVAL);
 }
 #endif // ENABLE_WALLET
 

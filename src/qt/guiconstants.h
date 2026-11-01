@@ -10,6 +10,8 @@
 
 /* Milliseconds between model updates */
 static const int MODEL_UPDATE_DELAY = 250;
+/* Minimum milliseconds between incoming transaction popups; the rest are summarized */
+static const int INCOMING_TX_NOTIFY_INTERVAL = 30000;
 
 /* AskPassphraseDialog -- Maximum passphrase length */
 static const int MAX_PASSPHRASE_SIZE = 1024;
