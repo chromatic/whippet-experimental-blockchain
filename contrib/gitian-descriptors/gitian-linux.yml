@@ -1,5 +1,5 @@
 ---
-name: "whippet-linux-1.3"
+name: "whippet-linux-1.4"
 enable_cache: true
 suites:
 - "focal"
