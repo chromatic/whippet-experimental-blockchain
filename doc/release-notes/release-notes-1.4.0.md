@@ -387,7 +387,7 @@ how to reproduce them.
 Release Information
 ===================
 
-**Release Date:** to be set when tagged
+**Release Date:** November 3, 2026
 **Version:** 1.4.0
 **GitHub Tag:** v1.4.0
 **Consensus changes:**
