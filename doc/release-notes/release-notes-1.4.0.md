@@ -302,8 +302,9 @@ and leave your real node on the defaults.
 5. Compare sizes with the default node, counting bytes in use rather than the
    preallocated size of the files: `blocks/index`, `blocks/blk*.dat` and
    `blocks/rev*.dat` (see the table below).
-6. If you can, also try `-prune=<MiB>` with the options on, and stop and start
-   the node a few times while it is syncing.
+6. If you can, also try `-prune=<MiB>` with the options on (without
+   `-txindex`, which pruning does not allow), and stop and start the node a
+   few times while it is syncing.
 
 A node that refuses to start with the options, reports a `verifychain`
 failure, or disagrees with a default node about a block is a bug. Please
