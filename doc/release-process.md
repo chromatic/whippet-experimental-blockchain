@@ -31,7 +31,7 @@ If you're using the automated script (found in [contrib/gitian-build.sh](/contri
 Check out the source code in the following directory hierarchy.
 
     cd /path/to/your/toplevel/build
-    git clone https://github.com/whippet-core/gitian.sigs.git
+    git clone https://github.com/chromatic/whippet-gitian-sigs.git gitian.sigs
     git clone https://github.com/whippet-core/whippet-detached-sigs.git
     git clone https://github.com/devrandom/gitian-builder.git
     git clone https://github.com/chromatic/whippet-experimental-blockchain.git

@@ -54,7 +54,7 @@ grep x86_64-linux SHA256SUMS.asc | sha256sum -c
 ```
 
 Full attestations to release binary integrity can be found at the
-[`gitian.sigs` repository on GitHub](https://github.com/whippet/gitian.sigs)
+[`gitian.sigs` repository on GitHub](https://github.com/chromatic/whippet-gitian-sigs)
 and everyone can run the full release build process themselves to verify the
 output; resulting binaries are fully deterministic. Please refer to
 [the gitian building documentation](doc/gitian-building.md) for more

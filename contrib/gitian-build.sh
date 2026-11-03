@@ -257,7 +257,7 @@ fi
 ### Setup ###
 
 if [[ $setup == true ]]; then
-    git clone https://github.com/dogecoin/gitian.sigs.git
+    git clone https://github.com/chromatic/whippet-gitian-sigs.git gitian.sigs
     git clone https://github.com/dogecoin/dogecoin-detached-sigs.git
     git clone https://github.com/devrandom/gitian-builder.git
 
