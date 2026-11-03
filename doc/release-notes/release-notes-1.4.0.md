@@ -238,7 +238,7 @@ blocks is cut from 32 to 8 bytes. Disconnecting a block with no record needs
 no undo data, so reorgs work as before.
 
 - It is **one way**: versions before 1.4.0 cannot disconnect such a block
-  without `-reindex`.
+  without `-reindex`. Take a backup before turning it on.
 - Records already on disk are not rewritten.
 
 
@@ -248,6 +248,9 @@ Experimental: `-slimprevprefix`
 Off by default, and only with `-slimblocks`. A `blk*.dat` record then keeps
 the first 8 bytes of the previous block hash instead of all 32.
 
+- It is **one way**: versions before 1.4.0 cannot read such a record and need
+  `-reindex` from the block files of another node. Take a backup before
+  turning it on.
 - Reads that come through the block index (RPC, relay, `verifychain`, wallet
   rescan, reorgs) take the parent hash from the index.
 - `-reindex` and `-loadblock` resolve the prefix against the hashes of the
@@ -262,6 +265,53 @@ the first 8 bytes of the previous block hash instead of all 32.
 - Two known blocks whose hashes share their first 8 bytes are not detected
   when the record is written; at this chain size the chance is about 1 in
   1e9, and a wrong match is rejected by the proof-of-work check.
+
+
+Testing the experimental storage options
+==========================================
+
+These options are for testers. Do not turn them on for a node you cannot
+rebuild from another source, and do not try them on a wallet you care about
+without a backup of `wallet.dat`. Work on a **copy** of the data directory
+and leave your real node on the defaults.
+
+1. Stop the node and copy the data directory (`blocks/`, `chainstate/` and
+   the wallet if you want to test it). Keep the copy of `blocks/` as the
+   baseline; it is also what you need to go back.
+2. Start 1.4.0 on the copy with the options you want to test, for example:
+
+       whippetd -datadir=/path/to/copy -slimblockindex=1 -slimblocks=1 \
+                -slimundo=1 -slimprevprefix=1
+
+   `-slimblockindex` converts the index at startup. The other options only
+   affect blocks written from now on, so to see their effect on old blocks
+   start from an empty `blocks/` and `chainstate/` and import a
+   `bootstrap.dat` (or sync from peers) with the options on.
+3. Let the node reach the tip, then check it:
+   - `whippet-cli verifychain 3 1000` returns `true` (use a larger second
+     argument for a longer check).
+   - `getblockcount` and `getbestblockhash` match a node on the defaults.
+   - `getblock <hash> 0` and `getblockhash <height>` return the same data as
+     the default node at a few heights, including the early chain and the
+     most recent blocks.
+   - With `-txindex=1`, `getrawtransaction <txid> 1` finds transactions from
+     old and new blocks.
+   - A wallet rescan (`-rescan`) completes and the balance is unchanged.
+4. Run once with `-reindex` and the same options. It should reach the same
+   tip. This is the check that exercises `-slimprevprefix`.
+5. Compare sizes with the default node, counting bytes in use rather than the
+   preallocated size of the files: `blocks/index`, `blocks/blk*.dat` and
+   `blocks/rev*.dat` (see the table below).
+6. If you can, also try `-prune=<MiB>` with the options on, and stop and start
+   the node a few times while it is syncing.
+
+A node that refuses to start with the options, reports a `verifychain`
+failure, or disagrees with a default node about a block is a bug. Please
+keep `debug.log` and the copy of `blocks/`, and report it at
+<https://github.com/chromatic/whippet-experimental-blockchain/issues>. The
+cases listed under "Not tested on real data" below are the most useful ones
+to try: AuxPoW blocks after height 371,337 once the chain reaches it, a
+downgrade to 1.3.1, and pruning on a live chain.
 
 
 Storage savings on the live chain
