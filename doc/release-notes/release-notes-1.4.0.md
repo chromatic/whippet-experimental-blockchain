@@ -26,7 +26,7 @@ Please report bugs using the issue tracker at GitHub:
 Compatibility
 ==============
 
-Whippet Core is extensively tested on Ubuntu Server LTS, macOS and Windows.
+Whippet Core is built for Linux (explicitly) Ubuntu Server LTS, macOS and Windows.
 Minimum OS compatibility can be found [in the INSTALL guide](../../INSTALL.md).
 
 **Height 371,337 (soft fork).** From this height, upgraded nodes refuse a
@@ -65,10 +65,7 @@ What changed in block timestamps
 **The problem.** A block must be stamped at least 4 s after its parent (the
 spacing floor), so one block stamped ahead of real time forces every
 descendant to be stamped at or after it. Until now the limit on "ahead" was
-a hard-coded 2 hours. A miner could walk the chain clock up to 7,200 s ahead
-of real time and collect a share of blocks well above its hashrate. In the
-simulator, an attacker with 0.3 of the hashrate took 0.38 of the blocks under
-the old rules and about 0.25 under a 72 s cap.
+a hard-coded 2 hours. 
 
 **The cap (soft fork, height 371,337).** The future-time limit is now a
 consensus parameter, `nMaxFutureDrift`. It is 7,200 s below height 371,337
