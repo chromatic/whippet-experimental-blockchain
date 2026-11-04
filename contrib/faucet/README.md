@@ -47,6 +47,7 @@ A simple web faucet for Whippetcoin, written in Go.
 | --- | --- | --- |
 | `-rpc-host` | `127.0.0.1` | whippetd RPC host |
 | `-rpc-port` | `33665` | whippetd RPC port (mainnet) |
+| `-testnet` | `false` | use testnet defaults: `-rpc-port` becomes `43665` unless given explicitly |
 | `-rpc-user` / `-rpc-pass` | empty | credentials from `whippet.conf` |
 | `-rpc-cookie` | empty | path to the node's `.cookie`; overrides user/pass |
 | `-trustproxy` | `false` | honour `X-Forwarded-For` (see above) |

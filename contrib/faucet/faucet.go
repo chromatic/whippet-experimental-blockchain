@@ -81,6 +81,20 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	return host
 }
 
+const (
+	mainnetRPCPort = 33665
+	testnetRPCPort = 43665
+)
+
+// effectiveRPCPort returns the RPC port to use. An explicit -rpc-port always wins; otherwise
+// -testnet selects the testnet default.
+func effectiveRPCPort(testnet, portSet bool, port int) int {
+	if testnet && !portSet {
+		return testnetRPCPort
+	}
+	return port
+}
+
 func main() {
 	trustProxy := flag.Bool("trustproxy", false,
 		"Honor X-Forwarded-For header for client IP extraction. "+
@@ -88,14 +102,23 @@ func main() {
 			"that actively rewrites this header. If enabled and the proxy does not "+
 			"rewrite X-Forwarded-For, any client can spoof their IP by setting the header.")
 	rpcHost := flag.String("rpc-host", "127.0.0.1", "whippetd RPC host")
-	rpcPort := flag.Int("rpc-port", 33665, "whippetd RPC port")
+	testnet := flag.Bool("testnet", false, "talk to a testnet node: default -rpc-port becomes 43665")
+	rpcPort := flag.Int("rpc-port", mainnetRPCPort, "whippetd RPC port")
 	rpcUser := flag.String("rpc-user", "", "whippetd RPC user (from config)")
 	rpcPass := flag.String("rpc-pass", "", "whippetd RPC password (from config)")
 	rpcCookie := flag.String("rpc-cookie", "", "whippetd RPC cookie file path (~/.whippet/mainnet/.cookie)")
 	flag.Parse()
 
+	portSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "rpc-port" {
+			portSet = true
+		}
+	})
+	nodePort := effectiveRPCPort(*testnet, portSet, *rpcPort)
+
 	// Create RPC client from config
-	client, err := NewRPCClient(*rpcHost, *rpcPort, *rpcUser, *rpcPass, *rpcCookie)
+	client, err := NewRPCClient(*rpcHost, nodePort, *rpcUser, *rpcPass, *rpcCookie)
 	if err != nil {
 		log.Fatalf("Failed to create RPC client: %v", err)
 	}
