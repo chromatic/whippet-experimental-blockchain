@@ -452,10 +452,28 @@ BOOST_AUTO_TEST_CASE(easing_is_off_for_the_plain_profiles)
     BOOST_CHECK_EQUAL(Params().GetConsensus(145001).nEasingTau, 0);
 }
 
-BOOST_AUTO_TEST_CASE(easing_is_off_on_testnet)
+BOOST_AUTO_TEST_CASE(testnet_easing_starts_at_its_low_height)
 {
     SelectParams(CBaseChainParams::TESTNET);
-    BOOST_CHECK_EQUAL(Params().GetConsensus(400000).nEasingTau, 0);
+    BOOST_CHECK_EQUAL(TESTNET_EASING_HEIGHT, 1000);
+    const Consensus::Params& before = Params().GetConsensus(TESTNET_EASING_HEIGHT - 1);
+    const Consensus::Params& after = Params().GetConsensus(TESTNET_EASING_HEIGHT);
+    BOOST_CHECK_EQUAL(before.nEasingTau, 0);
+    BOOST_CHECK_EQUAL(before.nEasingFreeWait, 0);
+    BOOST_CHECK_EQUAL(after.nEasingTau, MAINNET_EASING_TAU);
+    BOOST_CHECK_EQUAL(after.nEasingFreeWait, 54);
+    // Later rows inherit it.
+    BOOST_CHECK_EQUAL(Params().GetConsensus(80000).nEasingTau, MAINNET_EASING_TAU);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(158100).nEasingTau, MAINNET_EASING_TAU);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(400000).nEasingTau, MAINNET_EASING_TAU);
+    // Nothing else changes at the easing row.
+    BOOST_CHECK(after.fLWMADifficultyCalculation);
+    BOOST_CHECK_EQUAL(after.nMinBlockSpacing, before.nMinBlockSpacing);
+    BOOST_CHECK_EQUAL(after.nMaxFutureDrift, before.nMaxFutureDrift);
+    BOOST_CHECK_EQUAL(after.nAuxpowChainId, before.nAuxpowChainId);
+    // The pre-existing rows keep their heights and chain IDs.
+    BOOST_CHECK_EQUAL(Params().GetConsensus(79999).nAuxpowChainId, 0x0062);
+    BOOST_CHECK_EQUAL(Params().GetConsensus(80000).nAuxpowChainId, 0x5750);
     SelectParams(CBaseChainParams::REGTEST);
 }
 

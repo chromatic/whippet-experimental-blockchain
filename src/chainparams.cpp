@@ -258,6 +258,7 @@ static CMainParams mainParams;
 class CTestNetParams : public CChainParams {
 private:
     Consensus::Params digishieldConsensus;
+    Consensus::Params easingConsensus;
     Consensus::Params chainIdFixConsensus;
     Consensus::Params minSpacingConsensus;
     Consensus::Params auxpowConsensus;
@@ -335,9 +336,17 @@ public:
         digishieldConsensus.fPowAllowMinDifficultyBlocks = false;
         digishieldConsensus.nCoinbaseMaturity = 240;
 
+        // Blocks 1000+ ease the LWMA target while the chain waits for a block, as mainnet does from
+        // MAINNET_EASING_HEIGHT (see nEasingTau in consensus/params.h). The rows below inherit it.
+        static_assert(TESTNET_EASING_HEIGHT > 240, "the easing row must sit above the LWMA row");
+        easingConsensus = digishieldConsensus;
+        easingConsensus.nHeightEffective = TESTNET_EASING_HEIGHT;
+        easingConsensus.nEasingFreeWait = 9 * easingConsensus.nPowTargetSpacing;
+        easingConsensus.nEasingTau = MAINNET_EASING_TAU;
+
         // Blocks 80000+ use a distinct AuxPoW chain ID; 0x0062 collides with
         // Dogecoin's registered merge-mining chain ID (see mainnet for details).
-        chainIdFixConsensus = digishieldConsensus;
+        chainIdFixConsensus = easingConsensus;
         chainIdFixConsensus.nHeightEffective = 80000;
         chainIdFixConsensus.nAuxpowChainId = 0x5750; // "WP" - distinct from Dogecoin (0x0062)
 
@@ -362,7 +371,8 @@ public:
         // Assemble the binary search tree of parameters
         pConsensusRoot = &digishieldConsensus;
         digishieldConsensus.pLeft = &consensus;
-        digishieldConsensus.pRight = &chainIdFixConsensus;
+        digishieldConsensus.pRight = &easingConsensus;
+        easingConsensus.pRight = &chainIdFixConsensus;
         chainIdFixConsensus.pRight = &minSpacingConsensus;
         minSpacingConsensus.pRight = &minDifficultyConsensus;
         minDifficultyConsensus.pRight = &auxpowConsensus;

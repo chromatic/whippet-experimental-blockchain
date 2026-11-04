@@ -48,6 +48,12 @@ static const int MAINNET_DRIFT_CAP_HEIGHT = 371337;
 static const int MAINNET_EASING_HEIGHT = 600000;
 static const int64_t MAINNET_EASING_TAU = 30;
 
+/**
+ * Testnet runs the same easing rule from a low height (above the LWMA row at 240) so the hard fork
+ * can be rehearsed with old and new binaries long before mainnet reaches MAINNET_EASING_HEIGHT.
+ */
+static const int TESTNET_EASING_HEIGHT = 1000;
+
 /** Flags for nSequence and nLockTime locks */
 enum {
     /* Interpret sequence numbers as relative lock-time constraints. */
