@@ -55,7 +55,8 @@ class RuleSet:
         if self.lwma_clamp is not None or self.lwma_monotonic or self.lwma_wait is not None:  # SIM-ONLY LWMA variants
             return lwma.next_bits(self.chain.recent(parent, lwma.N + 1), min_solvetime=self.lwma_clamp,
                                   monotonic=self.lwma_monotonic, candidate_time=time,
-                                  tau_wait_s=self.lwma_wait, free_wait_s=self.asert_free)
+                                  tau_wait_s=self.lwma_wait, free_wait_s=self.asert_free,
+                                  legacy_negative=True)  # the sim-only rule sets model the code before the 1.4.0-dev fix
         self.rc.tip(parent.rc_index)
         return self.rc.next_bits(time)
 

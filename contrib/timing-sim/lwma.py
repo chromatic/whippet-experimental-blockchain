@@ -1,9 +1,11 @@
 """Python LWMA used for sim-only rule sets that change how solvetimes are measured.
 
 A line-for-line port of the LWMA branch of CalculateWhippetNextWorkRequired()
-(src/whippet.cpp), quirks included: the newest block gets the smallest weight,
-a solvetime between -6T and 0 is kept as is, and a negative sum becomes a huge uint32 (`sum_target * sum_time` with an int64
-selects operator*(base_uint, uint32_t)), so the product wraps modulo 2**256.
+(src/whippet.cpp), quirks included: the newest block gets the smallest weight unless
+`newest_heaviest` (the weights from the easing fork, Params::fLWMANewestHeaviest),
+solvetimes below -6T are clamped to -6T, and a non-positive sum holds the previous target
+(the 1.4.0-dev fix). `legacy_negative` restores the code before that fix, where a negative sum
+became a huge uint32 multiplier; the sim-only rule sets use it to keep their published results.
 tests/test_lwma.py checks it against the C++ code. `min_solvetime` is the only
 difference from C++: solvetimes below it are raised to it before the C++ clamps.
 `monotonic` is another: each timestamp in the window is first raised to the previous one plus 1
@@ -47,7 +49,8 @@ def ease_target(target: int, extra: int, tau: int, pow_limit: int = POW_LIMIT) -
 
 def next_bits(recent: List[Tuple[int, int]], min_solvetime: Optional[int] = None,
               monotonic: bool = False, candidate_time: Optional[int] = None,
-              tau_wait_s: Optional[float] = None, free_wait_s: int = 6 * T) -> int:
+              tau_wait_s: Optional[float] = None, free_wait_s: int = 6 * T,
+              newest_heaviest: bool = False, legacy_negative: bool = False) -> int:
     """Required nBits for the block after `recent` ((time, bits) pairs, oldest first).
 
     With tau_wait_s the target is also multiplied by 2 ** ((gap - free_wait_s) / tau_wait_s), where
@@ -74,13 +77,18 @@ def next_bits(recent: List[Tuple[int, int]], min_solvetime: Optional[int] = None
         if solvetime > 6 * T:
             solvetime = 6 * T
         if solvetime < -6 * T:
-            solvetime = T // 6
+            solvetime = T // 6 if legacy_negative else -6 * T
         j += 1
-        sum_time += solvetime * j
+        sum_time += solvetime * (N - j + 1 if newest_heaviest else j)
         sum_target += bits_to_target(bits) // (k * N)
     if j < N - 1:
         return recent[-1][1]
-    next_target = (sum_target * (sum_time % (1 << 32))) % (1 << 256)
+    if legacy_negative:
+        next_target = (sum_target * (sum_time % (1 << 32))) % (1 << 256)
+    elif sum_time <= 0:
+        next_target = bits_to_target(recent[-1][1])  # no usable pace signal: hold the previous target
+    else:
+        next_target = (sum_target * sum_time) % (1 << 256)  # the C++ product wraps too (regtest powLimit is 2**255)
     if tau_wait_s is not None and candidate_time is not None:
         next_target = ease_target(next_target, candidate_time - parent_time - free_wait_s, int(tau_wait_s))
     if next_target > POW_LIMIT:

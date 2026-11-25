@@ -74,6 +74,8 @@ The leading hard-fork candidate, LWMA plus easing while waiting, now exists in C
 - Regtest profile `-timingprofile=scaled-drift-easing` (72s cap, free wait 54s, tau 30s, `-timingeasingtau` overrides). `UpdateTime()` in the miner now recomputes `nBits` whenever easing is on, because the required bits depend on the timestamp.
 - Easing applies only where LWMA retargets, which is every block from height 145000. Below that heights retarget every 10 blocks and easing would not act on the blocks in between. Mainnet is above 145000.
 
+LWMA weights change on the same rows. Before the easing fork the newest solvetime had weight 1 and the oldest weight N, the reverse of LWMA-1, so the target answered a change in hashrate about a window late. From the easing height `Params::fLWMANewestHeaviest` is set and the newest solvetime has weight N. With ten equal targets, one 36s block among 6s blocks moves the next target 1.09x under the old weights when it is the newest and 1.91x under the new ones. `lwma_weights_flip_at_the_easing_fork` pins both numbers. The simulator's `lwma.next_bits` takes `newest_heaviest` to match; the published sim tables still use the old weights.
+
 Tests: `timing_tests` has four new cases (doubling per tau and the half-tau value, clamping and the overshoot case, the profile and header check with a late block, easing off on mainnet and testnet). `contrib/timing-sim/tests/test_easing_parity.py` compares the Python LWMA with easing against the real C++ over random chains and gaps from 4s to 1500s; they agree bit for bit. The simulator's R1e now uses the same integer arithmetic instead of floats, so sim numbers for R1e may differ slightly from the earlier tables.
 
 ### Merge-mined job timestamps

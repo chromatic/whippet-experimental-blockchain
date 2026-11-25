@@ -30,7 +30,7 @@ def test_easing_matches_python_on_random_chains_and_gaps(rc):
         for gap in (4, 30, 36, 37, 50, 66, 100, 250, 600, 1500):
             cand = t + gap
             assert rc.next_bits(cand) == lwma.next_bits(
-                recent[-(lwma.N + 1):], candidate_time=cand, tau_wait_s=TAU, free_wait_s=36), gap
+                recent[-(lwma.N + 1):], candidate_time=cand, tau_wait_s=TAU, free_wait_s=54, newest_heaviest=True), gap
 
 
 def test_a_long_wait_eases_and_no_wait_does_not(rc):

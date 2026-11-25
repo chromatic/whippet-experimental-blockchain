@@ -56,7 +56,9 @@ def test_monotonic_lwma_does_not_fix_it_either():
     assert run(sc, rules="R5m").metrics["blocks_per_hour"] > 800
 
 
-def test_r5_without_a_lwma_fix_decouples_chain_time_from_real_time():
-    # The unclamped R5 under the same attack ends the run with its timestamps 1.9 hours behind the wall clock.
+def test_r5_with_the_negative_solvetime_fix_stays_close_to_real_time():
+    # Before the 1.4.0-dev negative-solvetime fix the unclamped R5 under the same attack ended the run with its
+    # timestamps 1.9 hours behind the wall clock (final_lead below -3600). The reference calculator now has the
+    # fix and the lead is about -5s.
     sc = scenario([honest(), walk_ahead(0.2)], duration_s=7200)
-    assert run(sc, rules="R5").metrics["final_lead"] < -3600
+    assert run(sc, rules="R5").metrics["final_lead"] > -60

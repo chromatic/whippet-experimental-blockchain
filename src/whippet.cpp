@@ -111,7 +111,9 @@ unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int
                 solvetime = -6 * T;
 
             j++;
-            sum_time += solvetime * j;
+            // j counts from the newest block. Before the easing fork it was also the weight, which
+            // put the heaviest weight on the oldest solvetime.
+            sum_time += solvetime * (params.fLWMANewestHeaviest ? N - j + 1 : j);
 
             arith_uint256 target;
             target.SetCompact(block->nBits);

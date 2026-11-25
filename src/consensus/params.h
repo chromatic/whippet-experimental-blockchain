@@ -81,6 +81,13 @@ struct Params {
     int nEveryBlockRetargetHeight = 145000;
     int64_t nEasingTau = 0;
     int64_t nEasingFreeWait = 0;
+
+    /**
+     * LWMA weights the newest solvetime N and the oldest 1, as LWMA-1 does. When false (every row before the
+     * easing hard fork) the weights run the other way, newest 1 and oldest N, which delays the response to a
+     * change in hashrate by about a window. Set together with nEasingTau on the easing rows.
+     */
+    bool fLWMANewestHeaviest = false;
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
 
     /** Whippet-specific parameters */

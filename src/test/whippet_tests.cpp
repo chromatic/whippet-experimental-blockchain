@@ -169,6 +169,49 @@ BOOST_AUTO_TEST_CASE(lwma_non_positive_sum_still_eases)
     BOOST_CHECK(arith_uint256().SetCompact(nEased) > arith_uint256().SetCompact(nBits));
 }
 
+/* One slow solvetime among on-target ones. Before the easing fork the newest solvetime had the smallest LWMA
+   weight (1 of 10), so a slow newest block moved the target only 1.09x. From the fork it has the largest
+   (10 of 10) and the same block moves it 1.91x: (9 * 6 * 5 + 36 * 10) / 330 against (6 * 54 + 36) / 330. */
+static std::vector<CBlockIndex> LwmaChainSlowNewest(int nHeightLast, unsigned int nBits)
+{
+    std::vector<CBlockIndex> chain(11);
+    const int64_t T = 6;
+    int64_t t = 1700000000;
+    for (int i = 0; i < 11; i++) {
+        if (i > 0)
+            t += (i == 10) ? 6 * T : T;
+        chain[i].nHeight = nHeightLast - 10 + i;
+        chain[i].nTime = (unsigned int)t;
+        chain[i].nBits = nBits;
+        chain[i].pprev = (i == 0) ? NULL : &chain[i - 1];
+    }
+    return chain;
+}
+
+BOOST_AUTO_TEST_CASE(lwma_weights_flip_at_the_easing_fork)
+{
+    SelectParams(CBaseChainParams::MAIN);
+    BOOST_CHECK(!Params().GetConsensus(MAINNET_EASING_HEIGHT - 1).fLWMANewestHeaviest);
+    BOOST_CHECK(Params().GetConsensus(MAINNET_EASING_HEIGHT).fLWMANewestHeaviest);
+    SelectParams(CBaseChainParams::TESTNET);
+    BOOST_CHECK(!Params().GetConsensus(TESTNET_EASING_HEIGHT - 1).fLWMANewestHeaviest);
+    BOOST_CHECK(Params().GetConsensus(TESTNET_EASING_HEIGHT).fLWMANewestHeaviest);
+
+    SelectParams(CBaseChainParams::MAIN);
+    const unsigned int nBits = 0x1b499dfd;
+    const double base = arith_uint256().SetCompact(nBits).getdouble();
+
+    const int nOld = 1000;
+    std::vector<CBlockIndex> oldChain = LwmaChainSlowNewest(nOld, nBits);
+    const unsigned int nOldNext = CalculateWhippetNextWorkRequired(&oldChain.back(), 0, Params().GetConsensus(nOld));
+    BOOST_CHECK_CLOSE(arith_uint256().SetCompact(nOldNext).getdouble() / base, 360.0 / 330.0, 1.0);
+
+    const int nNew = MAINNET_EASING_HEIGHT + 10;
+    std::vector<CBlockIndex> newChain = LwmaChainSlowNewest(nNew, nBits);
+    const unsigned int nNewNext = CalculateWhippetNextWorkRequired(&newChain.back(), 0, Params().GetConsensus(nNew));
+    BOOST_CHECK_CLOSE(arith_uint256().SetCompact(nNewNext).getdouble() / base, 630.0 / 330.0, 1.0);
+}
+
 BOOST_AUTO_TEST_CASE(get_next_work_difficulty_limit)
 {
     SelectParams(CBaseChainParams::MAIN);

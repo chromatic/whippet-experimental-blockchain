@@ -179,6 +179,7 @@ public:
         easingConsensus.nHeightEffective = MAINNET_EASING_HEIGHT;
         easingConsensus.nEasingFreeWait = 9 * easingConsensus.nPowTargetSpacing;
         easingConsensus.nEasingTau = MAINNET_EASING_TAU;
+        easingConsensus.fLWMANewestHeaviest = true;
 
         // Assemble the binary search tree of consensus parameters
         pConsensusRoot = &digishieldConsensus;
@@ -343,6 +344,7 @@ public:
         easingConsensus.nHeightEffective = TESTNET_EASING_HEIGHT;
         easingConsensus.nEasingFreeWait = 9 * easingConsensus.nPowTargetSpacing;
         easingConsensus.nEasingTau = MAINNET_EASING_TAU;
+        easingConsensus.fLWMANewestHeaviest = true;
 
         // Blocks 80000+ use a distinct AuxPoW chain ID; 0x0062 collides with
         // Dogecoin's registered merge-mining chain ID (see mainnet for details).
@@ -612,6 +614,7 @@ public:
         easingConsensus.nHeightEffective = nHeight;
         easingConsensus.nEasingFreeWait = 9 * easingConsensus.nPowTargetSpacing;
         easingConsensus.nEasingTau = MAINNET_EASING_TAU;
+        easingConsensus.fLWMANewestHeaviest = true;
         easingConsensus.pLeft = NULL;
         easingConsensus.pRight = &chainIdFixConsensus;
         prev->pRight = &easingConsensus;
@@ -650,6 +653,7 @@ public:
             if (profile == "scaled-drift-easing") {
                 p->nEasingFreeWait = 9 * p->nPowTargetSpacing;
                 p->nEasingTau = nEasingTau;
+                p->fLWMANewestHeaviest = true;
                 p->nEveryBlockRetargetHeight = 0; // regtest chains are far below 145000 and easing needs a retarget on every block
             }
         }
