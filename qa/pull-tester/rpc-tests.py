@@ -161,6 +161,7 @@ testScripts = [
     'reconsider_headers.py',
     'importprunedfunds.py',
     'createauxblock.py',
+    'createauxblock_easing.py',
     'slimblocks.py',
     'slimprevprefix.py',
     'slimprune.py',

@@ -56,6 +56,9 @@ void AuxMiningCheck()
     }
 }
 
+//! How often an aux template is rebuilt while easing is raising the target (seconds).
+static const int64_t AUX_EASING_REFRESH_SECONDS = 10;
+
 static UniValue AuxMiningCreateBlock(const CScript& scriptPubKey)
 {
     AuxMiningCheck();
@@ -80,8 +83,23 @@ static UniValue AuxMiningCreateBlock(const CScript& scriptPubKey)
     {
         LOCK(cs_main);
 
+        /* From the easing hard fork the required bits depend on the block's own
+         * timestamp, and a template keeps the timestamp it was built with. A
+         * template held through a stall would stay at the harder target it started
+         * with, so rebuild it every few seconds once the chain has waited past the
+         * free wait. The older templates stay in the cache and can still be
+         * submitted.
+         */
+        bool fEasingStale = false;
+        if (pblock && pindexPrev == chainActive.Tip()) {
+            const Consensus::Params& next = Params().GetConsensus(chainActive.Height() + 1);
+            fEasingStale = next.nEasingTau > 0
+                && GetAdjustedTime() - chainActive.Tip()->GetBlockTime() > next.nEasingFreeWait
+                && GetTime() - nStart >= AUX_EASING_REFRESH_SECONDS;
+        }
+
         // Update block
-        if (!pblock || pindexPrev != chainActive.Tip()
+        if (!pblock || pindexPrev != chainActive.Tip() || fEasingStale
             || (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast
                 && GetTime() - nStart > 60))
         {
