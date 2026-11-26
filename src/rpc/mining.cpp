@@ -422,6 +422,7 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
             "  \"coinbasetxn\" : { ... },          (json object) information for coinbase transaction\n"
             "  \"target\" : \"xxxx\",                (string) The hash target\n"
             "  \"mintime\" : xxx,                  (numeric) The minimum timestamp appropriate for next block time in seconds since epoch (Jan 1 1970 GMT)\n"
+            "  \"maxtime\" : xxx,                  (numeric, only with difficulty easing) The latest timestamp for which \"bits\" is still correct\n"
             "  \"mutable\" : [                     (array of string) list of ways the block template may be changed \n"
             "     \"value\"                          (string) A way the block template may be changed, e.g. 'time', 'transactions', 'prevblock'\n"
             "     ,...\n"
@@ -656,9 +657,15 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     arith_uint256 hashTarget = arith_uint256().SetCompact(pblock->nBits);
 
     UniValue aMutable(UniValue::VARR);
-    // With easing the required nBits depends on the block's own timestamp, so
-    // a miner that changes the time would invalidate the template's bits.
-    if (consensusParams.nEasingTau <= 0)
+    // With easing the required nBits depends on the block's own timestamp. It
+    // does not change until the candidate is nEasingFreeWait seconds past its
+    // parent, so the time may be rolled up to that point (maxtime) and no
+    // further. A template already past it has bits that are right for its own
+    // time only.
+    int64_t nMaxTime = 0;
+    if (consensusParams.nEasingTau > 0)
+        nMaxTime = std::max(pblock->GetBlockTime(), pindexPrev->GetBlockTime() + consensusParams.nEasingFreeWait);
+    if (consensusParams.nEasingTau <= 0 || nMaxTime > pblock->GetBlockTime())
         aMutable.push_back("time");
     aMutable.push_back("transactions");
     aMutable.push_back("prevblock");
@@ -732,6 +739,8 @@ UniValue getblocktemplate(const JSONRPCRequest& request)
     result.pushKV("mintime", std::max((int64_t)pindexPrev->GetMedianTimePast() + 1,
                                       consensusParams.nMinBlockSpacing > 0 ? pindexPrev->GetBlockTime() + consensusParams.nMinBlockSpacing : (int64_t)0));
     result.pushKV("mutable", aMutable);
+    if (consensusParams.nEasingTau > 0)
+        result.pushKV("maxtime", nMaxTime);
     result.pushKV("noncerange", "00000000ffffffff");
     int64_t nSigOpLimit = MAX_BLOCK_SIGOPS_COST;
     if (fPreSegWit) {

@@ -162,6 +162,7 @@ testScripts = [
     'importprunedfunds.py',
     'createauxblock.py',
     'createauxblock_easing.py',
+    'getblocktemplate_easing.py',
     'slimblocks.py',
     'slimprevprefix.py',
     'slimprune.py',
