@@ -653,7 +653,7 @@ public:
             if (profile == "scaled-drift-easing") {
                 p->nEasingFreeWait = 9 * p->nPowTargetSpacing;
                 p->nEasingTau = nEasingTau;
-                p->fLWMANewestHeaviest = true;
+                p->fLWMANewestHeaviest = nEasingTau > 0; // -timingeasingtau=0 means no easing yet, so no new weights yet
                 p->nEveryBlockRetargetHeight = 0; // regtest chains are far below 145000 and easing needs a retarget on every block
             }
         }

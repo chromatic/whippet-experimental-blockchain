@@ -318,7 +318,7 @@ def run_walk_ahead_modelled(rules: str, duration_s: int = 1200, seed: int = 1, h
                     h = nodes.b.getblockheader(h["previousblockhash"])
                 recent.reverse()
                 expected = lwma.next_bits(recent, candidate_time=header["time"], tau_wait_s=EASING_TAU,
-                                          free_wait_s=EASING_FREE)
+                                          free_wait_s=EASING_FREE, newest_heaviest=True)
                 mismatches += expected != int(header["bits"], 16)
                 factors.append(2 ** (max(0, header["time"] - recent[-1][0] - EASING_FREE) / EASING_TAU))
             ease = {"attacker_bits_mismatches": mismatches,
@@ -366,8 +366,8 @@ def run_easing_wait(rules: str = "R1e", gaps=(20, 54, 55, 69, 84, 114, 174, 324)
             block = nodes.b.generatetoaddress(1, honest.addr)[0]
             header = nodes.b.getblockheader(block)
             expected = lwma.next_bits(recent, candidate_time=header["time"], tau_wait_s=EASING_TAU,
-                                      free_wait_s=EASING_FREE)
-            plain = lwma.next_bits(recent)
+                                      free_wait_s=EASING_FREE, newest_heaviest=True)
+            plain = lwma.next_bits(recent, newest_heaviest=True)
             nodes.synced()
             rows.append({"gap": header["time"] - tip["time"], "bits": int(header["bits"], 16),
                          "expected": expected, "uneased": plain,
@@ -490,7 +490,8 @@ def run_easing_activation(new_miner: bool, activation: int = EASING_ACTIVATION_H
       the plain ones, so a block from either side is refused by the other.
 
     new_miner=True  (A new, B old): the new node mines the eased block; the old node refuses it. The old
-                    node then mines 4s blocks (no easing involved) and the new node follows them.
+                    node then mines 4s blocks. The fork also flips the LWMA weights, so their nBits differ
+                    from what the new node requires and it refuses them too: the chains stay apart.
     new_miner=False (A old, B new): the old node mines the plain block; the new node refuses it. The new
                     node then mines its own eased block; the old node refuses that, and the two stay apart.
     """
@@ -533,7 +534,7 @@ def run_easing_activation(new_miner: bool, activation: int = EASING_ACTIVATION_H
                 h = node.getblockheader(h["previousblockhash"])
             recent.reverse()
             return (lwma.next_bits(recent), lwma.next_bits(recent, candidate_time=candidate,
-                                                           tau_wait_s=EASING_TAU, free_wait_s=EASING_FREE))
+                                                           tau_wait_s=EASING_TAU, free_wait_s=EASING_FREE, newest_heaviest=True))
 
         run_to(activation - 4)
         mine(miner, addr_a, gap)  # block activation-3, before the height
