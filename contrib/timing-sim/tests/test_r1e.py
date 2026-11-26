@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import sim
+from rules import make_rules
 from test_attacks import honest, run, scenario, walk_ahead
 
 SCENARIOS = Path(__file__).resolve().parent.parent / "scenarios"
@@ -53,3 +54,12 @@ def test_stale_pool_jobs_slow_the_easing_only_when_refreshed_rarely():
     for seed in (1, 2, 3):
         assert gap(30, seed) <= gap(None, seed) + 40
         assert gap(60, seed) <= 300
+
+
+def test_r1f_is_the_fork_as_coded():
+    # R1f is what ships at the easing height: the fixed LWMA, the new weights, tau 30, free wait 54.
+    with make_rules("R1f", floor=4) as rs:
+        assert rs.lwma_newest_heaviest and not rs.lwma_legacy
+        assert rs.lwma_wait == 30 and rs.asert_free == 54
+    with make_rules("R1e", floor=4) as rs:
+        assert not rs.lwma_newest_heaviest and rs.lwma_legacy

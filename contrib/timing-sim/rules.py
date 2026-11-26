@@ -23,6 +23,8 @@ class RuleSet:
         self.asert_tau: Optional[float] = None  # sim-only: ASERT difficulty with this half-life, see asert.py
         self.asert_wait: Optional[float] = None  # sim-only: ASERT easing per second of waiting, see asert.py
         self.asert_free = 6 * lwma.T  # sim-only: seconds after the parent before the easing starts
+        self.lwma_newest_heaviest = False  # sim-only: the LWMA weights from the easing fork, see lwma.py
+        self.lwma_legacy = True  # sim-only: LWMA as before the 1.4.0-dev negative-solvetime fix, see lwma.py
         self.legacy_miner = False  # True: miners stamp max(MTP+1, adjusted), ignoring the floor
         self.rc = RefCalc(profile, floor, min_difficulty)
 
@@ -56,7 +58,7 @@ class RuleSet:
             return lwma.next_bits(self.chain.recent(parent, lwma.N + 1), min_solvetime=self.lwma_clamp,
                                   monotonic=self.lwma_monotonic, candidate_time=time,
                                   tau_wait_s=self.lwma_wait, free_wait_s=self.asert_free,
-                                  legacy_negative=True)  # the sim-only rule sets model the code before the 1.4.0-dev fix
+                                  legacy_negative=self.lwma_legacy, newest_heaviest=self.lwma_newest_heaviest)
         self.rc.tip(parent.rc_index)
         return self.rc.next_bits(time)
 
@@ -217,6 +219,16 @@ class R1e(R3):
         self.asert_free = free_wait_s
 
 
+class R1f(R1e):
+    """The easing hard fork as it is coded now: R1e's acceptance rules, the fixed LWMA, the fork's weights
+    (newest solvetime heaviest), tau 30 and a 54s free wait unless the scenario says otherwise."""
+
+    def __init__(self, name, floor, min_difficulty=False, drift=72, tau_wait_s=30, free_wait_s=54):
+        super().__init__(name, floor, min_difficulty, drift, tau_wait_s, free_wait_s)
+        self.lwma_newest_heaviest = True
+        self.lwma_legacy = False
+
+
 class R2a(R2):
     """R2's acceptance rules (median only, no floor) with ASERT difficulty."""
 
@@ -262,6 +274,8 @@ def make_rules(name: str, floor: int = 4, min_difficulty: bool = False, **params
         return R3("R1x", floor, min_difficulty, window=(0, 0), **params)
     if name == "R1e":
         return R1e("R1e", floor, min_difficulty, **params)
+    if name in ("R1f", "R1f78", "R1f60"):  # R1f78: free wait above the drift cap; R1f60: tau 60 (params set the rest)
+        return R1f(name, floor, min_difficulty, **params)
     if name == "R1a":
         return R1a("R1a", floor, min_difficulty, **params)
     if name == "R2a":

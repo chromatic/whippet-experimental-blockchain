@@ -94,6 +94,12 @@ def run(scenario: dict, rules: RuleSet, seed: int) -> Result:
                         want = (now + m.params["first_s"] if tip.time - now < m.params["first_s"]
                                 else tip.time + m.params["step_s"])
                         stamp = max(stamp, min(want, latest))
+                    elif m.strategy == "stamp_cap":  # always the latest stamp the rules accept, to pull easing forward
+                        # params.only_if_lead_le: hash only while the chain's time is at most this far ahead of the
+                        # wall clock, so the attacker waits for the lead to run out and then takes the full gap.
+                        if tip.time - now > m.params.get("only_if_lead_le", 10 ** 9):
+                            continue
+                        stamp = max(stamp, latest)
                     elif m.strategy == "pump":  # earliest stamp the rules allow, to push difficulty up
                         stamp = max(chain.mtp(tip) + 1, tip.time + rules.floor_at(tip.height + 1))
                     elif m.strategy == "min_diff_farmer":

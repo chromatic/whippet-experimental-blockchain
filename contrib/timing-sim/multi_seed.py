@@ -30,19 +30,21 @@ def main() -> None:
     ap.add_argument("scenario")
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--metrics", default=",".join(METRICS), help="comma-separated metric names")
     args = ap.parse_args()
+    metrics = args.metrics.split(",")
     with open(args.scenario) as f:
         base = json.load(f)
     for label, sc in sim.expand_scenarios(base):
         print(f"\n== {label}  ({args.seeds} seeds; median / worst)")
-        print(f"{'rules':<6}" + "".join(f"{m:>26}" for m in METRICS))
+        print(f"{'rules':<6}" + "".join(f"{m:>26}" for m in metrics))
         for rule in sc.get("rules", ["R0", "R1"]):
             with ProcessPoolExecutor(args.jobs) as pool:
                 runs = list(pool.map(_one, [(sc, rule, seed) for seed in range(1, args.seeds + 1)]))
             cells = ""
-            for metric in METRICS:
+            for metric in metrics:
                 s = summarize([r[metric] for r in runs])
-                cells += f"{s['median']:>12.0f} / {s['worst']:<11.0f}"
+                cells += f"{s["median"]:>12.2f} / {s["worst"]:<11.2f}"
             print(f"{rule:<6}{cells}", flush=True)
 
 
