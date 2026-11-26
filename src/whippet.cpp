@@ -132,13 +132,15 @@ unsigned int CalculateWhippetNextWorkRequired(const CBlockIndex* pindexLast, int
            non-positive sum means the window carries no usable pace signal, so
            hold the previous target; easing below still applies, since it keys
            on how long this candidate has waited rather than on the window. */
+        const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
         arith_uint256 next_target;
         if (sum_time <= 0)
             next_target.SetCompact(pindexLast->nBits);
+        else if (sum_target > bnPowLimit / (uint32_t)sum_time)
+            next_target = bnPowLimit; // saturate: the product would wrap 2^256 (regtest powLimit is 2^255)
         else
             next_target = sum_target * (uint32_t)sum_time;
 
-        const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
         if (params.nEasingTau > 0 && nCandidateTime != 0) {
             const int64_t extra = nCandidateTime - pindexLast->GetBlockTime() - params.nEasingFreeWait;
             next_target = EaseTarget(next_target, extra, params.nEasingTau, bnPowLimit);

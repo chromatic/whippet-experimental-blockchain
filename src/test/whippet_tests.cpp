@@ -212,6 +212,30 @@ BOOST_AUTO_TEST_CASE(lwma_weights_flip_at_the_easing_fork)
     BOOST_CHECK_CLOSE(arith_uint256().SetCompact(nNewNext).getdouble() / base, 630.0 / 330.0, 1.0);
 }
 
+/* With a powLimit of 2^255 (regtest) a window of maximally slow blocks asks for 6x the old target. The
+   product used to wrap 2^256 and came out far too small, i.e. much harder. It now saturates at powLimit. */
+BOOST_AUTO_TEST_CASE(lwma_product_saturates_at_pow_limit)
+{
+    SelectParams(CBaseChainParams::MAIN);
+    Consensus::Params params = Params().GetConsensus(1000);
+    params.powLimit = uint256S("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    const arith_uint256 limit = UintToArith256(params.powLimit);
+    const unsigned int nLimitBits = limit.GetCompact();
+    const arith_uint256 start = arith_uint256().SetCompact(nLimitBits) >> 1; // 2^254: 6x is 1.5 * 2^256, so it wraps
+
+    std::vector<CBlockIndex> chain(11);
+    int64_t t = 1700000000;
+    for (int i = 0; i < 11; i++) {
+        if (i > 0)
+            t += 6 * params.nPowTargetSpacing; // clamp ceiling on every solvetime
+        chain[i].nHeight = 990 + i;
+        chain[i].nTime = (unsigned int)t;
+        chain[i].nBits = start.GetCompact();
+        chain[i].pprev = (i == 0) ? NULL : &chain[i - 1];
+    }
+    BOOST_CHECK_EQUAL(CalculateWhippetNextWorkRequired(&chain.back(), 0, params), nLimitBits);
+}
+
 BOOST_AUTO_TEST_CASE(get_next_work_difficulty_limit)
 {
     SelectParams(CBaseChainParams::MAIN);

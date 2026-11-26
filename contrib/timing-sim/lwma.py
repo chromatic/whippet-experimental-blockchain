@@ -88,7 +88,7 @@ def next_bits(recent: List[Tuple[int, int]], min_solvetime: Optional[int] = None
     elif sum_time <= 0:
         next_target = bits_to_target(recent[-1][1])  # no usable pace signal: hold the previous target
     else:
-        next_target = (sum_target * sum_time) % (1 << 256)  # the C++ product wraps too (regtest powLimit is 2**255)
+        next_target = min(sum_target * sum_time, POW_LIMIT)  # C++ saturates rather than wrapping 2**256
     if tau_wait_s is not None and candidate_time is not None:
         next_target = ease_target(next_target, candidate_time - parent_time - free_wait_s, int(tau_wait_s))
     if next_target > POW_LIMIT:
